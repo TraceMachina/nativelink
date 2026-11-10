@@ -46,9 +46,7 @@ mod tests {
     use nativelink_config::stores::{
         EvictionPolicy, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
     };
-    #[cfg(target_family = "unix")]
-    use nativelink_error::make_err;
-    use nativelink_error::{Code, Error, ResultExt, make_input_err};
+    use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
     use nativelink_macro::nativelink_test;
     #[cfg(target_family = "unix")]
     use nativelink_metric::{
@@ -7386,6 +7384,72 @@ exit 1
         let proto_result: ProtoActionResult = action_result.try_into()?;
         assert_eq!(proto_result, retrieved_result);
 
+        Ok(())
+    }
+
+    // REv2 `ExecuteResponse.status`: "If the status code is other than `OK`,
+    // then the result MUST NOT be cached." `ActionResult.error` becomes that
+    // status, so no strategy may write such a result to the Action Cache:
+    // not `success_only` when the process still exited 0 (a timed-out action
+    // that handles SIGTERM), and not `failures_only`.
+    #[nativelink_test]
+    async fn result_with_error_status_is_never_cached_in_action_cache()
+    -> Result<(), Box<dyn core::error::Error>> {
+        for (byte, strategy, exit_code) in [
+            (3u8, UploadCacheResultsStrategy::SuccessOnly, 0),
+            (4u8, UploadCacheResultsStrategy::FailuresOnly, 1),
+            (5u8, UploadCacheResultsStrategy::Everything, 0),
+        ] {
+            let (_, _, cas_store, ac_store) = setup_stores().await?;
+            let running_actions_manager =
+                Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                    root_action_directory: String::new(),
+                    execution_configuration: ExecutionConfiguration::default(),
+                    cas_store: cas_store.clone(),
+                    ac_store: Some(Store::new(ac_store.clone())),
+                    historical_store: Store::new(cas_store.clone()),
+                    upload_action_result_config: &UploadActionResultConfig {
+                        upload_ac_results_strategy: strategy,
+                        ..Default::default()
+                    },
+                    max_action_timeout: Duration::MAX,
+                    max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                    max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                    max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                    timeout_handled_externally: false,
+                    active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
+                    directory_cache: None,
+                    #[cfg(target_os = "linux")]
+                    use_namespaces: use_namespaces(),
+                })?);
+
+            let action_digest = DigestInfo::new([byte; 32], 32);
+            let mut action_result = ActionResult {
+                exit_code,
+                error: Some(make_err!(Code::DeadlineExceeded, "Command timed out")),
+                ..ActionResult::default()
+            };
+            running_actions_manager
+                .cache_action_result(
+                    action_digest,
+                    &mut action_result,
+                    DigestHasherFunc::Sha256,
+                    false,
+                )
+                .await?;
+
+            let lookup =
+                get_and_decode_digest::<ProtoActionResult>(ac_store.as_ref(), action_digest.into())
+                    .await;
+            assert_eq!(
+                lookup.map_err(|e| e.code),
+                Err(Code::NotFound),
+                "{strategy:?} with exit code {exit_code} cached a result with an error status",
+            );
+        }
         Ok(())
     }
 
