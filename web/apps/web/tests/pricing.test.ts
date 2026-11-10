@@ -70,8 +70,14 @@ test("a section left with no differentiators is dropped", () => {
 
 test("text and link values are never collapsed, even when they match", () => {
   expect(TIER_KEYS).toEqual(["oss", "t1", "t2"]);
-  expect(isUniversal({ label: "Build systems", oss: "All", t1: "All", t2: "All" })).toBe(false);
+  expect(
+    isUniversal({ label: "Build systems", oss: "All", t1: "All", t2: "All" }),
+  ).toBe(false);
   const link = { text: "Portal", href: "https://example.com" };
-  expect(isUniversal({ label: "Hosting", oss: link, t1: link, t2: link })).toBe(false);
-  expect(isIdenticalAcrossTiers({ label: "Hosting", oss: link, t1: link, t2: link })).toBe(true);
+  expect(isUniversal({ label: "Hosting", oss: link, t1: link, t2: link })).toBe(
+    false,
+  );
+  expect(
+    isIdenticalAcrossTiers({ label: "Hosting", oss: link, t1: link, t2: link }),
+  ).toBe(true);
 });
