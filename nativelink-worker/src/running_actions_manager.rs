@@ -2748,6 +2748,10 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     /// Returns worker-observed resource usage captured while this action ran.
     fn resource_usage(&self) -> Option<ActionResourceUsage>;
 
+    /// Whether the action set `do_not_cache`, in which case its result must
+    /// not be written to the Action Cache.
+    fn do_not_cache(&self) -> bool;
+
     /// Returns the work directory of the action.
     fn get_work_directory(&self) -> &String;
 }
@@ -2956,6 +2960,9 @@ pub struct RunningActionImpl {
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
+    /// The Action's `do_not_cache`. Kept here rather than on `ActionInfo`,
+    /// which is serialized into the scheduler databases.
+    do_not_cache: bool,
     /// `Some` only when the manager was configured with
     /// `experimental_active_input_leases`; `None` leaves eviction untouched.
     input_lease: Option<Arc<ActionInputLease>>,
@@ -2992,6 +2999,7 @@ impl RunningActionImpl {
         operation_id: OperationId,
         action_directory: String,
         action_info: ActionInfo,
+        do_not_cache: bool,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
@@ -3011,6 +3019,7 @@ impl RunningActionImpl {
             action_directory,
             work_directory,
             action_info,
+            do_not_cache,
             input_lease,
             timeout,
             running_actions_manager,
@@ -5052,6 +5061,10 @@ impl RunningAction for RunningActionImpl {
         self.state.lock().resource_usage.clone()
     }
 
+    fn do_not_cache(&self) -> bool {
+        self.do_not_cache
+    }
+
     fn get_work_directory(&self) -> &String {
         &self.work_directory
     }
@@ -5066,11 +5079,15 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> impl Future<Output = Result<Arc<Self::RunningAction>, Error>> + Send;
 
+    /// Uploads the result to the Action Cache and the historical results
+    /// store as configured. With `do_not_cache` set, the Action Cache is
+    /// skipped; a historical result is still uploaded.
     fn cache_action_result(
         &self,
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
@@ -5454,11 +5471,16 @@ impl UploadActionResults {
         action_info: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         let should_upload_historical_results =
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
-        let should_upload_ac_results =
-            Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
+        // REv2 `Action.do_not_cache`: "If true, then the Action's result
+        // cannot be cached". The historical results store is a debugging
+        // record under its own digest, not the Action Cache, so it is
+        // unaffected.
+        let should_upload_ac_results = !do_not_cache
+            && Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
         // Shortcut so we don't need to convert to proto if not needed.
         if !should_upload_ac_results && !should_upload_historical_results {
             return Ok(());
@@ -5950,7 +5972,7 @@ impl RunningActionsManagerImpl {
         &self,
         start_execute: StartExecute,
         queued_timestamp: SystemTime,
-    ) -> impl Future<Output = Result<ActionInfo, Error>> + '_ {
+    ) -> impl Future<Output = Result<(ActionInfo, bool), Error>> + '_ {
         self.metrics.create_action_info.wrap(async move {
             let execute_request = start_execute
                 .execute_request
@@ -5966,6 +5988,8 @@ impl RunningActionsManagerImpl {
                 .await
                 .err_tip(|| "During start_action")
                 .map_err(tag_missing_input)?;
+            // Read before the Action is consumed; `ActionInfo` does not carry it.
+            let do_not_cache = action.do_not_cache;
             let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
@@ -5989,7 +6013,7 @@ impl RunningActionsManagerImpl {
                         .insert(property.name, property.value);
                 }
             }
-            Ok(action_info)
+            Ok((action_info, do_not_cache))
         })
     }
 
@@ -6292,7 +6316,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let operation_id = start_execute
                     .operation_id.as_str().into();
-                let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
+                let (action_info, do_not_cache) =
+                    self.create_action_info(start_execute, queued_timestamp).await?;
                 debug!(
                     ?action_info,
                     "Worker received action",
@@ -6335,6 +6360,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     operation_id.clone(),
                     action_directory,
                     action_info,
+                    do_not_cache,
                     timeout,
                     self.clone(),
                 ));
@@ -6385,6 +6411,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         action_info: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         self.metrics
             .cache_action_result
@@ -6392,6 +6419,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 action_info,
                 action_result,
                 hasher,
+                do_not_cache,
             ))
             .await
     }
