@@ -79,6 +79,7 @@ fn make_scheduler_with_limits(
             ladder_kb,
             cpu_property: "cpu_count".to_string(),
             max_steps,
+            escalate_after_worker_losses: 2,
         }),
         max_job_retries,
         max_worker_loss_retries: 2,
@@ -155,11 +156,28 @@ async fn next_dispatch(rx: &mut mpsc::Receiver<UpdateForWorker>) -> (StartExecut
 }
 
 /// What a worker sends when its enforcement killed the action at its
-/// reservation: the usage report, then the result carrying the error.
+/// reservation: the usage report, then the result carrying the error. The
+/// sampled peak is the reservation plus the default 20% headroom.
 async fn report_memory_kill(
     worker_scheduler: &dyn WorkerScheduler,
     operation_id: &str,
     reserved_kb: u64,
+) -> Result<(), Error> {
+    report_memory_kill_at(
+        worker_scheduler,
+        operation_id,
+        reserved_kb,
+        reserved_kb + reserved_kb / 5,
+    )
+    .await
+}
+
+/// The memory kill as above, with the peak the sampler reported.
+async fn report_memory_kill_at(
+    worker_scheduler: &dyn WorkerScheduler,
+    operation_id: &str,
+    reserved_kb: u64,
+    peak_kb: u64,
 ) -> Result<(), Error> {
     let worker_id = WorkerId(WORKER.to_string());
     let operation_id = OperationId::from(operation_id);
@@ -168,7 +186,7 @@ async fn report_memory_kill(
             &worker_id,
             &operation_id,
             ActionResourceUsage {
-                peak_memory_kb: reserved_kb + reserved_kb / 5,
+                peak_memory_kb: peak_kb,
                 sampled: true,
                 outcome: ResourceOutcome::KilledMemory.into(),
                 enforced: true,
@@ -207,9 +225,10 @@ async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> Actio
     }
 }
 
-/// A memory kill doubles the reservation and runs the action again; the
-/// doubling stops at the largest memory any worker advertises; a kill at
-/// that ceiling fails the action with the worker's own error.
+/// A memory kill doubles what the action was seen to use (its sampled
+/// peak, 20% over its reservation here) and runs it again; the doubling
+/// stops at the largest memory any worker advertises; a kill at that
+/// ceiling fails the action with the worker's own error.
 #[nativelink_test]
 async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Result<(), Error> {
     let (scheduler, worker_scheduler) = make_scheduler(5);
@@ -233,7 +252,7 @@ async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Resu
     report_memory_kill(worker_scheduler.as_ref(), &first.operation_id, 2_000).await?;
 
     let (second, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 4_000, "the reservation doubles after a kill");
+    assert_eq!(memory, 4_800, "double the 2400 KiB peak after a kill");
     assert_eq!(
         second.operation_id, first.operation_id,
         "same operation, asking for more"
@@ -281,11 +300,13 @@ async fn escalation_does_not_spend_the_retry_budget() -> Result<(), Error> {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
+        // Double the sampled peak, which the kill reports 20% over.
+        reserved = (reserved + reserved / 5) * 2;
     }
     // Four kills, four requeues, on a budget of one: still running.
     let (_, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 16_000);
+    assert_eq!(memory, reserved);
+    assert_eq!(reserved, 33_176, "1000, 2400, 5760, 13824, then this");
     Ok(())
 }
 
@@ -314,7 +335,8 @@ async fn escalation_stops_at_max_steps() -> Result<(), Error> {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
+        // Double the sampled peak, which the kill reports 20% over.
+        reserved = (reserved + reserved / 5) * 2;
     }
 
     let result = wait_for_completion(&mut listener).await;
@@ -448,6 +470,7 @@ fn policy(ladder_kb: Vec<u64>, max_steps: u64) -> MemoryEscalationSpec {
         ladder_kb,
         cpu_property: "cpu_count".to_string(),
         max_steps,
+        escalate_after_worker_losses: 2,
     }
 }
 
@@ -596,12 +619,13 @@ async fn a_loss_at_the_whole_worker_ends_on_the_loss_budget() -> Result<(), Erro
     Ok(())
 }
 
-/// The 2026-11-09 report: 6 GiB default, killed by enforcement at 6 GiB and
-/// escalated to 12 GiB; then the pod is OOM-killed whole at 12 GiB again
-/// and again. Before RFC-0018 the reservation stayed at 12 GiB until the
-/// loss budget failed the action; now it reaches the 16 GiB class.
+/// An action killed cleanly at its first class escalates to the second,
+/// then outgrows that faster than the worker's enforcement samples it, so
+/// its pod is OOM-killed whole: a lost worker, not a kill. It reaches the
+/// third class on the second loss and completes there, instead of
+/// staying at the second until the loss budget fails it.
 #[nativelink_test]
-async fn customer_report_reaches_sixteen_gib() -> Result<(), Error> {
+async fn pod_oom_losses_climb_to_the_next_class() -> Result<(), Error> {
     const GIB: u64 = 1024 * 1024;
     let ladder = vec![6 * GIB, 12 * GIB, 16 * GIB, 24 * GIB];
     let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(ladder, 8)), 10);
@@ -632,5 +656,53 @@ async fn customer_report_reaches_sixteen_gib() -> Result<(), Error> {
         .await?;
     let result = wait_for_completion(&mut listener).await;
     assert!(result.error.is_none(), "{:?}", result.error);
+    Ok(())
+}
+
+/// A kill sampled far past its reservation grows from the peak: the next
+/// class above the 5000 KiB it was seen using, not the one above the 1500
+/// it asked for, which the action was just observed to exceed.
+#[nativelink_test]
+async fn escalation_steps_past_the_sampled_peak() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_ladder(5, vec![1_000, 4_000, 9_000]);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 21, 1_500).await?;
+    let (first, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_500);
+    report_memory_kill_at(worker_scheduler.as_ref(), &first.operation_id, 1_500, 5_000).await?;
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(
+        memory, 9_000,
+        "the class above the peak, not above the reservation"
+    );
+    Ok(())
+}
+
+/// `escalate_after_worker_losses` sets the loss that escalates: 0 never
+/// does, 3 waits for the third.
+#[nativelink_test]
+async fn the_loss_threshold_is_configurable() -> Result<(), Error> {
+    for (threshold, expected) in [
+        (0, [1_000, 1_000, 1_000, 1_000]),
+        (3, [1_000, 1_000, 1_000, 2_000]),
+    ] {
+        let spec = MemoryEscalationSpec {
+            escalate_after_worker_losses: threshold,
+            ..policy(vec![], 0)
+        };
+        let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(spec), 5);
+        let mut rx = add_worker(&scheduler, 1_000_000).await?;
+        let _listener = add_action(&scheduler, 22, 1_000).await?;
+        for (losses, want) in expected.iter().enumerate() {
+            let (_, memory) = next_dispatch(&mut rx).await;
+            assert_eq!(
+                memory, *want,
+                "threshold {threshold}, after {losses} losses"
+            );
+            if losses + 1 < expected.len() {
+                rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+            }
+        }
+    }
     Ok(())
 }

@@ -350,8 +350,8 @@ pub struct SimpleSpec {
     /// that worker whole, memory and CPU, so the action runs alone, and only
     /// a kill there fails the action: nothing in the fleet could run it.
     /// A worker that goes away on its own mid-action (a pod OOM-killed as
-    /// a whole looks like that) escalates the action the same way from the
-    /// second worker lost under it. Such losses still spend
+    /// a whole looks like that) escalates the action the same way, from
+    /// `escalate_after_worker_losses`. Such losses still spend
     /// `max_worker_loss_retries`.
     /// Default: unset (a memory kill fails the action)
     #[serde(default)]
@@ -634,9 +634,29 @@ pub struct MemoryEscalationSpec {
 
     /// The most escalations one action gets before the scheduler completes
     /// it with `FailedPrecondition`; 0 lets the ceiling alone bound them.
+    /// Escalations on a lost worker spend the same budget, but spending it
+    /// there does not end the action: it is queued again at its last
+    /// reservation, and `max_worker_loss_retries` ends it if its workers
+    /// keep going away.
     /// Default: 8
     #[serde(default = "default_memory_escalation_max_steps")]
     pub max_steps: u64,
+
+    /// From the how-manyth worker lost under one action the requeue also
+    /// raises its reservation, the way a memory kill does. A pod
+    /// OOM-killed as a whole reaches the scheduler as a lost worker with no
+    /// usage report, so without this the action is requeued at the size
+    /// that took the pod down until the loss budget ends it. Only a worker
+    /// that went away on its own counts (its stream ended, it timed out, or
+    /// a command to it failed), not one that was removed, drained or shut
+    /// down with the scheduler. 0 never escalates on a loss.
+    /// Default: 2
+    #[serde(default = "default_memory_escalation_after_worker_losses")]
+    pub escalate_after_worker_losses: u64,
+}
+
+const fn default_memory_escalation_after_worker_losses() -> u64 {
+    2
 }
 
 fn default_memory_escalation_cpu_property() -> String {

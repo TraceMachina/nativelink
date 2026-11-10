@@ -108,11 +108,6 @@ impl core::fmt::Display for TimeoutCause {
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
 
-/// The loss at which an action whose worker keeps going away escalates
-/// (RFC-0018). One loss is a node going away; a second, on another worker
-/// with other co-tenants, points at the action.
-pub const LOSS_ESCALATION_AFTER: usize = 2;
-
 /// Requeues the same action asking for more: the next dispatch carries the
 /// raised reservation and the worker holds it to that. The last step also
 /// asks for the worker's whole CPU, so it runs alone.
@@ -483,6 +478,9 @@ pub struct RetryLimits {
     pub max_worker_loss_retries: usize,
     /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
     pub max_escalations: usize,
+    /// The worker loss from which a lost worker escalates the action's
+    /// memory (RFC-0018); 0 never does.
+    pub escalate_after_worker_losses: usize,
     /// Command timeouts queued again for another worker; 0 keeps the
     /// first timeout final.
     pub max_timeout_retries: usize,
@@ -504,6 +502,7 @@ impl From<usize> for RetryLimits {
             max_job_retries,
             max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
             max_escalations: 0,
+            escalate_after_worker_losses: 0,
             max_timeout_retries: Self::DEFAULT_TIMEOUT_RETRIES,
         }
     }
@@ -538,6 +537,11 @@ where
         help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
     )]
     max_escalations: usize,
+
+    #[metric(
+        help = "Worker losses before a requeue also raises the memory reservation; 0 never does"
+    )]
+    escalate_after_worker_losses: usize,
 
     #[metric(
         help = "Maximum number of times a job is queued again for another worker after its command timed out"
@@ -596,6 +600,7 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
             max_timeout_retries,
         } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
@@ -603,6 +608,7 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
             max_timeout_retries,
             no_event_action_timeout,
             client_action_timeout,
@@ -1542,7 +1548,8 @@ where
                         // worker it took down, while the escalation budget
                         // lasts. Past it, the loss budget ends the action.
                         if let Some(loss) = loss
-                            && awaited_action.worker_losses >= LOSS_ESCALATION_AFTER
+                            && self.escalate_after_worker_losses > 0
+                            && awaited_action.worker_losses >= self.escalate_after_worker_losses
                             && (self.max_escalations == 0
                                 || awaited_action.escalations < self.max_escalations)
                         {
@@ -1556,6 +1563,7 @@ where
                                 "Worker lost under this action; requeuing with a larger reservation"
                             );
                             raise_reservation(&mut awaited_action, &loss.escalation);
+                            record_dispatch_requeue("loss_escalation");
                         }
                         is_retry = true;
                         ActionStage::Queued

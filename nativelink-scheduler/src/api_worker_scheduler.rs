@@ -1810,11 +1810,23 @@ impl ApiWorkerSchedulerImpl {
         }
         let properties = &pending.action_info.platform_properties;
         let reserved_kb = reservation_of(properties, &policy.property);
-        let NextReservation::Step { value, cpu, .. } =
-            next_reservation(policy, properties, reserved_kb, reserved_kb, fleet)
-        else {
-            return None;
-        };
+        let (value, cpu) =
+            match next_reservation(policy, properties, reserved_kb, reserved_kb, fleet) {
+                NextReservation::Step { value, cpu, .. } => (value, cpu),
+                skipped => {
+                    // Nothing to grow from (no reservation), nowhere to grow
+                    // (the whole largest worker), or no fleet to grow into:
+                    // the loss requeues the action as it was.
+                    debug!(
+                        ?worker_id,
+                        property = %policy.property,
+                        reserved_kb,
+                        ?skipped,
+                        "Lost worker's action has no larger reservation to take"
+                    );
+                    return None;
+                }
+            };
         Some(LossEscalation {
             escalation: Escalation {
                 property: policy.property.clone(),
@@ -1866,11 +1878,10 @@ impl ApiWorkerSchedulerImpl {
             .unwrap_or_else(|| {
                 reservation_of(&pending.action_info.platform_properties, &policy.property)
             });
-        let base_kb = if reserved_kb > 0 {
-            reserved_kb
-        } else {
-            usage.peak_memory_kb
-        };
+        // Grow from what the action was seen to use, not only from what it
+        // asked for: a kill sampled well past its reservation would
+        // otherwise be given a size it was just observed to exceed.
+        let base_kb = reserved_kb.max(usage.peak_memory_kb);
         let fleet = self.fleet_largest_worker(&policy.property, &policy.cpu_property);
         let (value, cpu, ceiling_kb) = match next_reservation(
             policy,
@@ -2263,7 +2274,11 @@ impl ApiWorkerSchedulerImpl {
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
-            // Ensure the operation is put back to queued state.
+            // Ensure the operation is put back to queued state. The worker
+            // is already gone, so there is no record to propose a larger
+            // reservation from: this loss counts toward the budget but never
+            // escalates, even if it is the one that crosses
+            // `escalate_after_worker_losses`; the next loss will.
             self.worker_state_manager
                 .update_operation(
                     &operation_id,
