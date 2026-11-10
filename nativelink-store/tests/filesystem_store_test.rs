@@ -1890,6 +1890,8 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         }
     }
 
+    drop_all_fs_read_caps()?;
+
     let content_path = make_temp_path("content_path_read_only_exec");
     let temp_path = make_temp_path("temp_path_read_only_exec");
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -2404,10 +2406,31 @@ async fn older_upload_finishing_last_does_not_replace_newer_generation() -> Resu
     Ok(())
 }
 
+// Drop root capabilities to read all files so we can write tests about permissions
+#[cfg(unix)]
+fn drop_all_fs_read_caps() -> Result<(), Error> {
+    use caps::{CapSet, Capability};
+
+    debug!(
+        effective = ?caps::read(None, CapSet::Effective)?,
+        permitted = ?caps::read(None, CapSet::Permitted)?,
+        "Capabilities"
+    );
+    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_DAC_READ_SEARCH)? {
+        caps::drop(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH)?;
+    }
+    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_DAC_OVERRIDE)? {
+        caps::drop(None, CapSet::Effective, Capability::CAP_DAC_OVERRIDE)?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[nativelink_test]
 async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
+
+    drop_all_fs_read_caps()?;
 
     let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
         content_path: make_temp_path("content_path"),
@@ -2422,7 +2445,12 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     entry
         .get_file_path_locked(|path| async move {
             debug!("Locked down {path:?} permissions");
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).await
+            let res = fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).await;
+            debug!(
+                "{path:?} permissions are now {:?}",
+                fs::metadata(&path).await?.permissions()
+            );
+            res
         })
         .await?;
     let result = store.update_oneshot(digest, VALUE1.into()).await;
@@ -2430,7 +2458,12 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     entry
         .get_file_path_locked(|path| async move {
             debug!("Opened up {path:?} permissions");
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await
+            let res = fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).await;
+            debug!(
+                "{path:?} permissions are now {:?}",
+                fs::metadata(&path).await?.permissions()
+            );
+            res
         })
         .await?;
     assert_eq!(result.unwrap_err().code, Code::PermissionDenied);
