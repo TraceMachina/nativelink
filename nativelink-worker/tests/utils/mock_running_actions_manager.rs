@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 enum RunningActionManagerCalls {
     CreateAndAddAction(Box<(String, StartExecute)>),
-    CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc)>),
+    CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc, bool)>),
 }
 
 enum RunningActionManagerReturns {
@@ -112,7 +112,7 @@ impl MockRunningActionsManager {
 
     pub(crate) async fn expect_cache_action_result(
         &self,
-    ) -> (DigestInfo, ActionResult, DigestHasherFunc) {
+    ) -> (DigestInfo, ActionResult, DigestHasherFunc, bool) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -172,12 +172,14 @@ impl RunningActionsManager for MockRunningActionsManager {
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
         digest_function: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         self.tx_call
             .send(RunningActionManagerCalls::CacheActionResult(Box::new((
                 action_digest,
                 action_result.clone(),
                 digest_function,
+                do_not_cache,
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
@@ -226,6 +228,8 @@ pub(crate) struct MockRunningAction {
 
     rx_resp: Mutex<mpsc::UnboundedReceiver<RunningActionReturns>>,
     tx_resp: mpsc::UnboundedSender<RunningActionReturns>,
+
+    do_not_cache: bool,
 }
 
 impl Default for MockRunningAction {
@@ -236,6 +240,11 @@ impl Default for MockRunningAction {
 
 impl MockRunningAction {
     pub(crate) fn new() -> Self {
+        Self::with_do_not_cache(false)
+    }
+
+    /// A running action whose `do_not_cache()` returns `do_not_cache`.
+    pub(crate) fn with_do_not_cache(do_not_cache: bool) -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -243,6 +252,7 @@ impl MockRunningAction {
             tx_call,
             rx_resp: Mutex::new(rx_resp),
             tx_resp,
+            do_not_cache,
         }
     }
 
@@ -454,6 +464,10 @@ impl RunningAction for MockRunningAction {
 
     fn resource_usage(&self) -> Option<ActionResourceUsage> {
         None
+    }
+
+    fn do_not_cache(&self) -> bool {
+        self.do_not_cache
     }
 
     fn get_work_directory(&self) -> &String {

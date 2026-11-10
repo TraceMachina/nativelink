@@ -295,6 +295,7 @@ impl RunningActionsManager for SimActionsManager {
         _action_digest: DigestInfo,
         _action_result: &mut ActionResult,
         _hasher: DigestHasherFunc,
+        _do_not_cache: bool,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -436,6 +437,10 @@ impl RunningAction for SimRunningAction {
 
     fn resource_usage(&self) -> Option<ActionResourceUsage> {
         None
+    }
+
+    fn do_not_cache(&self) -> bool {
+        false
     }
 
     fn get_work_directory(&self) -> &String {
