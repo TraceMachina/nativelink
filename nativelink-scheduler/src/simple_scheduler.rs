@@ -1762,6 +1762,16 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
+    async fn worker_operation_memory_reported(
+        &self,
+        worker_id: &WorkerId,
+        peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_operation_memory_reported(worker_id, peaks)
+            .await
+    }
+
     async fn worker_liveness_refreshed(
         &self,
         worker_id: &WorkerId,

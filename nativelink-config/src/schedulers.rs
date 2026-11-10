@@ -350,8 +350,10 @@ pub struct SimpleSpec {
     /// that worker whole, memory and CPU, so the action runs alone, and only
     /// a kill there fails the action: nothing in the fleet could run it.
     /// A worker that goes away on its own mid-action (a pod OOM-killed as
-    /// a whole looks like that) escalates the action the same way, from
-    /// `escalate_after_worker_losses`. Such losses still spend
+    /// a whole looks like that) escalates the action the same way: on that
+    /// loss when the worker's last keepalive showed the action above its
+    /// reservation, otherwise from `escalate_after_worker_losses`. Such
+    /// losses still spend
     /// `max_worker_loss_retries`.
     /// Default: unset (a memory kill fails the action)
     #[serde(default)]

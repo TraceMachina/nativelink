@@ -48,6 +48,8 @@ pub(crate) struct MockRunningActionsManager {
     rx_kill_operation: Mutex<mpsc::UnboundedReceiver<OperationId>>,
     tx_kill_operation: mpsc::UnboundedSender<OperationId>,
     metrics: Arc<Metrics>,
+    /// What `memory_peaks` answers, for the keepalive's memory report.
+    pub(crate) memory_peaks: std::sync::Mutex<Vec<(String, u64)>>,
 }
 
 impl Default for MockRunningActionsManager {
@@ -72,6 +74,7 @@ impl MockRunningActionsManager {
             rx_kill_operation: Mutex::new(rx_kill_operation),
             tx_kill_operation,
             metrics: Arc::new(Metrics::default()),
+            memory_peaks: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -194,6 +197,10 @@ impl RunningActionsManager for MockRunningActionsManager {
         self.tx_kill_all
             .send(())
             .expect("Could not send request to mpsc");
+    }
+
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        self.memory_peaks.lock().unwrap().clone()
     }
 
     fn metrics(&self) -> &Arc<Metrics> {
