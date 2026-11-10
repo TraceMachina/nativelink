@@ -26,10 +26,13 @@ use nativelink_store::oss_store::OssStore;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 
 const HOST: &str = "test-bucket.s3.oss-cn-hangzhou.aliyuncs.com";
 const NOW: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+
+type TestStore = S3Store<fn() -> MockInstantWrapped>;
 
 fn spec() -> ExperimentalOssSpec {
     ExperimentalOssSpec {
@@ -48,7 +51,7 @@ fn spec() -> ExperimentalOssSpec {
     }
 }
 
-fn store(mock: StaticReplayClient) -> Result<Arc<S3Store<fn() -> MockInstantWrapped>>, Error> {
+fn store(mock: StaticReplayClient) -> Result<Arc<TestStore>, Error> {
     OssStore::new_with_http_client(&spec(), mock, NOW)
 }
 
@@ -348,7 +351,7 @@ async fn streaming_read_requests_exact_inclusive_range() -> Result<(), Error> {
     let store = store(mock.clone())?;
     let (mut tx, mut rx) = make_buf_channel_pair();
     let read = store.get_part(StoreKey::new_str("key"), &mut tx, 1, Some(3));
-    let (_, bytes) = futures::try_join!(read, rx.consume(None))?;
+    let ((), bytes) = futures::try_join!(read, rx.consume(None))?;
     assert_eq!(bytes, "bcd");
     let requests: Vec<_> = mock.actual_requests().collect();
     assert_eq!(requests[0].headers().get("range"), Some("bytes=1-3"));
@@ -467,7 +470,7 @@ async fn slow_backend_bounds_in_flight_multipart_requests() -> Result<(), Error>
     };
     let store = OssStore::new_with_http_client(&spec(), client.clone(), NOW)?;
     let (mut tx, rx) = make_buf_channel_pair();
-    let upload = tokio::spawn(async move {
+    let upload = spawn!("oss_multipart_upload", async move {
         store
             .update(
                 StoreKey::new_str("key"),
@@ -476,7 +479,7 @@ async fn slow_backend_bounds_in_flight_multipart_requests() -> Result<(), Error>
             )
             .await
     });
-    let send = tokio::spawn(async move {
+    let send = spawn!("oss_multipart_producer", async move {
         let chunk = bytes::Bytes::from(vec![1; PART_BYTES]);
         for _ in 0..PARTS {
             tx.send(chunk.clone()).await?;

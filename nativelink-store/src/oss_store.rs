@@ -77,7 +77,7 @@ impl OssStore {
             .timeout_config(
                 aws_config::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(15))
-                    .operation_attempt_timeout(Duration::from_secs(120))
+                    .operation_attempt_timeout(Duration::from_mins(2))
                     .build(),
             )
             .credentials_provider(Credentials::new(

@@ -232,8 +232,8 @@ pub enum StoreSpec {
     ///    ```
     ///
     /// 7. **Alibaba Cloud OSS:**
-    ///    Uses the OSS S3-compatible endpoint and AWS SigV4. Supply the OSS
-    ///    AccessKey explicitly per store, for example by shell-expanding
+    ///    Uses the OSS S3-compatible endpoint and AWS `SigV4`. Supply the OSS
+    ///    access key explicitly per store, for example by shell-expanding
     ///    `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` in the config.
     ///
     ///    **Example JSON Config:**
@@ -970,7 +970,7 @@ pub struct ExperimentalOciSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalOssSpec {
-    /// OSS region, for example `cn-hangzhou`. Used for AWS SigV4 signing
+    /// OSS region, for example `cn-hangzhou`. Used for AWS `SigV4` signing
     /// and to derive the default S3-compatible endpoint.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub region: String,
@@ -979,12 +979,12 @@ pub struct ExperimentalOssSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
-    /// AccessKey ID for this store. Required; no AWS credential-chain fallback.
+    /// Access key ID for this store. Required; no AWS credential-chain fallback.
     /// Use shell expansion, for example `${OSS_ACCESS_KEY_ID}`.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub access_key_id: String,
 
-    /// AccessKey secret for this store. Use `${OSS_ACCESS_KEY_SECRET}` to
+    /// Access key secret for this store. Use `${OSS_ACCESS_KEY_SECRET}` to
     /// keep it out of the config file. Independent of AWS S3 store credentials.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub secret_access_key: String,
