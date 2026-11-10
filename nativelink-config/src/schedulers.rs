@@ -349,6 +349,10 @@ pub struct SimpleSpec {
     /// connected worker advertises (or `max_kb`); the last step reserves
     /// that worker whole, memory and CPU, so the action runs alone, and only
     /// a kill there fails the action: nothing in the fleet could run it.
+    /// A worker that goes away on its own mid-action (a pod OOM-killed as
+    /// a whole looks like that) escalates the action the same way from the
+    /// second worker lost under it. Such losses still spend
+    /// `max_worker_loss_retries`.
     /// Default: unset (a memory kill fails the action)
     #[serde(default)]
     pub memory_escalation: Option<MemoryEscalationSpec>,

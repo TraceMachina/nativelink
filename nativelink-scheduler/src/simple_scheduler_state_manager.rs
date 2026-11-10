@@ -36,7 +36,7 @@ use nativelink_util::metrics::{
     ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts, Escalation,
     MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
     UpdateOperationType, WorkerStateManager,
 };
@@ -107,6 +107,27 @@ impl core::fmt::Display for TimeoutCause {
 /// Maximum number of times an update to the database
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
+
+/// The loss at which an action whose worker keeps going away escalates
+/// (RFC-0018). One loss is a node going away; a second, on another worker
+/// with other co-tenants, points at the action.
+pub const LOSS_ESCALATION_AFTER: usize = 2;
+
+/// Requeues the same action asking for more: the next dispatch carries the
+/// raised reservation and the worker holds it to that. The last step also
+/// asks for the worker's whole CPU, so it runs alone.
+fn raise_reservation(awaited_action: &mut AwaitedAction, escalation: &Escalation) {
+    let mut action_info = (**awaited_action.action_info()).clone();
+    action_info
+        .platform_properties
+        .insert(escalation.property.clone(), escalation.value.to_string());
+    if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+        action_info
+            .platform_properties
+            .insert(cpu_property.clone(), cpu_value.to_string());
+    }
+    awaited_action.set_action_info(Arc::new(action_info));
+}
 
 /// Base delay for exponential backoff on version conflicts (in ms).
 const BASE_RETRY_DELAY_MS: u64 = 10;
@@ -1249,7 +1270,7 @@ where
                 ActionStage::Unknown => "Stage:Unknown",
             },
             UpdateOperationType::UpdateWithError(_) => "Error",
-            UpdateOperationType::UpdateWithDisconnect => "Disconnect",
+            UpdateOperationType::UpdateWithDisconnect(_) => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
             UpdateOperationType::UpdateWithDecline(_) => "Decline",
             UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
@@ -1330,7 +1351,8 @@ where
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
                 match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
+                    UpdateOperationType::UpdateWithDisconnect(_)
+                    | UpdateOperationType::KeepAlive => {
                         // No need to error a keep-alive when it's completed, it's just
                         // unnecessary log noise.
                         return Ok(());
@@ -1348,7 +1370,7 @@ where
 
             // A disconnect for an operation no worker holds any more (the
             // executing sweep requeued it) must not spend a worker loss.
-            if matches!(update, UpdateOperationType::UpdateWithDisconnect)
+            if matches!(update, UpdateOperationType::UpdateWithDisconnect(_))
                 && awaited_action.worker_id().is_none()
             {
                 return Ok(());
@@ -1487,7 +1509,7 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => {
+                UpdateOperationType::UpdateWithDisconnect(loss) => {
                     // A lost worker (OOM-killed as a whole, pod evicted,
                     // network drop, timed out) is usually not this action's
                     // doing, so it has its own budget rather than spending
@@ -1515,6 +1537,26 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        // A loss that may have been this action's memory
+                        // (RFC-0018): escalate when this is not the first
+                        // worker it took down, while the escalation budget
+                        // lasts. Past it, the loss budget ends the action.
+                        if let Some(loss) = loss
+                            && awaited_action.worker_losses >= LOSS_ESCALATION_AFTER
+                            && (self.max_escalations == 0
+                                || awaited_action.escalations < self.max_escalations)
+                        {
+                            awaited_action.escalations += 1;
+                            warn!(
+                                %operation_id,
+                                ?maybe_worker_id,
+                                worker_losses = awaited_action.worker_losses,
+                                property = %loss.escalation.property,
+                                escalated = loss.escalation.value,
+                                "Worker lost under this action; requeuing with a larger reservation"
+                            );
+                            raise_reservation(&mut awaited_action, &loss.escalation);
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }
@@ -1553,16 +1595,7 @@ where
                         // dispatch carries the raised reservation and the
                         // worker holds it to that. The last step also asks
                         // for the worker's whole CPU, so it runs alone.
-                        let mut action_info = (**awaited_action.action_info()).clone();
-                        action_info
-                            .platform_properties
-                            .insert(escalation.property.clone(), escalation.value.to_string());
-                        if let Some((cpu_property, cpu_value)) = &escalation.cpu {
-                            action_info
-                                .platform_properties
-                                .insert(cpu_property.clone(), cpu_value.to_string());
-                        }
-                        awaited_action.set_action_info(Arc::new(action_info));
+                        raise_reservation(&mut awaited_action, escalation);
                         is_retry = true;
                         ActionStage::Queued
                     }
