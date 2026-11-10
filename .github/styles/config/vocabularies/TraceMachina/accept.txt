@@ -503,4 +503,3 @@ Alibaba
 OSS
 AccessKey
 SigV4
-Hickory

@@ -842,17 +842,3 @@ fn oss_credentials_are_required_and_redacted_from_debug() {
         assert!(!debug.contains(credential));
     }
 }
-
-#[test]
-fn oss_dns_defaults_to_hickory_and_can_select_system() {
-    use nativelink_config::stores::{ExperimentalOssSpec, OssDnsResolver};
-    let base = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
-    let spec: ExperimentalOssSpec = serde_json5::from_str(base).unwrap();
-    assert_eq!(spec.dns_resolver, OssDnsResolver::Hickory);
-    let mut config: serde_json::Value = serde_json::from_str(base).unwrap();
-    config["dns_resolver"] = "system".into();
-    let spec: ExperimentalOssSpec = serde_json::from_value(config.clone()).unwrap();
-    assert_eq!(spec.dns_resolver, OssDnsResolver::System);
-    config["dns_resolver"] = "unknown".into();
-    assert!(serde_json::from_value::<ExperimentalOssSpec>(config).is_err());
-}
