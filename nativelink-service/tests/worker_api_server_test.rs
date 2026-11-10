@@ -429,7 +429,7 @@ pub async fn server_does_not_timeout_if_execute_complete_test()
     assert_eq!(evicted_operation_id, operation_id);
     assert_eq!(evicted_worker_id, test_context.worker_id);
     assert!(
-        matches!(evicted_update, UpdateOperationType::UpdateWithDisconnect),
+        matches!(evicted_update, UpdateOperationType::UpdateWithDisconnect(_)),
         "expected the running action to be requeued as a lost worker, got {evicted_update:?}"
     );
     assert!(
@@ -494,7 +494,10 @@ pub async fn stream_end_requeues_running_actions_as_disconnect_test()
         .await;
     assert_eq!(evicted_operation_id, operation_id);
     assert_eq!(evicted_worker_id, test_context.worker_id);
-    assert_eq!(evicted_update, UpdateOperationType::UpdateWithDisconnect);
+    assert_eq!(
+        evicted_update,
+        UpdateOperationType::UpdateWithDisconnect(None)
+    );
     assert!(
         !test_context
             .scheduler

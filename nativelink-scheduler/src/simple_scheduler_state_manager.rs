@@ -465,6 +465,10 @@ pub struct RetryLimits {
     /// Command timeouts queued again for another worker; 0 keeps the
     /// first timeout final.
     pub max_timeout_retries: usize,
+    /// Worker losses before each further re-dispatch also steps the
+    /// action's memory reservation up, the way a reported kill would;
+    /// 0 re-dispatches at the same reservation every time.
+    pub escalate_after_worker_losses: usize,
 }
 
 impl RetryLimits {
@@ -484,6 +488,7 @@ impl From<usize> for RetryLimits {
             max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
             max_escalations: 0,
             max_timeout_retries: Self::DEFAULT_TIMEOUT_RETRIES,
+            escalate_after_worker_losses: 0,
         }
     }
 }
@@ -522,6 +527,11 @@ where
         help = "Maximum number of times a job is queued again for another worker after its command timed out"
     )]
     max_timeout_retries: usize,
+
+    #[metric(
+        help = "Worker losses before a re-dispatch also steps the memory reservation up; 0 never does"
+    )]
+    escalate_after_worker_losses: usize,
 
     /// Duration after which an action is considered to be timed out if
     /// no event is received.
@@ -576,6 +586,7 @@ where
             max_worker_loss_retries,
             max_escalations,
             max_timeout_retries,
+            escalate_after_worker_losses,
         } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
             action_db,
@@ -583,6 +594,7 @@ where
             max_worker_loss_retries,
             max_escalations,
             max_timeout_retries,
+            escalate_after_worker_losses,
             no_event_action_timeout,
             client_action_timeout,
             max_executing_timeout,
@@ -1249,7 +1261,7 @@ where
                 ActionStage::Unknown => "Stage:Unknown",
             },
             UpdateOperationType::UpdateWithError(_) => "Error",
-            UpdateOperationType::UpdateWithDisconnect => "Disconnect",
+            UpdateOperationType::UpdateWithDisconnect(_) => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
             UpdateOperationType::UpdateWithDecline(_) => "Decline",
             UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
@@ -1330,7 +1342,8 @@ where
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
                 match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
+                    UpdateOperationType::UpdateWithDisconnect(_)
+                    | UpdateOperationType::KeepAlive => {
                         // No need to error a keep-alive when it's completed, it's just
                         // unnecessary log noise.
                         return Ok(());
@@ -1348,7 +1361,7 @@ where
 
             // A disconnect for an operation no worker holds any more (the
             // executing sweep requeued it) must not spend a worker loss.
-            if matches!(update, UpdateOperationType::UpdateWithDisconnect)
+            if matches!(update, UpdateOperationType::UpdateWithDisconnect(_))
                 && awaited_action.worker_id().is_none()
             {
                 return Ok(());
@@ -1487,7 +1500,7 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => {
+                UpdateOperationType::UpdateWithDisconnect(loss_escalation) => {
                     // A lost worker (OOM-killed as a whole, pod evicted,
                     // network drop, timed out) is usually not this action's
                     // doing, so it has its own budget rather than spending
@@ -1515,6 +1528,35 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        // A pod-level OOM kill takes the worker whole and
+                        // reports nothing, so it never escalates on its own.
+                        // Past the policy's loss threshold, the re-dispatch
+                        // steps the reservation the way a reported kill
+                        // would; a loss that was not the action's doing
+                        // costs one step of overshoot, bounded by the
+                        // fleet's ceiling.
+                        if self.escalate_after_worker_losses > 0
+                            && awaited_action.worker_losses >= self.escalate_after_worker_losses
+                            && let Some(escalation) = loss_escalation
+                        {
+                            warn!(
+                                %operation_id,
+                                worker_losses = awaited_action.worker_losses,
+                                escalated_value = escalation.value,
+                                property = %escalation.property,
+                                "Worker lost repeatedly under this action; requeuing it with a larger reservation"
+                            );
+                            let mut action_info = (**awaited_action.action_info()).clone();
+                            action_info
+                                .platform_properties
+                                .insert(escalation.property.clone(), escalation.value.to_string());
+                            if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+                                action_info
+                                    .platform_properties
+                                    .insert(cpu_property.clone(), cpu_value.to_string());
+                            }
+                            awaited_action.set_action_info(Arc::new(action_info));
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }

@@ -60,6 +60,41 @@ fn make_scheduler_with_ladder(
     make_scheduler_with_limits(max_job_retries, ladder_kb, 0)
 }
 
+/// A fleet where losses escalate: the policy steps the reservation from
+/// the second loss, the action needs a `gpu` worker, and a gpu-less
+/// bystander holds the fleet's memory ceiling while the gpu worker is
+/// being lost.
+fn make_loss_escalation_scheduler() -> (Arc<SimpleScheduler>, Arc<dyn WorkerScheduler>) {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let spec = SimpleSpec {
+        supported_platform_properties: Some(HashMap::from([
+            ("memory_kb".to_string(), PropertyType::Minimum),
+            ("gpu".to_string(), PropertyType::Exact),
+        ])),
+        memory_escalation: Some(MemoryEscalationSpec {
+            property: "memory_kb".to_string(),
+            percent: 200,
+            max_kb: 0,
+            ladder_kb: vec![1_000, 4_000, 9_000],
+            cpu_property: "cpu_count".to_string(),
+            max_steps: 0,
+            escalate_after_worker_losses: 2,
+        }),
+        max_job_retries: 5,
+        max_worker_loss_retries: 2,
+        ..SimpleSpec::default()
+    };
+    SimpleScheduler::new_with_callback(
+        &spec,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    )
+}
+
 fn make_scheduler_with_limits(
     max_job_retries: usize,
     ladder_kb: Vec<u64>,
@@ -79,6 +114,7 @@ fn make_scheduler_with_limits(
             ladder_kb,
             cpu_property: "cpu_count".to_string(),
             max_steps,
+            escalate_after_worker_losses: 0,
         }),
         max_job_retries,
         max_worker_loss_retries: 2,
@@ -98,13 +134,26 @@ async fn add_worker(
     scheduler: &SimpleScheduler,
     memory_kb: u64,
 ) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::channel(64);
-    let worker = Worker::new(
-        WorkerId(WORKER.to_string()),
-        PlatformProperties::new(HashMap::from([(
+    add_worker_with_props(
+        scheduler,
+        WORKER,
+        HashMap::from([(
             "memory_kb".to_string(),
             PlatformPropertyValue::Minimum(memory_kb),
-        )])),
+        )]),
+    )
+    .await
+}
+
+async fn add_worker_with_props(
+    scheduler: &SimpleScheduler,
+    name: &str,
+    properties: HashMap<String, PlatformPropertyValue>,
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
+    let worker = Worker::new(
+        WorkerId(name.to_string()),
+        PlatformProperties::new(properties),
         tx,
         NOW_TIME,
         /* max_inflight_tasks */ 4,
@@ -152,6 +201,23 @@ async fn report_memory_kill(
     operation_id: &str,
     reserved_kb: u64,
 ) -> Result<(), Error> {
+    report_memory_kill_with_peak(
+        worker_scheduler,
+        operation_id,
+        reserved_kb,
+        reserved_kb + reserved_kb / 5,
+    )
+    .await
+}
+
+/// The same kill, with the peak the sampler saw stated explicitly: a fast
+/// grower can be well past its reservation by the time the kill lands.
+async fn report_memory_kill_with_peak(
+    worker_scheduler: &dyn WorkerScheduler,
+    operation_id: &str,
+    reserved_kb: u64,
+    peak_kb: u64,
+) -> Result<(), Error> {
     let worker_id = WorkerId(WORKER.to_string());
     let operation_id = OperationId::from(operation_id);
     worker_scheduler
@@ -159,7 +225,7 @@ async fn report_memory_kill(
             &worker_id,
             &operation_id,
             ActionResourceUsage {
-                peak_memory_kb: reserved_kb + reserved_kb / 5,
+                peak_memory_kb: peak_kb,
                 sampled: true,
                 outcome: ResourceOutcome::KilledMemory.into(),
                 enforced: true,
@@ -198,9 +264,10 @@ async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> Actio
     }
 }
 
-/// A memory kill doubles the reservation and runs the action again; the
-/// doubling stops at the largest memory any worker advertises; a kill at
-/// that ceiling fails the action with the worker's own error.
+/// A memory kill doubles what the action was seen to use (its sampled
+/// peak, at least its reservation) and runs it again; the doubling stops
+/// at the largest memory any worker advertises; a kill at that ceiling
+/// fails the action with the worker's own error.
 #[nativelink_test]
 async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Result<(), Error> {
     let (scheduler, worker_scheduler) = make_scheduler(5);
@@ -224,12 +291,12 @@ async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Resu
     report_memory_kill(worker_scheduler.as_ref(), &first.operation_id, 2_000).await?;
 
     let (second, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 4_000, "the reservation doubles after a kill");
+    assert_eq!(memory, 4_800, "double the sampled peak (2400) after a kill");
     assert_eq!(
         second.operation_id, first.operation_id,
         "same operation, asking for more"
     );
-    report_memory_kill(worker_scheduler.as_ref(), &second.operation_id, 4_000).await?;
+    report_memory_kill(worker_scheduler.as_ref(), &second.operation_id, 4_800).await?;
 
     let (third, memory) = next_dispatch(&mut rx).await;
     assert_eq!(memory, 5_000, "capped at the largest worker");
@@ -267,16 +334,16 @@ async fn escalation_does_not_spend_the_retry_budget() -> Result<(), Error> {
         .await?;
     tokio::task::yield_now().await;
 
-    let mut reserved = 1_000;
-    for _ in 0..4 {
+    // Each kill reports a peak of reservation + 20%, and the step doubles
+    // that peak.
+    for reserved in [1_000, 2_400, 5_760, 13_824] {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
     }
     // Four kills, four requeues, on a budget of one: still running.
     let (_, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 16_000);
+    assert_eq!(memory, 33_176);
     Ok(())
 }
 
@@ -300,12 +367,10 @@ async fn escalation_stops_at_max_steps() -> Result<(), Error> {
         .await?;
     tokio::task::yield_now().await;
 
-    let mut reserved = 1_000;
-    for _ in 0..3 {
+    for reserved in [1_000, 2_400, 5_760] {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
     }
 
     let result = wait_for_completion(&mut listener).await;
@@ -398,5 +463,112 @@ async fn escalation_steps_the_ladder_then_takes_the_whole_worker() -> Result<(),
     let err = result.error.expect("nothing above the whole worker");
     assert_eq!(err.code, Code::FailedPrecondition, "{err}");
     assert!(err.to_string().contains("no worker can run it"), "{err}");
+    Ok(())
+}
+
+/// The step clears the kill's sampled peak, not just its reservation: a
+/// fast-growing action killed far past what it held is never handed a
+/// reservation the scheduler already watched it exceed.
+#[nativelink_test]
+async fn escalation_steps_past_the_sampled_peak() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_ladder(5, vec![1_000, 4_000, 9_000]);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([5; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), "1500".to_string())]),
+        ..(*base).clone()
+    });
+    let _listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+
+    let (first, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_500);
+    // The sampler caught it at 5000 KiB: past the 4000 class entirely.
+    report_memory_kill_with_peak(worker_scheduler.as_ref(), &first.operation_id, 1_500, 5_000)
+        .await?;
+
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(
+        memory, 9_000,
+        "the class above the 5000 peak, not the one above the 1500 reservation"
+    );
+    Ok(())
+}
+
+/// A worker lost whole (a pod-level OOM kill) reports nothing, so no
+/// `KILLED_MEMORY` ever escalates it. With `escalate_after_worker_losses`
+/// the second loss steps the reservation up the ladder exactly as a
+/// reported kill would, instead of re-dispatching at a size that keeps
+/// taking workers down.
+#[nativelink_test]
+async fn repeated_worker_losses_step_the_reservation() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_loss_escalation_scheduler();
+    // The bystander holds the fleet's ceiling but can never run the gpu
+    // action, so every dispatch goes to the gpu worker.
+    let _bystander = add_worker_with_props(
+        &scheduler,
+        "bystander",
+        HashMap::from([(
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(9_500),
+        )]),
+    )
+    .await?;
+    let gpu_props = HashMap::from([
+        (
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(9_500),
+        ),
+        (
+            "gpu".to_string(),
+            PlatformPropertyValue::Exact("1".to_string()),
+        ),
+    ]);
+    let mut rx = add_worker_with_props(&scheduler, WORKER, gpu_props.clone()).await?;
+
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([6; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([
+            ("memory_kb".to_string(), "1500".to_string()),
+            ("gpu".to_string(), "1".to_string()),
+        ]),
+        ..(*base).clone()
+    });
+    let _listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+
+    // The first loss is under the threshold: re-dispatched unchanged.
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_500);
+    worker_scheduler
+        .remove_worker(&WorkerId(WORKER.to_string()))
+        .await?;
+    tokio::task::yield_now().await;
+    rx = add_worker_with_props(&scheduler, WORKER, gpu_props.clone()).await?;
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_500, "the first loss re-dispatches unchanged");
+
+    // The second loss crosses the threshold: the reservation steps up.
+    worker_scheduler
+        .remove_worker(&WorkerId(WORKER.to_string()))
+        .await?;
+    tokio::task::yield_now().await;
+    rx = add_worker_with_props(&scheduler, WORKER, gpu_props).await?;
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(
+        memory, 4_000,
+        "the second loss steps to the class above 1500"
+    );
     Ok(())
 }

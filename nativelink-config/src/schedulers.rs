@@ -599,8 +599,10 @@ pub struct MemoryEscalationSpec {
     #[serde(default = "default_historical_resource_memory_property_name")]
     pub property: String,
 
-    /// Each kill scales the reservation by this factor, in hundredths:
-    /// 200 doubles it, 150 adds half.
+    /// Each kill scales the next reservation by this factor, in hundredths:
+    /// 200 doubles it, 150 adds half. The step grows the larger of the
+    /// killed reservation and the kill's sampled peak, so it never lands
+    /// at or under memory the action was already seen to use.
     /// Default: 200
     #[serde(default = "default_memory_escalation_percent")]
     pub percent: u64,
@@ -612,7 +614,8 @@ pub struct MemoryEscalationSpec {
     pub max_kb: u64,
 
     /// The memory values of the fleet's size classes, ascending, in KiB.
-    /// When set, a kill steps the reservation to the next class above it
+    /// When set, a kill steps the reservation to the next class above the
+    /// larger of the killed reservation and the kill's sampled peak
     /// instead of scaling by `percent`; past the top class the last step
     /// reserves the largest worker whole. The chart fills this from the
     /// same classes the `historical_resource` scheduler uses.
@@ -633,6 +636,17 @@ pub struct MemoryEscalationSpec {
     /// Default: 8
     #[serde(default = "default_memory_escalation_max_steps")]
     pub max_steps: u64,
+
+    /// A worker lost whole (its pod OOM-killed, evicted, its node gone)
+    /// reports no memory usage, so a pod-level kill never escalates on its
+    /// own. Once the same action has lost this many workers, each further
+    /// re-dispatch also steps its reservation up, exactly as a reported
+    /// kill would: a loss that was not the action's doing costs one step
+    /// of overshoot, bounded by the fleet's largest worker. 0 re-dispatches
+    /// at the same reservation every time.
+    /// Default: 2
+    #[serde(default = "default_memory_escalation_after_worker_losses")]
+    pub escalate_after_worker_losses: u64,
 }
 
 fn default_memory_escalation_cpu_property() -> String {
@@ -645,6 +659,10 @@ const fn default_memory_escalation_max_steps() -> u64 {
 
 const fn default_memory_escalation_percent() -> u64 {
     200
+}
+
+const fn default_memory_escalation_after_worker_losses() -> u64 {
+    2
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]

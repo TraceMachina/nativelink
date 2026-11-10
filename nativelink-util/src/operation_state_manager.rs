@@ -154,8 +154,12 @@ pub enum UpdateOperationType {
     /// Notification that the operation has been completed.
     UpdateWithError(Error),
 
-    /// Notification that the worker disconnected.
-    UpdateWithDisconnect,
+    /// Notification that the worker disconnected. A worker lost whole (a
+    /// pod-level OOM kill, an eviction) reports no memory usage, so the
+    /// escalation to apply — once the operation's loss count crosses the
+    /// policy's threshold — travels with the disconnect, computed while
+    /// the fleet was at hand.
+    UpdateWithDisconnect(Option<Escalation>),
 
     /// Notification that the execution stage has completed and it's just IO happening now.
     ExecutionComplete,

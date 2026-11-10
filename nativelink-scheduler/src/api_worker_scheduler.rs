@@ -59,11 +59,29 @@ use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
 
+/// What the escalation policy yields for an action, relative to the
+/// connected fleet.
+enum NextReservation {
+    /// No policy, or no connected worker advertises the property.
+    NoStep,
+    /// No reservation and nothing sampled: nothing to grow from.
+    NothingToGrow,
+    /// The action already holds the fleet's largest worker whole; nothing
+    /// above it exists.
+    AtCeiling { ceiling_kb: u64 },
+    /// The raised reservation and, when it lands at the ceiling, the CPU
+    /// that reserves the worker whole.
+    Step {
+        value: u64,
+        cpu: Option<(String, u64)>,
+    },
+}
+
 /// Why an update ends the attempt it is about, and the error behind it;
 /// `None` for an update that keeps or completes the attempt.
 fn attempt_end_reason(update: &UpdateOperationType) -> Option<(AttemptEndReason, String)> {
     match update {
-        UpdateOperationType::UpdateWithDisconnect => {
+        UpdateOperationType::UpdateWithDisconnect(_) => {
             Some((AttemptEndReason::WorkerLost, String::new()))
         }
         UpdateOperationType::UpdateWithEscalation(escalation) => Some((
@@ -1755,6 +1773,98 @@ impl ApiWorkerSchedulerImpl {
                 }
             })
             .unwrap_or(0);
+        // Grow from what the action reached, not just what it held: a kill
+        // report can carry a sampled peak well past the reservation, and a
+        // step at or under that peak is a reservation already known to be
+        // too small — the next run is killed again at best, and at worst
+        // outruns the sampler and takes the whole worker down with it.
+        let floor_kb = reserved_kb.max(usage.peak_memory_kb);
+        match self.next_reservation(
+            &pending.action_info.platform_properties,
+            reserved_kb,
+            floor_kb,
+        ) {
+            NextReservation::NoStep => (update, false),
+            NextReservation::NothingToGrow => {
+                // Scaling zero would hand out the smallest steps the ladder
+                // or the percent allow and burn the budget on them.
+                warn!(
+                    ?worker_id,
+                    ?operation_id,
+                    "Action killed for memory with no reservation and no sampled peak; not escalating"
+                );
+                (update, false)
+            }
+            // The last step reserves the largest worker whole, so nothing
+            // shares the worker with the action. A kill there is the end:
+            // no worker in the fleet can run the action, and the client
+            // hears exactly that.
+            NextReservation::AtCeiling { ceiling_kb } => {
+                warn!(
+                    ?worker_id,
+                    ?operation_id,
+                    reserved_kb,
+                    ceiling_kb,
+                    "Action killed for memory with the largest worker reserved whole; no worker in the fleet can run it"
+                );
+                let mut failed = result.clone();
+                let no_worker = make_err!(
+                    Code::FailedPrecondition,
+                    "Action was killed for memory at {reserved_kb} KiB with the largest worker in the fleet ({ceiling_kb} KiB) reserved for it alone; no worker can run it. It needs a bigger worker or less memory"
+                );
+                failed.error = Some(match result.error.clone() {
+                    Some(worker_error) => no_worker.merge(worker_error),
+                    None => no_worker,
+                });
+                (
+                    UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(failed)),
+                    false,
+                )
+            }
+            NextReservation::Step { value, cpu } => {
+                let reason = result.error.clone().unwrap_or_else(|| {
+                    make_err!(
+                        Code::FailedPrecondition,
+                        "Action was killed for memory at {} KiB",
+                        usage.peak_memory_kb
+                    )
+                });
+                warn!(
+                    ?worker_id,
+                    ?operation_id,
+                    reserved_kb,
+                    peak_memory_kb = usage.peak_memory_kb,
+                    escalated_kb = value,
+                    property = %policy.property,
+                    "Action killed for memory; requeuing with a larger reservation"
+                );
+                (
+                    UpdateOperationType::UpdateWithEscalation(Escalation {
+                        property: policy.property.clone(),
+                        value,
+                        reason,
+                        cpu,
+                    }),
+                    true,
+                )
+            }
+        }
+    }
+
+    /// The next reservation step for an action now holding `reserved_kb`:
+    /// with a ladder the class strictly above `floor_kb`, else `floor_kb`
+    /// scaled by `percent`, capped at the fleet's ceiling. `floor_kb` is
+    /// what the step must clear — at least the reservation, and the
+    /// sampled peak when a kill reported one.
+    fn next_reservation(
+        &self,
+        platform_properties: &PlatformProperties,
+        reserved_kb: u64,
+        floor_kb: u64,
+    ) -> NextReservation {
+        let Some(policy) = &self.memory_escalation else {
+            return NextReservation::NoStep;
+        };
         let (fleet_memory_kb, fleet_cpu) =
             self.fleet_largest_worker(&policy.property, &policy.cpu_property);
         // `max_kb` caps the fleet's ceiling; it cannot raise it past what a
@@ -1765,78 +1875,35 @@ impl ApiWorkerSchedulerImpl {
             fleet_memory_kb
         };
         if ceiling_kb == 0 {
-            return (update, false);
+            return NextReservation::NoStep;
         }
-        // The last step reserves the largest worker whole: its memory and,
-        // when the fleet advertises one, its CPU, so nothing shares the
-        // worker with the action. A kill there is the end: no worker in
-        // the fleet can run the action, and the client hears exactly that.
-        let cpu_held = match pending
-            .action_info
-            .platform_properties
-            .properties
-            .get(&policy.cpu_property)
-        {
+        let cpu_held = match platform_properties.properties.get(&policy.cpu_property) {
             Some(PlatformPropertyValue::Minimum(cores)) => *cores,
             _ => 0,
         };
         let whole_worker_cpu = fleet_cpu.filter(|cores| *cores > 0);
-        let already_whole =
-            reserved_kb >= ceiling_kb && whole_worker_cpu.is_none_or(|cores| cpu_held >= cores);
-        if already_whole {
-            warn!(
-                ?worker_id,
-                ?operation_id,
-                reserved_kb,
-                ceiling_kb,
-                "Action killed for memory with the largest worker reserved whole; no worker in the fleet can run it"
-            );
-            let mut failed = result.clone();
-            let no_worker = make_err!(
-                Code::FailedPrecondition,
-                "Action was killed for memory at {reserved_kb} KiB with the largest worker in the fleet ({ceiling_kb} KiB) reserved for it alone; no worker can run it. It needs a bigger worker or less memory"
-            );
-            failed.error = Some(match result.error.clone() {
-                Some(worker_error) => no_worker.merge(worker_error),
-                None => no_worker,
-            });
-            return (
-                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(failed)),
-                false,
-            );
+        if reserved_kb >= ceiling_kb && whole_worker_cpu.is_none_or(|cores| cpu_held >= cores) {
+            return NextReservation::AtCeiling { ceiling_kb };
         }
-        let base_kb = if reserved_kb > 0 {
-            reserved_kb
-        } else {
-            usage.peak_memory_kb
-        };
-        if base_kb == 0 {
-            // Nothing to grow from: no reservation and an unsampled kill.
-            // Scaling zero would hand out the smallest steps the ladder or
-            // the percent allow and burn the budget on them.
-            warn!(
-                ?worker_id,
-                ?operation_id,
-                "Action killed for memory with no reservation and no sampled peak; not escalating"
-            );
-            return (update, false);
+        if floor_kb == 0 {
+            return NextReservation::NothingToGrow;
         }
         // With a ladder the next class up; without one, scale. Past the
         // top class or the ceiling, the whole worker.
         let next = if policy.ladder_kb.is_empty() {
             Some(
-                base_kb
+                floor_kb
                     .saturating_mul(policy.percent)
                     .checked_div(100)
-                    .unwrap_or(base_kb)
-                    .max(base_kb.saturating_add(1)),
+                    .unwrap_or(floor_kb)
+                    .max(floor_kb.saturating_add(1)),
             )
         } else {
             policy
                 .ladder_kb
                 .iter()
                 .copied()
-                .filter(|kb| *kb > base_kb)
+                .filter(|kb| *kb > floor_kb)
                 .min()
         };
         let value = next.map_or(ceiling_kb, |kb| kb.min(ceiling_kb));
@@ -1845,32 +1912,44 @@ impl ApiWorkerSchedulerImpl {
         } else {
             None
         };
-        let reason = result.error.clone().unwrap_or_else(|| {
-            make_err!(
-                Code::FailedPrecondition,
-                "Action was killed for memory at {} KiB",
-                usage.peak_memory_kb
-            )
-        });
-        warn!(
-            ?worker_id,
-            ?operation_id,
-            reserved_kb,
-            peak_memory_kb = usage.peak_memory_kb,
-            escalated_kb = value,
-            ceiling_kb,
-            property = %policy.property,
-            "Action killed for memory; requeuing with a larger reservation"
-        );
-        (
-            UpdateOperationType::UpdateWithEscalation(Escalation {
+        NextReservation::Step { value, cpu }
+    }
+
+    /// The escalation a repeated worker loss should carry for this action:
+    /// the step above what it already holds, computed here while the
+    /// policy and the fleet are at hand. The state manager applies it only
+    /// once the action's loss count crosses the policy's
+    /// `escalate_after_worker_losses`; `None` (no policy, the feature off,
+    /// nothing to grow from, or the ceiling already held) re-dispatches at
+    /// the same reservation.
+    fn loss_escalation(
+        &self,
+        platform_properties: &PlatformProperties,
+        err: &Error,
+    ) -> Option<Escalation> {
+        let policy = self.memory_escalation.as_ref()?;
+        if policy.escalate_after_worker_losses == 0 {
+            return None;
+        }
+        let reserved_kb = match platform_properties.properties.get(&policy.property) {
+            Some(PlatformPropertyValue::Minimum(kb)) => *kb,
+            _ => 0,
+        };
+        match self.next_reservation(platform_properties, reserved_kb, reserved_kb) {
+            NextReservation::Step { value, cpu } => Some(Escalation {
                 property: policy.property.clone(),
                 value,
-                reason,
+                reason: make_err!(
+                    Code::FailedPrecondition,
+                    "The worker running this action was lost; a pod-level kill reports no memory usage, so the reservation is raised from {reserved_kb} KiB"
+                )
+                .merge(err.clone()),
                 cpu,
             }),
-            true,
-        )
+            NextReservation::NoStep
+            | NextReservation::NothingToGrow
+            | NextReservation::AtCeiling { .. } => None,
+        }
     }
 
     async fn update_action(
@@ -1893,7 +1972,7 @@ impl ApiWorkerSchedulerImpl {
             if matches!(
                 update,
                 UpdateOperationType::UpdateWithDecline(_)
-                    | UpdateOperationType::UpdateWithDisconnect
+                    | UpdateOperationType::UpdateWithDisconnect(_)
             ) {
                 self.note_hold_dispatched(&action, false);
             } else {
@@ -1963,7 +2042,7 @@ impl ApiWorkerSchedulerImpl {
             // A decline pauses like backpressure: the worker said it has no
             // room, so it gets nothing more until it says otherwise.
             UpdateOperationType::UpdateWithDecline(_) => (true, true),
-            UpdateOperationType::UpdateWithDisconnect
+            UpdateOperationType::UpdateWithDisconnect(_)
             | UpdateOperationType::UpdateWithEscalation(_) => (true, false),
             UpdateOperationType::ExecutionComplete => {
                 // The process has exited but the action is still resident on
@@ -2191,7 +2270,7 @@ impl ApiWorkerSchedulerImpl {
                 .update_operation(
                     &operation_id,
                     &worker_id,
-                    UpdateOperationType::UpdateWithDisconnect,
+                    UpdateOperationType::UpdateWithDisconnect(None),
                 )
                 .await
         }
@@ -2459,7 +2538,6 @@ impl ApiWorkerSchedulerImpl {
             // out, a command to it failed, an operator removed it), the
             // action running on it did nothing wrong: it is a worker loss
             // with its own budget, not an attempt the action spent.
-            let update = UpdateOperationType::UpdateWithDisconnect;
             for (operation_id, pending) in worker.running_action_infos.drain() {
                 // The worker can still hold an operation the executing sweep
                 // already timed out or that finished; that attempt was
@@ -2472,9 +2550,16 @@ impl ApiWorkerSchedulerImpl {
                 ) {
                     continue;
                 }
+                // A repeated loss may be the action OOM-killing its pod,
+                // which reports nothing: the step to apply, should the
+                // state manager's loss count say so, travels with the
+                // disconnect.
+                let update = UpdateOperationType::UpdateWithDisconnect(
+                    self.loss_escalation(&pending.action_info.platform_properties, &err),
+                );
                 let update_res = self
                     .worker_state_manager
-                    .update_operation(&operation_id, worker_id, update.clone())
+                    .update_operation(&operation_id, worker_id, update)
                     .await;
                 // An operation the worker was told to kill was already
                 // given up on; its loss is not a lost attempt.
