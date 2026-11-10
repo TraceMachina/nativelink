@@ -18,6 +18,10 @@ use std::env;
 use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
+use base64::alphabet;
+use base64::engine::DecodePaddingMode;
+use base64::engine::GeneralPurpose;
+use base64::engine::GeneralPurposeConfig;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
@@ -472,12 +476,18 @@ fn with_transport<B: WithTonicConfig>(
 /// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
 const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requestmetadata-bin";
 
-/// Decodes a gRPC binary (`-bin`) header value. The gRPC wire spec
-/// (PROTOCOL-HTTP2.md) says implementations "MUST accept padded and
-/// un-padded values", so trailing `=` padding is stripped before decoding.
+/// Standard base64 that decodes with or without `=` padding. The gRPC wire
+/// spec (PROTOCOL-HTTP2.md) says implementations "MUST accept padded and
+/// un-padded values" for binary (`-bin`) headers, while `BASE64_STANDARD`
+/// requires padding and `BASE64_STANDARD_NO_PAD` rejects it.
+const BINARY_HEADER_ENGINE: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
+
+/// Decodes a gRPC binary (`-bin`) header value, padded or not.
 fn decode_binary_header(value: &[u8]) -> Result<Vec<u8>, base64::DecodeError> {
-    let end = value.iter().rposition(|&b| b != b'=').map_or(0, |i| i + 1);
-    BASE64_STANDARD_NO_PAD.decode(&value[..end])
+    BINARY_HEADER_ENGINE.decode(value)
 }
 
 use opentelemetry::baggage::BaggageExt;
