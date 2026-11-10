@@ -2,7 +2,7 @@
 name: CI / Bazel
 
 on:
-  # Check Bazel 8 compatibility and Redis topologies before merging.
+  # Check Redis topologies before merging; Bazel 8 runs on the daily schedule.
   # CI / NativeLink runs the project-pinned Bazel suite separately.
   # Web-only changes are covered by CI / Web and skip the Bazel lanes.
   pull_request:
@@ -27,12 +27,9 @@ concurrency:
 
 jobs:
   unit-tests:
-    # Bazel 8 compatibility is informational, not a per-change correctness
-    # gate: the pinned Bazel 9 suite runs on every pull request, and a
-    # compatibility regression is caught on the merge itself or by the
-    # nightly schedule. Keeping this lane off the pull-request path removes
-    # its runner cost and remote-cache flake surface from every PR.
-    if: ${{ github.event_name != 'pull_request' }}
+    # Check Bazel 8 on the nightly schedule or by manual dispatch. The pinned
+    # Bazel 9 suite continues to test pull requests and branch pushes.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
