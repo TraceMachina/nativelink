@@ -100,7 +100,7 @@ which kills an action nobody is listening to.
 | `max_batch_total_size_bytes` | the listener's `max_decoding_message_size` less 1/16 (3.75 MiB with the 4 MiB default) |
 | `max_cas_blob_size_bytes` | the instance's CAS store upload limit when the store reports one (for example S3, GCS or Azure used directly); 0, meaning no limit, otherwise |
 | `symlink_absolute_path_strategy` | `DISALLOWED` |
-| `update_enabled` (action cache) | `true` |
+| `update_enabled` (action cache) | `false` when every `ac` entry for the instance sets `read_only: true`; `true` otherwise, including when the instance has no `ac` entry |
 | `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
 | `split_blob_support`, `splice_blob_support`, `fast_cdc_2020_params` | set when the instance's `cas` entry configures `experimental_chunking`; otherwise `false`/unset |
 | `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX`, with higher values running sooner (see [intentional deviations](#intentional-deviations)) |

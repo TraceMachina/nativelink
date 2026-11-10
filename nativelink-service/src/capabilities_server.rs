@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nativelink_config::cas_server::{
-    CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
+    AcStoreConfig, CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
 };
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
@@ -72,6 +72,9 @@ pub struct CapabilitiesServer {
     // reports none.
     max_cas_blob_size_for_instance: HashMap<InstanceName, i64>,
     max_batch_total_size_bytes: i64,
+    // Instances whose every Action Cache entry is `read_only`. They advertise
+    // `update_enabled: false`, since `UpdateActionResult` refuses them.
+    read_only_ac_instances: HashSet<InstanceName>,
 }
 
 impl CapabilitiesServer {
@@ -82,6 +85,7 @@ impl CapabilitiesServer {
         cas_configs: &[WithInstanceName<CasStoreConfig>],
         store_manager: &StoreManager,
         max_decoding_message_size: usize,
+        ac_configs: &[WithInstanceName<AcStoreConfig>],
     ) -> Result<Self, Error> {
         let mut max_cas_blob_size_for_instance = HashMap::new();
         for cas_config in cas_configs {
@@ -92,6 +96,21 @@ impl CapabilitiesServer {
                 );
             }
         }
+
+        // An instance is read-only only if it has an Action Cache and every
+        // entry for it is `read_only`. An instance with no Action Cache here
+        // keeps `update_enabled: true`: it may be served by another process.
+        let mut read_only_ac_instances = HashSet::new();
+        let mut writable_ac_instances = HashSet::new();
+        for ac_config in ac_configs {
+            if ac_config.read_only {
+                read_only_ac_instances.insert(ac_config.instance_name.clone());
+            } else {
+                writable_ac_instances.insert(ac_config.instance_name.clone());
+            }
+        }
+        read_only_ac_instances.retain(|name| !writable_ac_instances.contains(name));
+
         let mut chunking_params_for_instance = HashMap::new();
         for cas_config in cas_configs {
             if let Some(chunking_config) = &cas_config.experimental_chunking {
@@ -144,6 +163,7 @@ impl CapabilitiesServer {
             chunking_params_for_instance,
             max_cas_blob_size_for_instance,
             max_batch_total_size_bytes: max_batch_total_size_bytes(max_decoding_message_size),
+            read_only_ac_instances,
         })
     }
 
@@ -205,7 +225,7 @@ impl Capabilities for CapabilitiesServer {
                     DigestFunction::Blake3.into(),
                 ],
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities {
-                    update_enabled: true,
+                    update_enabled: !self.read_only_ac_instances.contains(&instance_name),
                 }),
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: self.max_batch_total_size_bytes,

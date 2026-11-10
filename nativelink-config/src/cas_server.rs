@@ -109,7 +109,7 @@ pub struct HttpCompressionConfig {
     pub accepted_compression_algorithms: Vec<HttpCompressionAlgorithm>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct AcStoreConfig {
