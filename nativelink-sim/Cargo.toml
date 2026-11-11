@@ -1,0 +1,61 @@
+#:schema ../tools/cargo-with-detailed-deps.json
+lints.workspace = true
+
+[package]
+edition = "2024"
+name = "nativelink-sim"
+version = "1.8.5"
+
+[dependencies]
+nativelink-config = { path = "../nativelink-config" }
+nativelink-error = { path = "../nativelink-error" }
+nativelink-proto = { path = "../nativelink-proto" }
+nativelink-redis-tester = { path = "../nativelink-redis-tester" }
+nativelink-scheduler = { path = "../nativelink-scheduler" }
+nativelink-service = { path = "../nativelink-service" }
+nativelink-store = { path = "../nativelink-store" }
+nativelink-util = { path = "../nativelink-util" }
+nativelink-worker = { path = "../nativelink-worker" }
+
+bytes = { version = "1.10.1", default-features = false }
+clap = { version = "4.5.35", features = [
+  "derive",
+  "error-context",
+  "help",
+  "std",
+  "usage",
+], default-features = false }
+futures = { version = "0.3.31", default-features = false }
+hyper = { version = "1.6.0", default-features = false }
+parking_lot = { version = "0.12.3", default-features = false }
+prost = { version = "0.14.4", default-features = false }
+prost-types = { version = "0.14.4", default-features = false }
+tokio = { version = "1.53.3", features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "test-util",
+  "time",
+], default-features = false }
+tokio-stream = { version = "0.1.17", default-features = false }
+tonic = { version = "0.14.0", default-features = false, features = [
+  "transport",
+] }
+tonic-prost = { version = "0.14.6", default-features = false }
+
+[dev-dependencies]
+nativelink-macro = { path = "../nativelink-macro" }
+
+tracing = { version = "0.1.41", default-features = false }
+tracing-test = { version = "0.2.5", default-features = false, features = [
+  "no-env-filter",
+] }
+
+[package.metadata.cargo-machete]
+# Used by nativelink_test macro
+ignored = ["tracing", "tracing-test"]
+
+[[bin]]
+name = "fleet-sim"
+path = "src/bin/fleet_sim.rs"

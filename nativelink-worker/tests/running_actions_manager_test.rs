@@ -6895,6 +6895,112 @@ exit 0
         Ok(())
     }
 
+    /// An action that grows after its first sample and ends well inside the
+    /// sampler's two second refresh still reports what it grew to: growth
+    /// alone makes a sample read the exact figure.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn a_short_action_reports_the_memory_it_grew_to()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // Small at the first sample, then a shell holding 100 MB in a
+        // variable for a moment, all over in under two seconds.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "sleep 0.5; s=$(head -c 100000000 /dev/zero | tr '\\0' a); sleep 0.6; echo ${#s}"
+                    .to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(result.exit_code, 0, "{result:?}");
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert!(
+            usage.peak_memory_kb >= 50_000,
+            "the 100 MB the shell held must show in its peak: {usage:?}"
+        );
+        Ok(())
+    }
+
     #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
@@ -10738,6 +10844,56 @@ done
         assert!(!window.observe(55.0, at(62)));
         assert!(!window.observe(55.0, at(91)));
         assert!(window.observe(55.0, at(92)));
+    }
+
+    /// A sample reuses the last exact memory figure, never above its RSS,
+    /// only while the RSS stays under 90% of the ceiling, within 10% of
+    /// where it was, and for under two seconds; a sample before any exact
+    /// figure must read one.
+    #[test]
+    fn exact_memory_is_reread_near_the_ceiling_on_drift_and_with_age() {
+        use nativelink_worker::running_actions_manager::ExactMemoryGate;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |millis| t0 + Duration::from_millis(millis);
+
+        let mut gate = ExactMemoryGate::new(Some(10_000));
+        assert_eq!(gate.reuse(1_000, at(0)), None, "nothing read yet");
+        gate.record(5_000, 2_000, at(0));
+        assert_eq!(gate.reuse(5_000, at(250)), Some(2_000));
+        assert_eq!(gate.reuse(5_500, at(250)), Some(2_000), "10% up");
+        assert_eq!(gate.reuse(4_500, at(250)), Some(2_000), "10% down");
+        assert_eq!(gate.reuse(5_501, at(250)), None, "over 10% up");
+        assert_eq!(gate.reuse(4_499, at(250)), None, "over 10% down");
+        assert_eq!(gate.reuse(5_000, at(1_999)), Some(2_000));
+        assert_eq!(gate.reuse(5_000, at(2_000)), None, "two seconds old");
+
+        gate.record(8_900, 8_900, at(0));
+        assert_eq!(gate.reuse(8_999, at(250)), Some(8_900), "under 90%");
+        assert_eq!(gate.reuse(9_000, at(250)), None, "at 90% of the ceiling");
+        assert_eq!(
+            gate.reuse(8_100, at(250)),
+            Some(8_100),
+            "never above the RSS"
+        );
+
+        let mut unlimited = ExactMemoryGate::new(None);
+        unlimited.record(50_000, 40_000, at(0));
+        assert_eq!(unlimited.reuse(50_000, at(250)), Some(40_000));
+    }
+
+    /// RFC-0018: the peak the keepalive reports only rises; the last figure
+    /// follows every sample.
+    #[test]
+    fn memory_watch_peak_is_monotonic() {
+        use nativelink_worker::running_actions_manager::ActionMemoryWatch;
+        let watch = ActionMemoryWatch::default();
+        assert_eq!(watch.peak_memory_kb(), 0, "nothing sampled yet");
+        for (sample, peak) in [(100, 100), (400, 400), (250, 400), (0, 400), (401, 401)] {
+            watch.observe(sample);
+            assert_eq!(watch.last_memory_kb(), sample);
+            assert_eq!(watch.peak_memory_kb(), peak, "after sampling {sample}");
+        }
     }
 
     /// The kill lands on the action furthest over its reservation, or the

@@ -5,13 +5,18 @@ exclude = [
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-sim"]
 resolver = "2"
 
 [package]
 edition = "2024"
 name = "nativelink"
 rust-version = "1.97.1"
-version = "1.8.3"
+version = "1.8.5"
+
+[package.metadata.cargo-machete]
+# Used by the nativelink_test macro in the binary's socket regression test.
+ignored = ["tracing-test"]
 
 [profile.release]
 lto = true
@@ -26,6 +31,10 @@ strip = true
 
 [[bin]]
 name = "nativelink"
+
+[lib]
+name = "nativelink"
+path = "src/lib.rs"
 
 [features]
 nix = ["nativelink-worker/nix"]
@@ -82,6 +91,15 @@ tonic = { version = "0.14.0", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+
+[dev-dependencies]
+nativelink-macro = { path = "nativelink-macro" }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] }
+tracing-test = { version = "0.2.5", default-features = false, features = [
+  "no-env-filter",
+] }
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]

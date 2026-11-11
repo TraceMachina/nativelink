@@ -14,8 +14,12 @@ NativeLink implements the [Remote Execution API](https://github.com/bazelbuild/r
 plus the adjacent protocols it depends on (ByteStream, long-running
 Operations, Remote Asset and the Build Event Protocol), and defines exactly
 one service of its own. Every vendored `.proto` under `nativelink-proto/` is
-copied from upstream with only its licence header replaced; there are no
+copied from upstream with its licence header replaced; there are no
 NativeLink-specific fields or extensions on the standard messages.
+`remote_execution.proto` is pinned to remote-apis
+[v2.12.0](https://github.com/bazelbuild/remote-apis/tree/9e084d0e43e717128ee72b5be584a7ba33e8006b)
+and keeps its five `[deprecated = true]` field options as comments, so the
+generated Rust code carries no `#[deprecated]` attributes on those fields.
 
 ## Services [#services]
 
@@ -99,7 +103,7 @@ which kills an action nobody is listening to.
 | `update_enabled` (action cache) | `true` |
 | `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
 | `split_blob_support`, `splice_blob_support`, `fast_cdc_2020_params` | set when the instance's `cas` entry configures `experimental_chunking`; otherwise `false`/unset |
-| `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX` |
+| `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX`, with higher values running sooner (see [intentional deviations](#intentional-deviations)) |
 
 <SourceLink file="nativelink-service/src/capabilities_server.rs" symbol="get_capabilities" />
 
@@ -151,8 +155,41 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
+**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
+an action is never answered from the Action Cache and never shares an
+execution with an identical action that is already running. The worker still
+writes its result to the Action Cache; that part is tracked in
+[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
+
+**Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
+request missing a digest it requires, is a client error, so every service
+answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
+`INTERNAL` with backoff but fail fast on `INVALID_ARGUMENT`.
+
+## Intentional deviations from the specification [#intentional-deviations]
+
+Two behaviors differ from what the REAPI or ByteStream text suggests. Both are
+deliberate, and changing either would break existing clients.
+
+**Higher priority values run sooner.** `ExecutionPolicy.priority` is
+server-defined, though the REAPI suggests that lower values run sooner.
+NativeLink orders its queue the other way: a queued action with a higher
+priority is dispatched first, and actions of equal priority go oldest first.
+The advertised range is 0 to `i32::MAX`, and Bazel rejects a
+`--remote_execution_priority` outside it. Reversing the order would invert
+every existing priority and reorder the scheduler's persisted queue index
+during a rolling upgrade.
+
+**`QueryWriteStatus` never answers `NOT_FOUND`.** `bytestream.proto` says an
+unknown resource returns `NOT_FOUND`. NativeLink instead answers
+`committed_size: 0, complete: false` for an upload it does not know, for
+example one whose first message never arrived, or one that reached a
+different instance behind a load balancer. Bazel's `ByteStreamUploader` fails
+the upload on `NOT_FOUND` but restarts it from offset 0 when told 0, so this
+answer lets the upload recover.
 
 ## Related [#related]
 

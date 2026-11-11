@@ -2,7 +2,7 @@
 name: CI / Bazel
 
 on:
-  # Check Bazel 8 compatibility and Redis topologies before merging.
+  # Check Redis topologies before merging; Bazel 8 runs on the daily schedule.
   # CI / NativeLink runs the project-pinned Bazel suite separately.
   # Web-only changes are covered by CI / Web and skip the Bazel lanes.
   pull_request:
@@ -27,6 +27,9 @@ concurrency:
 
 jobs:
   unit-tests:
+    # Check Bazel 8 on the nightly schedule or by manual dispatch. The pinned
+    # Bazel 9 suite continues to test pull requests and branch pushes.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,10 +89,15 @@ jobs:
         run: |
           # See .github/scripts/README-bazel8-lockfile.md for regeneration.
           cp MODULE.bazel8.lock MODULE.bazel.lock
-          ./tools/bazel-retry.sh test //... \
+          # The staging remote cache can drop a blob between its existence
+          # check and the consuming action ("lost inputs"). Let Bazel retry
+          # the invocation and re-execute the producers instead of failing.
+          # Bazel records the client environment; keep the job token out.
+          env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures
 
   redis-store-tester:
@@ -142,6 +150,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode sentinel --mode sequential
         env:
           RUST_LOG: trace
@@ -153,6 +162,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode standard --mode sequential
         env:
           RUST_LOG: trace
@@ -164,6 +174,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode cluster --mode sequential
         env:
           RUST_LOG: trace

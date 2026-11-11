@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_duration_with_shellexpand_and_negative, convert_numeric_with_shellexpand,
-    convert_string_with_shellexpand,
+    convert_optional_numeric_with_shellexpand, convert_string_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
@@ -349,6 +349,12 @@ pub struct SimpleSpec {
     /// connected worker advertises (or `max_kb`); the last step reserves
     /// that worker whole, memory and CPU, so the action runs alone, and only
     /// a kill there fails the action: nothing in the fleet could run it.
+    /// A worker that goes away on its own mid-action (a pod OOM-killed as
+    /// a whole looks like that) escalates the action the same way: on that
+    /// loss when the worker's last keepalive showed the action above its
+    /// reservation, otherwise from `escalate_after_worker_losses`. Such
+    /// losses still spend
+    /// `max_worker_loss_retries`.
     /// Default: unset (a memory kill fails the action)
     #[serde(default)]
     pub memory_escalation: Option<MemoryEscalationSpec>,
@@ -372,6 +378,38 @@ pub struct SimpleSpec {
     /// Default: unset (off)
     #[serde(default)]
     pub reservation_hold: Option<ReservationHoldSpec>,
+
+    /// How many times an action whose command ran past its timeout on a
+    /// worker is queued again for a different worker before the timeout
+    /// is final. A worker whose host has gone slow runs everything it is
+    /// given many times slower and times out actions that finish in
+    /// seconds elsewhere, and nothing tells that from an action that is
+    /// slow by itself until it has run elsewhere: the retry is that second
+    /// opinion, and the matcher prefers any worker but the one that timed
+    /// it out. An action that times out on the second worker fails with
+    /// the timeout, as before. Each retry runs the action again, so this
+    /// bounds the cost of an action that really is too slow. 0 keeps a
+    /// timeout final on its first occurrence.
+    /// The retry also keeps off every worker on the node the timeout
+    /// happened on, where workers say which node they are on through the
+    /// `node_name` platform property (the chart's `advertiseNodeName`,
+    /// off by default). Without it the retry keeps off that worker only
+    /// and may land on another worker of the same host.
+    /// Default: 1
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_timeout_retries: Option<usize>,
+
+    /// Drain a worker whose recent attempts keep failing. A worker that
+    /// times out or errors most of what it is given while the rest of the
+    /// fleet does not is a bad worker, whatever its host reports; this
+    /// stops dispatch to it on the scheduler's own evidence, without a
+    /// probe for the cause. See `WorkerOutcomeTripwireSpec`.
+    /// Default: unset (off)
+    #[serde(default)]
+    pub worker_outcome_tripwire: Option<WorkerOutcomeTripwireSpec>,
 
     /// The storage backend to use for the scheduler.
     /// Default: memory
@@ -598,9 +636,29 @@ pub struct MemoryEscalationSpec {
 
     /// The most escalations one action gets before the scheduler completes
     /// it with `FailedPrecondition`; 0 lets the ceiling alone bound them.
+    /// Escalations on a lost worker spend the same budget, but spending it
+    /// there does not end the action: it is queued again at its last
+    /// reservation, and `max_worker_loss_retries` ends it if its workers
+    /// keep going away.
     /// Default: 8
     #[serde(default = "default_memory_escalation_max_steps")]
     pub max_steps: u64,
+
+    /// From the how-manyth worker lost under one action the requeue also
+    /// raises its reservation, the way a memory kill does. A pod
+    /// OOM-killed as a whole reaches the scheduler as a lost worker with no
+    /// usage report, so without this the action is requeued at the size
+    /// that took the pod down until the loss budget ends it. Only a worker
+    /// that went away on its own counts (its stream ended, it timed out, or
+    /// a command to it failed), not one that was removed, drained or shut
+    /// down with the scheduler. 0 never escalates on a loss.
+    /// Default: 2
+    #[serde(default = "default_memory_escalation_after_worker_losses")]
+    pub escalate_after_worker_losses: u64,
+}
+
+const fn default_memory_escalation_after_worker_losses() -> u64 {
+    2
 }
 
 fn default_memory_escalation_cpu_property() -> String {
@@ -665,6 +723,93 @@ const fn default_reservation_hold_after_s() -> u64 {
 
 const fn default_reservation_max_hold_s() -> u64 {
     300
+}
+
+/// When the scheduler drains a worker on the outcomes of its own attempts.
+/// A command timeout, an input fetch timeout and a worker error are
+/// failures; a result, whatever its exit code, is a success. A worker whose
+/// last `min_failures` attempts all failed, or whose last `window` attempts
+/// hold at least `min_failures` failures that are at least `failure_percent`
+/// of them, is drained: it finishes what it runs and is offered nothing
+/// more until it reconnects or an operator lifts its drain. Where a worker
+/// provisioner runs the fleet, the drain ends with the pod: the provisioner
+/// deletes a drained worker once it is idle and replaces it, so the
+/// provisioner has to read the drain as evidence about the node, or the
+/// replacement lands on the same host and is drained again. The run of failures
+/// catches a worker that was healthy and went bad without waiting for half
+/// its window to fail; the ratio catches one that fails often but not in a
+/// row, and leaves alone one that fails a few of many.
+/// At most `max_drained_percent` of the workers connected to this
+/// scheduler replica, and at least two (a node's pair), are drained this
+/// way at once, so a fault every worker shares (a store down) drains a few
+/// workers, not the fleet.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct WorkerOutcomeTripwireSpec {
+    /// Recent attempts judged, per worker.
+    /// Default: 20
+    #[serde(
+        default = "default_tripwire_window",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub window: usize,
+
+    /// Failures that drain the worker: this many in a row, or this many
+    /// among the attempts judged at `failure_percent` or more of them. Must
+    /// be above zero and at most `window`.
+    /// Default: 3
+    #[serde(
+        default = "default_tripwire_min_failures",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub min_failures: usize,
+
+    /// Failures as a percentage of the attempts judged, also required, so
+    /// a worker that fails a few of many is left alone. At most 100.
+    /// Default: 50
+    #[serde(
+        default = "default_tripwire_failure_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub failure_percent: usize,
+
+    /// Most workers drained this way at once, as a percentage of the
+    /// workers connected to this scheduler replica; at least two. At most
+    /// 100.
+    /// Default: 20
+    #[serde(
+        default = "default_tripwire_max_drained_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_drained_percent: usize,
+}
+
+impl Default for WorkerOutcomeTripwireSpec {
+    fn default() -> Self {
+        Self {
+            window: default_tripwire_window(),
+            min_failures: default_tripwire_min_failures(),
+            failure_percent: default_tripwire_failure_percent(),
+            max_drained_percent: default_tripwire_max_drained_percent(),
+        }
+    }
+}
+
+const fn default_tripwire_window() -> usize {
+    20
+}
+
+const fn default_tripwire_min_failures() -> usize {
+    3
+}
+
+const fn default_tripwire_failure_percent() -> usize {
+    50
+}
+
+const fn default_tripwire_max_drained_percent() -> usize {
+    20
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
