@@ -2898,7 +2898,7 @@ async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );
@@ -2934,7 +2934,7 @@ async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );

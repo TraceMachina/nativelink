@@ -121,7 +121,7 @@ JSON rather than illustrative fragments.
   </li>
   <li>
     **Regenerate the reference** if you want to see the result:
-    `bun --filter @nativelink/docs gen:config-reference` from `web/`.
+    `pnpm run --filter @nativelink/docs gen:config-reference` from `web/`.
   </li>
 </Steps>
 
@@ -177,7 +177,7 @@ introspection tree automatically.
     dotted name, a `.with_description`, and a `.with_unit` that is a UCUM
     unit (`"By"`, `"s"`, `"ms"`) or a braced count such as `"{entry}"`.
     Then regenerate the metrics reference with
-    `bun --filter @nativelink/docs gen:metrics-reference` from `web/`, which
+    `pnpm run --filter @nativelink/docs gen:metrics-reference` from `web/`, which
     reads this file.
   </li>
   <li>

@@ -292,6 +292,10 @@ enum OverLimit {
 #[derive(Debug, Default)]
 pub struct ActionMemoryWatch {
     last_memory_kb: AtomicU64,
+    /// The highest figure the sampler has read for the action; it only
+    /// rises. Reported on the keepalive so a scheduler that loses this
+    /// worker can tell which action grew past its reservation.
+    peak_memory_kb: AtomicU64,
     /// The memory reservation the action runs under, 0 when it has none.
     reserved_memory_kb: AtomicU64,
     kill_requested_percent: AtomicU64,
@@ -306,6 +310,16 @@ pub struct ActionMemoryWatch {
 impl ActionMemoryWatch {
     pub fn last_memory_kb(&self) -> u64 {
         self.last_memory_kb.load(Ordering::Relaxed)
+    }
+
+    pub fn peak_memory_kb(&self) -> u64 {
+        self.peak_memory_kb.load(Ordering::Relaxed)
+    }
+
+    /// Records a sample: the last figure, and the peak if it is higher.
+    pub fn observe(&self, memory_kb: u64) {
+        self.last_memory_kb.store(memory_kb, Ordering::Relaxed);
+        self.peak_memory_kb.fetch_max(memory_kb, Ordering::Relaxed);
     }
 
     pub fn reserved_memory_kb(&self) -> u64 {
@@ -634,10 +648,7 @@ async fn sample_action_resource_usage(
         }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
-            ceilings
-                .watch
-                .last_memory_kb
-                .store(memory_kb, Ordering::Relaxed);
+            ceilings.watch.observe(memory_kb);
         }
         if observed.is_none() && !process_exists(pgid) {
             // The group leader has been reaped and no member process remains,
@@ -5070,6 +5081,13 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn metrics(&self) -> &Arc<Metrics>;
+
+    /// The highest memory sampled so far for each running operation that
+    /// has been sampled, as `(operation id, KiB)`, for the keepalive
+    /// (RFC-0018). Empty where nothing samples.
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -6429,6 +6447,17 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     #[inline]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        self.running_actions
+            .lock()
+            .iter()
+            .filter_map(|(operation_id, action)| {
+                let peak_kb = action.upgrade()?.memory_watch.peak_memory_kb();
+                (peak_kb > 0).then(|| (operation_id.to_string(), peak_kb))
+            })
+            .collect()
     }
 }
 

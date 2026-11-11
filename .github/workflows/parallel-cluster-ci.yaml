@@ -137,6 +137,16 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # Job-level rather than step-level: the runner echoes a step's env block
+    # into the log header, and these cluster coordinates do not belong in
+    # console output.
+    env:
+      NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
+      NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
+      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
+      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+      NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
+      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
     steps:
       - name: Start setup timer
         run: echo "BENCHMARK_STARTED=$(date +%s)" >> "$GITHUB_ENV"
@@ -168,12 +178,6 @@ jobs:
           NL_INSTANCE: ${{ vars.NATIVELINK_CLUSTER_INSTANCE }}
           NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
           NL_WORKER_IMAGE: ${{ vars.NATIVELINK_CLUSTER_WORKER_IMAGE }}
-          NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
-          NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
-          NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-          NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
-          NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-          NL_GKE_POD: ${{ vars.NL_GKE_POD }}
           REPETITIONS: ${{ inputs.repetitions || '1' }}
         run: |
           python3 .github/scripts/cluster_ci.py --repetitions "$REPETITIONS" \

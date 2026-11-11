@@ -34,8 +34,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
-    GoingAwayRequest, KeepAliveRequest, RunningOperations, StartExecute, UpdateForWorker,
-    WorkerLoad, execute_declined, execute_result,
+    GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, StartExecute,
+    UpdateForWorker, WorkerLoad, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -444,6 +444,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     ) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let running_actions_manager = self.running_actions_manager.clone();
         let timeout = self
             .config
             .worker_api_endpoint
@@ -475,9 +476,23 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
                 let operation_ids = running_operations.lock().iter().cloned().collect();
+                // Each running action's sampled peak, so a scheduler that
+                // loses this worker can tell which action outgrew its
+                // reservation (RFC-0018).
+                let memory = running_actions_manager
+                    .memory_peaks()
+                    .into_iter()
+                    .map(|(operation_id, peak_memory_kb)| OperationMemory {
+                        operation_id,
+                        peak_memory_kb,
+                    })
+                    .collect();
                 let request = KeepAliveRequest {
                     load,
-                    running_operations: Some(RunningOperations { operation_ids }),
+                    running_operations: Some(RunningOperations {
+                        operation_ids,
+                        memory,
+                    }),
                 };
                 if let Err(e) = grpc_client.keep_alive(request).await {
                     error!(?e, "Failed to send KeepAlive in LocalWorker");

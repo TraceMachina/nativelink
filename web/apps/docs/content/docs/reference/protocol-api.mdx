@@ -14,8 +14,12 @@ NativeLink implements the [Remote Execution API](https://github.com/bazelbuild/r
 plus the adjacent protocols it depends on (ByteStream, long-running
 Operations, Remote Asset and the Build Event Protocol), and defines exactly
 one service of its own. Every vendored `.proto` under `nativelink-proto/` is
-copied from upstream with only its licence header replaced; there are no
+copied from upstream with its licence header replaced; there are no
 NativeLink-specific fields or extensions on the standard messages.
+`remote_execution.proto` is pinned to remote-apis
+[v2.12.0](https://github.com/bazelbuild/remote-apis/tree/9e084d0e43e717128ee72b5be584a7ba33e8006b)
+and keeps its five `[deprecated = true]` field options as comments, so the
+generated Rust code carries no `#[deprecated]` attributes on those fields.
 
 ## Services [#services]
 
@@ -146,8 +150,19 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
+**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
+an action is never answered from the Action Cache and never shares an
+execution with an identical action that is already running. The worker still
+writes its result to the Action Cache; that part is tracked in
+[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
+
+**Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
+request missing a digest it requires, is a client error, so every service
+answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
+`INTERNAL` with backoff but fail fast on `INVALID_ARGUMENT`.
 
 ## Intentional deviations from the specification [#intentional-deviations]
 
