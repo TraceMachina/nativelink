@@ -236,3 +236,9 @@ mod redis_error_codes {
         );
     }
 }
+
+// TEMPORARY: fails on purpose to demo fork build results. Never merge.
+#[test]
+fn deliberately_failing_for_fork_build_results_demo() {
+    assert_eq!(1 + 1, 3, "FORK-BUILD-RESULTS demo: deliberate failure");
+}
