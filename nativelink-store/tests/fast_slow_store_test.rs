@@ -23,8 +23,8 @@ use futures::future::join_all;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{
     CommonObjectSpec, CompressionAlgorithm, CompressionSpec, ExperimentalCloudObjectSpec,
-    ExperimentalGcsSpec, FastSlowSpec,
-    FilesystemSpec, Lz4Config, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+    ExperimentalGcsSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec, NoopSpec,
+    StoreDirection, StoreSpec,
 };
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
