@@ -31,8 +31,18 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::ActionStateResult;
+use nativelink_config::schedulers::SimpleSpec;
+use nativelink_config::stores::RedisSpec;
+use nativelink_redis_tester::FakeRedisBackend;
+use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
+use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
+use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::origin_event::OriginMetadata;
-use tokio::sync::watch;
+use nativelink_util::store_trait::SchedulerStore;
+use tokio::sync::{Notify, watch};
 
 pub(crate) const INSTANCE_NAME: &str = "foobar_instance_name";
 
@@ -59,10 +69,9 @@ pub(crate) fn make_base_action_info(
 
 /// Exercise the same overlapping-build contract against both scheduler databases.
 pub(crate) async fn verify_overlapping_invocations(
-    scheduler: &nativelink_scheduler::simple_scheduler::SimpleScheduler,
+    scheduler: &SimpleScheduler,
 ) -> Result<(), Error> {
     use nativelink_scheduler::worker::Worker;
-    use nativelink_scheduler::worker_scheduler::WorkerScheduler;
     use nativelink_util::action_messages::{ActionStage, WorkerId};
     use nativelink_util::operation_state_manager::ClientStateManager;
     use nativelink_util::platform_properties::PlatformProperties;
@@ -228,4 +237,96 @@ pub(crate) fn update_eq(
             _ => false,
         },
     }
+}
+
+/// The two awaited-action backends a scheduler can run on. Until the journal
+/// replaces the store backend (SCHEDULER-PLAN M5), every scheduler case runs
+/// on both, so the two cannot disagree without a test failing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    /// `MemoryAwaitedActionDb`, the backend the journal will keep.
+    Memory,
+    /// `StoreAwaitedActionDb` over a Redis store talking to the fake Redis.
+    FakeRedis,
+}
+
+impl Backend {
+    pub(crate) const ALL: [Self; 2] = [Self::Memory, Self::FakeRedis];
+}
+
+/// A scheduler on one backend, with what keeps that backend alive.
+pub(crate) struct BackendScheduler {
+    pub(crate) backend: Backend,
+    pub(crate) scheduler: Arc<SimpleScheduler>,
+    pub(crate) worker_scheduler: Arc<dyn WorkerScheduler>,
+    pub(crate) task_change_notify: Arc<Notify>,
+    /// The fake Redis server for `Backend::FakeRedis`, kept so the test can
+    /// reach it (fault policies, inspection) and so it outlives the store.
+    pub(crate) fake_redis: Option<FakeRedisBackend<RedisSubscriptionManager>>,
+}
+
+/// Builds a `SimpleScheduler` from `spec` on `backend`, with the mock clock
+/// (`MockInstantWrapped`) as its time source on both, so one test body drives
+/// either backend the same way. `retain_completed_for_s` and
+/// `client_action_timeout_s` come from the spec, as the factory takes them.
+pub(crate) async fn scheduler_on(
+    backend: Backend,
+    spec: &SimpleSpec,
+) -> Result<BackendScheduler, Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, worker_scheduler, fake_redis) = match backend {
+        Backend::Memory => {
+            let db = memory_awaited_action_db_factory(
+                spec.retain_completed_for_s,
+                &task_change_notify,
+                MockInstantWrapped::default,
+            );
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                db,
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, None)
+        }
+        Backend::FakeRedis => {
+            let fake_redis: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+            let port = fake_redis.clone().run().await;
+            let store = RedisStore::new_standard(RedisSpec {
+                addresses: vec![format!("redis://127.0.0.1:{port}")],
+                experimental_pub_sub_channel: Some("scheduler_utils_channel".to_string()),
+                ..Default::default()
+            })
+            .await?;
+            fake_redis.set_subscription_manager(store.subscription_manager().await?);
+            let db = StoreAwaitedActionDb::new(
+                store,
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                OperationId::default,
+                spec.retain_completed_for_s,
+                spec.client_action_timeout_s,
+                false,
+            )
+            .await?;
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                db,
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, Some(fake_redis))
+        }
+    };
+    Ok(BackendScheduler {
+        backend,
+        scheduler,
+        worker_scheduler,
+        task_change_notify,
+        fake_redis,
+    })
 }
