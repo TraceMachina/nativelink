@@ -1,5 +1,7 @@
 ---
-name: CI / Docs
+# The "CI / Docs" prefix is shared with docs-lint.yaml on purpose; the
+# distinct full name lets externally brokered CI select workflows by name.
+name: CI / Docs / Vale
 
 on: [pull_request]
 
