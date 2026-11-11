@@ -92,7 +92,8 @@ jobs:
           # The staging remote cache can drop a blob between its existence
           # check and the consuming action ("lost inputs"). Let Bazel retry
           # the invocation and re-execute the producers instead of failing.
-          ./tools/bazel-retry.sh test //... \
+          # Bazel records the client environment; keep the job token out.
+          env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
