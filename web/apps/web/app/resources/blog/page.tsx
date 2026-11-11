@@ -30,7 +30,7 @@ export default function BlogIndexPage() {
                 ]}
               />
               <Eyebrow className="mb-5">Blog</Eyebrow>
-              <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[56px]">
+              <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-5xl">
                 Writing from the team
               </h1>
               <p className="mx-auto mt-5 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground">

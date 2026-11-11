@@ -3,6 +3,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.5](https://github.com/TraceMachina/nativelink/compare/v1.8.4..v1.8.5) - 2026-11-11
+
+### Upgrade and rollback
+
+- Memory escalation on worker loss is **on by default**: once the same action
+  has lost `escalate_after_worker_losses` workers (default 2), each further
+  re-dispatch steps its memory reservation up, bounded by the fleet's largest
+  worker and the existing loss budget. An action that repeatedly loses workers
+  for non-memory reasons (spot preemption, node drains) inflates its
+  reservation too; set `escalate_after_worker_losses: 0` under
+  `memory_escalation` for the v1.8.4 behavior. Older binaries, including
+  v1.8.4, reject a config that names the field.
+- A memory-kill escalation now steps the reservation past the sampled peak,
+  not just past the old reservation, so a single escalation can jump several
+  size classes at once (still bounded by the fleet ceiling).
+- Workers report each running action's peak memory on the keepalive
+  (new `RunningOperations.memory` proto field). Mixed fleets are fine in both
+  directions: an older worker just never reports, and the scheduler falls back
+  to the loss-count rule; an older scheduler ignores the field.
+- Unknown instance names and missing request fields now return
+  `INVALID_ARGUMENT` instead of `INTERNAL` (#3154). Clients fail fast instead
+  of retrying: a mistyped `--remote_instance_name` errors immediately rather
+  than after Bazel's retry backoff.
+
+### ⛰️  Features
+
+- Report each running action's memory peak on the keepalive and escalate a lost worker's action that was over its reservation ([#3170](https://github.com/TraceMachina/nativelink/issues/3170)) - ([5ca5732](https://github.com/TraceMachina/nativelink/commit/5ca5732efc94835156410be34c1bdd48ca4761b0))
+- escalate memory on the second worker lost under an action ([#3168](https://github.com/TraceMachina/nativelink/issues/3168)) - ([a51db80](https://github.com/TraceMachina/nativelink/commit/a51db80f71ca339112e4fe59c840b8fe8db3f090))
+
+### 🐛 Bug Fixes
+
+- Gate the caps dependency to Linux ([#3174](https://github.com/TraceMachina/nativelink/issues/3174)) - ([1a29204](https://github.com/TraceMachina/nativelink/commit/1a292040c34af0d02a359525801753b82fdb40e8))
+- Fix FS issues running as root ([#3166](https://github.com/TraceMachina/nativelink/issues/3166)) - ([736e9ed](https://github.com/TraceMachina/nativelink/commit/736e9edc14559d21df6bce4edf12d7e1efd3ae4c))
+- Return INVALID_ARGUMENT for unknown instances and missing request fields ([#3154](https://github.com/TraceMachina/nativelink/issues/3154)) - ([ab987d0](https://github.com/TraceMachina/nativelink/commit/ab987d0d5573ee451a9116a9c9fde1ac08bc05f2))
+
+### 🧪 Testing & CI
+
+- Give the service integration tests the moderate timeout ([#3177](https://github.com/TraceMachina/nativelink/issues/3177)) - ([2ed2fc5](https://github.com/TraceMachina/nativelink/commit/2ed2fc51aa2078dc6e897d6edfb04aa8e362b3f3))
+- run Bazel 8 compatibility nightly and on demand ([#3171](https://github.com/TraceMachina/nativelink/issues/3171)) - ([6efef3e](https://github.com/TraceMachina/nativelink/commit/6efef3e63044487a4baf930a49e421681bd8f7bb))
+- Add logging to flaky filesystem tests ([#3164](https://github.com/TraceMachina/nativelink/issues/3164)) - ([433edda](https://github.com/TraceMachina/nativelink/commit/433edda1799bae857a2aa3c04c0cc2ffceae280e))
+
+### ⚙️ Miscellaneous
+
+- pricing page rewrite, comparison table, trial request, and ranked type and radius scales ([#3167](https://github.com/TraceMachina/nativelink/issues/3167)) - ([af1646c](https://github.com/TraceMachina/nativelink/commit/af1646c15953c0eaba0c10c6882b4eb2bdb168d9))
+
+### ⬆️ Bumps & Version Updates
+
+- Re-vendor remote_execution.proto from REAPI v2.12.0 ([#3163](https://github.com/TraceMachina/nativelink/issues/3163)) - ([80f952e](https://github.com/TraceMachina/nativelink/commit/80f952e81fd4b25c4dfa9dc11c9bee9e0aea83c6))
+
 ## [1.8.4](https://github.com/TraceMachina/nativelink/compare/v1.8.3..v1.8.4) - 2026-11-09
 
 ### Upgrade and rollback

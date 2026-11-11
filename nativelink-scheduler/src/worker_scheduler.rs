@@ -113,6 +113,17 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         Ok(())
     }
 
+    /// A keepalive said how much memory the worker has sampled so far for
+    /// each running operation, as `(operation, peak KiB)`. Kept against the
+    /// dispatch so a lost worker's actions can be judged by it (RFC-0018).
+    async fn worker_operation_memory_reported(
+        &self,
+        _worker_id: &WorkerId,
+        _peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Any other message from the worker (an acknowledgement, a decline, an
     /// execute result) proves it is alive. Unlike a keepalive it lifts no
     /// pause: a decline is not the worker saying it is ready to be asked

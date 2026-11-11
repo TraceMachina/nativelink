@@ -21,6 +21,7 @@ use mock_instant::thread_local::MockClock;
 use nativelink_config::schedulers::{MemoryEscalationSpec, PropertyType, SimpleSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, Reservation, ResourceOutcome, StartExecute, UpdateForWorker,
     update_for_worker,
@@ -79,6 +80,7 @@ fn make_scheduler_with_limits(
             ladder_kb,
             cpu_property: "cpu_count".to_string(),
             max_steps,
+            escalate_after_worker_losses: 2,
         }),
         max_job_retries,
         max_worker_loss_retries: 2,
@@ -98,16 +100,25 @@ async fn add_worker(
     scheduler: &SimpleScheduler,
     memory_kb: u64,
 ) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    add_named_worker(scheduler, WORKER, memory_kb, 4).await
+}
+
+async fn add_named_worker(
+    scheduler: &SimpleScheduler,
+    name: &str,
+    memory_kb: u64,
+    max_inflight_tasks: u64,
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(
-        WorkerId(WORKER.to_string()),
+        WorkerId(name.to_string()),
         PlatformProperties::new(HashMap::from([(
             "memory_kb".to_string(),
             PlatformPropertyValue::Minimum(memory_kb),
         )])),
         tx,
         NOW_TIME,
-        /* max_inflight_tasks */ 4,
+        max_inflight_tasks,
     );
     scheduler
         .add_worker(worker)
@@ -146,11 +157,28 @@ async fn next_dispatch(rx: &mut mpsc::Receiver<UpdateForWorker>) -> (StartExecut
 }
 
 /// What a worker sends when its enforcement killed the action at its
-/// reservation: the usage report, then the result carrying the error.
+/// reservation: the usage report, then the result carrying the error. The
+/// sampled peak is the reservation plus the default 20% headroom.
 async fn report_memory_kill(
     worker_scheduler: &dyn WorkerScheduler,
     operation_id: &str,
     reserved_kb: u64,
+) -> Result<(), Error> {
+    report_memory_kill_at(
+        worker_scheduler,
+        operation_id,
+        reserved_kb,
+        reserved_kb + reserved_kb / 5,
+    )
+    .await
+}
+
+/// The memory kill as above, with the peak the sampler reported.
+async fn report_memory_kill_at(
+    worker_scheduler: &dyn WorkerScheduler,
+    operation_id: &str,
+    reserved_kb: u64,
+    peak_kb: u64,
 ) -> Result<(), Error> {
     let worker_id = WorkerId(WORKER.to_string());
     let operation_id = OperationId::from(operation_id);
@@ -159,7 +187,7 @@ async fn report_memory_kill(
             &worker_id,
             &operation_id,
             ActionResourceUsage {
-                peak_memory_kb: reserved_kb + reserved_kb / 5,
+                peak_memory_kb: peak_kb,
                 sampled: true,
                 outcome: ResourceOutcome::KilledMemory.into(),
                 enforced: true,
@@ -198,9 +226,10 @@ async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> Actio
     }
 }
 
-/// A memory kill doubles the reservation and runs the action again; the
-/// doubling stops at the largest memory any worker advertises; a kill at
-/// that ceiling fails the action with the worker's own error.
+/// A memory kill doubles what the action was seen to use (its sampled
+/// peak, 20% over its reservation here) and runs it again; the doubling
+/// stops at the largest memory any worker advertises; a kill at that
+/// ceiling fails the action with the worker's own error.
 #[nativelink_test]
 async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Result<(), Error> {
     let (scheduler, worker_scheduler) = make_scheduler(5);
@@ -224,7 +253,7 @@ async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Resu
     report_memory_kill(worker_scheduler.as_ref(), &first.operation_id, 2_000).await?;
 
     let (second, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 4_000, "the reservation doubles after a kill");
+    assert_eq!(memory, 4_800, "double the 2400 KiB peak after a kill");
     assert_eq!(
         second.operation_id, first.operation_id,
         "same operation, asking for more"
@@ -272,11 +301,13 @@ async fn escalation_does_not_spend_the_retry_budget() -> Result<(), Error> {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
+        // Double the sampled peak, which the kill reports 20% over.
+        reserved = (reserved + reserved / 5) * 2;
     }
     // Four kills, four requeues, on a budget of one: still running.
     let (_, memory) = next_dispatch(&mut rx).await;
-    assert_eq!(memory, 16_000);
+    assert_eq!(memory, reserved);
+    assert_eq!(reserved, 33_176, "1000, 2400, 5760, 13824, then this");
     Ok(())
 }
 
@@ -305,7 +336,8 @@ async fn escalation_stops_at_max_steps() -> Result<(), Error> {
         let (dispatch, memory) = next_dispatch(&mut rx).await;
         assert_eq!(memory, reserved);
         report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
-        reserved *= 2;
+        // Double the sampled peak, which the kill reports 20% over.
+        reserved = (reserved + reserved / 5) * 2;
     }
 
     let result = wait_for_completion(&mut listener).await;
@@ -398,5 +430,399 @@ async fn escalation_steps_the_ladder_then_takes_the_whole_worker() -> Result<(),
     let err = result.error.expect("nothing above the whole worker");
     assert_eq!(err.code, Code::FailedPrecondition, "{err}");
     assert!(err.to_string().contains("no worker can run it"), "{err}");
+    Ok(())
+}
+
+// RFC-0018: a worker lost under an action is memory evidence when the
+// worker went away on its own. These drive the loss path the way a pod
+// OOM-killed as a whole does: the stream ends with no result.
+
+fn make_scheduler_with_policy(
+    policy: Option<MemoryEscalationSpec>,
+    max_worker_loss_retries: usize,
+) -> (Arc<SimpleScheduler>, Arc<dyn WorkerScheduler>) {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let spec = SimpleSpec {
+        supported_platform_properties: Some(HashMap::from([(
+            "memory_kb".to_string(),
+            PropertyType::Minimum,
+        )])),
+        memory_escalation: policy,
+        max_job_retries: 1,
+        max_worker_loss_retries,
+        ..SimpleSpec::default()
+    };
+    SimpleScheduler::new_with_callback(
+        &spec,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    )
+}
+
+fn policy(ladder_kb: Vec<u64>, max_steps: u64) -> MemoryEscalationSpec {
+    MemoryEscalationSpec {
+        property: "memory_kb".to_string(),
+        percent: 200,
+        max_kb: 0,
+        ladder_kb,
+        cpu_property: "cpu_count".to_string(),
+        max_steps,
+        escalate_after_worker_losses: 2,
+    }
+}
+
+async fn add_action(
+    scheduler: &SimpleScheduler,
+    seed: u8,
+    memory_kb: u64,
+) -> Result<Box<dyn ActionStateResult>, Error> {
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([seed; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), memory_kb.to_string())]),
+        ..(*base).clone()
+    });
+    let listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    Ok(listener)
+}
+
+/// The worker's keepalive reported this peak for the operation.
+async fn report_peak(
+    worker_scheduler: &dyn WorkerScheduler,
+    operation_id: &str,
+    peak_kb: u64,
+) -> Result<(), Error> {
+    worker_scheduler
+        .worker_operation_memory_reported(
+            &WorkerId(WORKER.to_string()),
+            vec![(OperationId::from(operation_id), peak_kb)],
+        )
+        .await
+}
+
+/// The worker's stream ends without a result: what an OOM-killed pod looks
+/// like to the scheduler. The pool brings up a like worker.
+async fn lose_worker(
+    scheduler: &SimpleScheduler,
+    worker_scheduler: &dyn WorkerScheduler,
+    memory_kb: u64,
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    worker_scheduler
+        .worker_disconnected(&WorkerId(WORKER.to_string()))
+        .await?;
+    tokio::task::yield_now().await;
+    add_worker(scheduler, memory_kb).await
+}
+
+#[nativelink_test]
+async fn loss_without_policy_requeues_unchanged() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(None, 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 10, 1_000).await?;
+    for loss in 1..=3 {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 1_000, "loss {loss}: no policy, no escalation");
+        report_peak(worker_scheduler.as_ref(), &dispatch.operation_id, 5_000).await?;
+        rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    }
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_000);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_sampled_loss_escalates_at_once() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 11, 1_000).await?;
+    let (first, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_000);
+    report_peak(worker_scheduler.as_ref(), &first.operation_id, 1_300).await?;
+    rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    let (second, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(second.operation_id, first.operation_id);
+    assert_eq!(
+        memory, 2_600,
+        "grown from the reported peak, the larger of peak and reservation"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_repeated_loss_escalates_on_the_second() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 12, 1_000).await?;
+    // No keepalive ever reports this action: an older worker, or a climb
+    // between two keepalives.
+    let expected = [1_000, 1_000, 2_000, 4_000];
+    for (loss, want) in expected.iter().enumerate() {
+        let (_, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, *want, "dispatch after {loss} losses");
+        if loss + 1 < expected.len() {
+            rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn an_admin_removal_never_escalates() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 13, 1_000).await?;
+    for loss in 1..=3 {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 1_000, "removal {loss}");
+        report_peak(worker_scheduler.as_ref(), &dispatch.operation_id, 5_000).await?;
+        worker_scheduler
+            .remove_worker(&WorkerId(WORKER.to_string()))
+            .await?;
+        tokio::task::yield_now().await;
+        rx = add_worker(&scheduler, 1_000_000).await?;
+    }
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_000);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_draining_worker_loss_never_escalates() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 5);
+    // A second large worker, kept busy, so the fleet has room to escalate
+    // into even while the lost worker is draining: only the drain rule
+    // keeps the reservation where it is.
+    let mut other_rx = add_named_worker(&scheduler, "other", 1_000_000, 1).await?;
+    let _filler = add_action(&scheduler, 20, 1).await?;
+    let (_filler_dispatch, _) = next_dispatch(&mut other_rx).await;
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 14, 1_000).await?;
+    for loss in 1..=3 {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 1_000, "drained loss {loss}");
+        report_peak(worker_scheduler.as_ref(), &dispatch.operation_id, 5_000).await?;
+        worker_scheduler
+            .set_drain_worker(&WorkerId(WORKER.to_string()), true)
+            .await?;
+        rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    }
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_000);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn loss_escalations_spend_max_steps() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 1)), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 15, 1_000).await?;
+    // Each report is 20% over: the one escalation grows from that peak.
+    for want in [1_000, 2_400, 2_400, 2_400] {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, want, "one escalation, then the budget is spent");
+        report_peak(
+            worker_scheduler.as_ref(),
+            &dispatch.operation_id,
+            memory + memory / 5,
+        )
+        .await?;
+        rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_loss_at_the_whole_worker_ends_on_the_loss_budget() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 2);
+    let mut rx = add_worker(&scheduler, 5_000).await?;
+    let mut listener = add_action(&scheduler, 16, 5_000).await?;
+    for loss in 1..=2 {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 5_000, "loss {loss}: already the whole worker");
+        report_peak(worker_scheduler.as_ref(), &dispatch.operation_id, 9_000).await?;
+        rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 5_000).await?;
+    }
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 5_000);
+    worker_scheduler
+        .worker_disconnected(&WorkerId(WORKER.to_string()))
+        .await?;
+    let result = wait_for_completion(&mut listener).await;
+    let err = result.error.expect("the loss budget ends it");
+    assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+    assert!(err.to_string().contains("lost 3 times"), "{err}");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_sampled_loss_spares_the_co_tenant_under_its_reservation() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(policy(vec![], 0)), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _grower = add_action(&scheduler, 17, 1_000).await?;
+    let _neighbour = add_action(&scheduler, 18, 1_000).await?;
+    let (a, _) = next_dispatch(&mut rx).await;
+    let (b, _) = next_dispatch(&mut rx).await;
+    let digest_of = |start: &StartExecute| {
+        start
+            .execute_request
+            .as_ref()
+            .and_then(|request| request.action_digest.clone())
+            .map(|digest| digest.hash)
+            .expect("the dispatch names its action")
+    };
+    let grower_hash = Digest::from(DigestInfo::new([17; 32], 512)).hash;
+    let (grower, neighbour) = if digest_of(&a) == grower_hash {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    report_peak(worker_scheduler.as_ref(), &grower.operation_id, 1_500).await?;
+    report_peak(worker_scheduler.as_ref(), &neighbour.operation_id, 800).await?;
+    rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    let mut memory_by_operation = HashMap::new();
+    for _ in 0..2 {
+        let (start, memory) = next_dispatch(&mut rx).await;
+        memory_by_operation.insert(start.operation_id, memory);
+    }
+    assert_eq!(memory_by_operation[&grower.operation_id], 3_000);
+    assert_eq!(
+        memory_by_operation[&neighbour.operation_id], 1_000,
+        "a first loss with the co-tenant under its reservation leaves it alone"
+    );
+    Ok(())
+}
+
+/// An action killed cleanly at its first class escalates to the second,
+/// then outgrows that faster than the worker's enforcement samples it, so
+/// its pod is OOM-killed whole: a lost worker, not a kill. Without a
+/// keepalive catching the climb it reaches the third class on the second
+/// loss; with one, on the first. Either way it completes there instead of
+/// staying at the second until the loss budget fails it.
+#[nativelink_test]
+async fn pod_oom_losses_climb_to_the_next_class() -> Result<(), Error> {
+    const GIB: u64 = 1024 * 1024;
+    let ladder = vec![6 * GIB, 12 * GIB, 16 * GIB, 24 * GIB];
+    for sampled in [false, true] {
+        let (scheduler, worker_scheduler) =
+            make_scheduler_with_policy(Some(policy(ladder.clone(), 8)), 10);
+        let mut rx = add_worker(&scheduler, 24 * GIB).await?;
+        let mut listener = add_action(&scheduler, 19, 6 * GIB).await?;
+
+        let (first, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 6 * GIB);
+        report_memory_kill(worker_scheduler.as_ref(), &first.operation_id, 6 * GIB).await?;
+
+        let (second, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 12 * GIB, "the clean kill at 6 GiB escalates");
+        if sampled {
+            // The keepalive caught it at 15 GiB before the pod died.
+            report_peak(worker_scheduler.as_ref(), &second.operation_id, 15 * GIB).await?;
+        }
+        rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 24 * GIB).await?;
+        if !sampled {
+            let (_, memory) = next_dispatch(&mut rx).await;
+            assert_eq!(memory, 12 * GIB, "one unsampled loss is not yet a pattern");
+            rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 24 * GIB).await?;
+        }
+        let (third, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, 16 * GIB, "sampled={sampled}: the next class up");
+        worker_scheduler
+            .update_action(
+                &WorkerId(WORKER.to_string()),
+                &OperationId::from(third.operation_id.as_str()),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    ActionResult::default(),
+                )),
+            )
+            .await?;
+        let result = wait_for_completion(&mut listener).await;
+        assert!(
+            result.error.is_none(),
+            "sampled={sampled}: {:?}",
+            result.error
+        );
+    }
+    Ok(())
+}
+
+/// A kill sampled far past its reservation grows from the peak: the next
+/// class above the 5000 KiB it was seen using, not the one above the 1500
+/// it asked for, which the action was just observed to exceed.
+#[nativelink_test]
+async fn escalation_steps_past_the_sampled_peak() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_ladder(5, vec![1_000, 4_000, 9_000]);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 21, 1_500).await?;
+    let (first, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_500);
+    report_memory_kill_at(worker_scheduler.as_ref(), &first.operation_id, 1_500, 5_000).await?;
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(
+        memory, 9_000,
+        "the class above the peak, not above the reservation"
+    );
+    Ok(())
+}
+
+/// `escalate_after_worker_losses` sets the loss that escalates: 0 never
+/// does, 3 waits for the third.
+#[nativelink_test]
+async fn the_loss_threshold_is_configurable() -> Result<(), Error> {
+    for (threshold, expected) in [
+        (0, [1_000, 1_000, 1_000, 1_000]),
+        (3, [1_000, 1_000, 1_000, 2_000]),
+    ] {
+        let spec = MemoryEscalationSpec {
+            escalate_after_worker_losses: threshold,
+            ..policy(vec![], 0)
+        };
+        let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(spec), 5);
+        let mut rx = add_worker(&scheduler, 1_000_000).await?;
+        let _listener = add_action(&scheduler, 22, 1_000).await?;
+        for (losses, want) in expected.iter().enumerate() {
+            let (_, memory) = next_dispatch(&mut rx).await;
+            assert_eq!(
+                memory, *want,
+                "threshold {threshold}, after {losses} losses"
+            );
+            if losses + 1 < expected.len() {
+                rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The keepalive's evidence does not wait for the loss threshold: with
+/// `escalate_after_worker_losses` at 0, a loss after a report over the
+/// reservation still escalates, and one without a report does not.
+#[nativelink_test]
+async fn a_sampled_loss_escalates_with_the_threshold_off() -> Result<(), Error> {
+    let spec = MemoryEscalationSpec {
+        escalate_after_worker_losses: 0,
+        ..policy(vec![], 0)
+    };
+    let (scheduler, worker_scheduler) = make_scheduler_with_policy(Some(spec), 5);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+    let _listener = add_action(&scheduler, 23, 1_000).await?;
+    let (first, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 1_000);
+    rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    let (second, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(second.operation_id, first.operation_id);
+    assert_eq!(memory, 1_000, "no report, threshold off: unchanged");
+    report_peak(worker_scheduler.as_ref(), &second.operation_id, 1_300).await?;
+    rx = lose_worker(&scheduler, worker_scheduler.as_ref(), 1_000_000).await?;
+    let (_, memory) = next_dispatch(&mut rx).await;
+    assert_eq!(memory, 2_600, "the report alone escalates");
     Ok(())
 }

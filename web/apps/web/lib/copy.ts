@@ -35,3 +35,19 @@ export const LLVM = {
   speedup: { value: "4×", label: "faster LLVM builds" },
   wallTime: { value: "17m → 4m", label: "full-project compile" },
 } as const;
+
+/** Every build system NativeLink speaks, in one list, so no page can shorten it differently. */
+export const BUILD_SYSTEMS = [
+  "Bazel",
+  "Buck2",
+  "Siso",
+  "Pants",
+  "Goma",
+  "Soong",
+  "CMake via recc",
+  "BuildStream",
+  "GN",
+  "Cargo",
+] as const;
+
+export const BUILD_SYSTEMS_SENTENCE = BUILD_SYSTEMS.join(", ");
