@@ -181,40 +181,155 @@ async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
 /// hardlinks.
 #[cfg(target_os = "macos")]
 async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::ffi::CString;
+    let src_c = path_to_cstring(src)?;
+    let dst_c = path_to_cstring(dst)?;
+    crate::spawn_blocking!("clonefile", move || clonefile_nofollow(&src_c, &dst_c))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+#[cfg(target_os = "macos")]
+fn path_to_cstring(path: &Path) -> std::io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
 
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path contains interior NUL byte: {}", path.display()),
+        )
+    })
+}
+
+/// Blocking `clonefile(src, dst, CLONE_NOFOLLOW)`. `dst` must not exist; the
+/// call is atomic, so a failure leaves no `dst` behind.
+#[cfg(target_os = "macos")]
+fn clonefile_nofollow(src: &core::ffi::CStr, dst: &core::ffi::CStr) -> std::io::Result<()> {
     // From <sys/clonefile.h>: don't follow symlinks at the top level. Symlinks
     // *within* the cloned tree are cloned as symlinks regardless. The `libc`
     // crate exposes `clonefile` but not this flag constant.
     const CLONE_NOFOLLOW: u32 = 0x0001;
 
-    let src_c = CString::new(src.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "src path contains interior NUL byte",
-        )
-    })?;
-    let dst_c = CString::new(dst.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "dst path contains interior NUL byte",
-        )
-    })?;
+    // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
+    // word, and both outlive the call.
+    let res = unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), CLONE_NOFOLLOW) };
+    if res == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
 
-    crate::spawn_blocking!("clonefile", move || {
-        // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
-        // word. Both CStrings are owned by this closure for the duration of
-        // the call, so the pointers stay valid.
-        let res = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), CLONE_NOFOLLOW) };
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
+/// Gives `dst` a private inode holding the bytes of the regular file `src`
+/// without reading or writing them: an APFS `clonefile(2)` clone of `src`,
+/// `chmod`'d to `mode`. Unlike a hardlink the clone has its own inode, so
+/// neither the `chmod` nor any later write to `dst` can reach `src`; its data
+/// blocks are shared copy-on-write.
+///
+/// A clone also inherits what a byte copy would not: the source's extended
+/// attributes and BSD file flags (`chflags(2)`). The clone is therefore
+/// inspected before it is kept, and it is kept only if it is a regular file
+/// with no file flags and no extended attributes (other than the
+/// kernel-assigned `com.apple.provenance`, which a file the same process
+/// writes carries as well). The check runs on the clone, not on `src`: the
+/// clone is a private snapshot, so what is checked is exactly what is kept
+/// and nothing can change between the check and the use.
+///
+/// On any error `dst` does not exist afterwards (unless it existed before:
+/// `clonefile(2)` refuses to replace it and it is left alone). Returns `Err`
+/// on EXDEV (cross-volume), ENOTSUP (filesystem doesn't support clones), an
+/// existing `dst`, a clone that fails the check, or any other errno; callers
+/// are expected to fall back to a byte copy.
+#[cfg(target_os = "macos")]
+pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let src_c = path_to_cstring(src)?;
+    let dst_c = path_to_cstring(dst)?;
+    let dst = dst.to_path_buf();
+    crate::spawn_blocking!("clone_file_pristine", move || {
+        clonefile_nofollow(&src_c, &dst_c)?;
+        let kept = check_clone_is_pristine(&dst, &dst_c)
+            .and_then(|()| std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode)));
+        if kept.is_err() {
+            // An inherited immutable flag would stop the unlink. Only a
+            // regular file is touched: `chflags` follows symlinks.
+            if std::fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file()) {
+                // SAFETY: `dst_c` is a NUL-terminated C string that outlives
+                // the call.
+                unsafe { libc::chflags(dst_c.as_ptr(), 0) };
+            }
+            drop(std::fs::remove_file(&dst));
         }
+        kept
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+/// The check behind [`clone_file_pristine`]: `path` is a regular file with
+/// no BSD file flags and no extended attributes beyond
+/// `com.apple.provenance`.
+#[cfg(target_os = "macos")]
+fn check_clone_is_pristine(path: &Path, path_c: &core::ffi::CStr) -> std::io::Result<()> {
+    use std::os::macos::fs::MetadataExt;
+
+    /// Stamped by the kernel on files a provenance-tracked process creates,
+    /// so the byte copy this clone stands in for would carry it too.
+    const KERNEL_ASSIGNED_XATTR: &[u8] = b"com.apple.provenance";
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other("clone is not a regular file"));
+    }
+    if metadata.st_flags() != 0 {
+        return Err(std::io::Error::other(format!(
+            "clone inherited file flags {:#x}",
+            metadata.st_flags()
+        )));
+    }
+
+    // The names come back as consecutive NUL-terminated strings. Almost
+    // always there are none, which the first call answers on its own.
+    // SAFETY: a null buffer of size 0 asks only for the size needed.
+    let size = unsafe {
+        libc::listxattr(
+            path_c.as_ptr(),
+            core::ptr::null_mut(),
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    if size < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if size == 0 {
+        return Ok(());
+    }
+    let mut names = vec![0u8; size.unsigned_abs()];
+    // SAFETY: `names` is a writable buffer of exactly the length passed.
+    let size = unsafe {
+        libc::listxattr(
+            path_c.as_ptr(),
+            names.as_mut_ptr().cast(),
+            names.len(),
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    if size < 0 {
+        // Includes ERANGE if an attribute appeared in between: not pristine.
+        return Err(std::io::Error::last_os_error());
+    }
+    names.truncate(size.unsigned_abs());
+    match names
+        .split(|byte| *byte == 0)
+        .find(|name| !name.is_empty() && *name != KERNEL_ASSIGNED_XATTR)
+    {
+        None => Ok(()),
+        Some(name) => Err(std::io::Error::other(format!(
+            "clone inherited extended attribute {}",
+            String::from_utf8_lossy(name)
+        ))),
+    }
 }
 
 /// Sets the directory `dir`'s mode to 0o755 so callers can create new
@@ -810,6 +925,137 @@ mod tests {
         let dst_content = fs::read_to_string(&dst_file).await?;
         assert_eq!(dst_content, "mutated by clone");
 
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_xattr(path: &Path, name: &str, value: &[u8]) {
+        let path_c = path_to_cstring(path).unwrap();
+        let name_c = std::ffi::CString::new(name).unwrap();
+        // SAFETY: both C strings and the value buffer outlive the call.
+        let rc = unsafe {
+            libc::setxattr(
+                path_c.as_ptr(),
+                name_c.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "setxattr: {}", std::io::Error::last_os_error());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_flags(path: &Path, flags: u32) {
+        let path_c = path_to_cstring(path).unwrap();
+        // SAFETY: `path_c` is a NUL-terminated C string that outlives the call.
+        let rc = unsafe { libc::chflags(path_c.as_ptr(), flags) };
+        assert_eq!(rc, 0, "chflags: {}", std::io::Error::last_os_error());
+    }
+
+    /// `clone_file_pristine` on a clean file: the clone is a new inode with
+    /// the source's bytes and the requested mode, the source is untouched, an
+    /// existing destination is refused and left alone, and a missing source
+    /// creates nothing.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clone_file_pristine() -> Result<(), Error> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp_dir = TempDir::new()?;
+        let src = temp_dir.path().join("src");
+        let dst = temp_dir.path().join("dst");
+        fs::write(&src, b"blob bytes").await?;
+        fs::set_permissions(&src, std::fs::Permissions::from_mode(0o444)).await?;
+
+        clone_file_pristine(&src, &dst, 0o555).await?;
+        let (src_meta, dst_meta) = (fs::metadata(&src).await?, fs::metadata(&dst).await?);
+        assert_ne!(src_meta.ino(), dst_meta.ino(), "a clone is a new inode");
+        assert_eq!(src_meta.nlink(), 1, "a clone is not a hardlink");
+        assert_eq!(dst_meta.permissions().mode() & 0o7777, 0o555);
+        assert_eq!(src_meta.permissions().mode() & 0o7777, 0o444);
+        assert_eq!(fs::read(&dst).await?, b"blob bytes");
+
+        // An existing destination is an error and is not replaced.
+        let other = temp_dir.path().join("other");
+        fs::write(&other, b"other").await?;
+        let err = clone_file_pristine(&other, &dst, 0o555).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&dst).await?, b"blob bytes");
+
+        // A missing source fails and creates nothing.
+        let never = temp_dir.path().join("never");
+        assert!(
+            clone_file_pristine(&temp_dir.path().join("missing"), &never, 0o555)
+                .await
+                .is_err()
+        );
+        assert!(fs::symlink_metadata(&never).await.is_err());
+        Ok(())
+    }
+
+    /// `clone_file_pristine` refuses, and leaves no destination behind for,
+    /// a source whose clone would carry more than its bytes: an extended
+    /// attribute, a BSD file flag (including the immutable one, which would
+    /// otherwise make the clone impossible to chmod or unlink), or a source
+    /// that is not a regular file.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test("crate")]
+    async fn test_clone_file_pristine_rejects_inherited_metadata() -> Result<(), Error> {
+        let temp_dir = TempDir::new()?;
+        let dst = temp_dir.path().join("dst");
+
+        let with_xattr = temp_dir.path().join("with_xattr");
+        fs::write(&with_xattr, b"x").await?;
+        set_xattr(&with_xattr, "com.apple.quarantine", b"0081;0;test;");
+        let err = clone_file_pristine(&with_xattr, &dst, 0o555)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("com.apple.quarantine"), "{err}");
+        assert!(fs::symlink_metadata(&dst).await.is_err(), "no clone left");
+
+        for (name, flags) in [("nodump", libc::UF_NODUMP), ("uchg", libc::UF_IMMUTABLE)] {
+            let flagged = temp_dir.path().join(name);
+            fs::write(&flagged, b"x").await?;
+            set_flags(&flagged, flags);
+            let result = clone_file_pristine(&flagged, &dst, 0o555).await;
+            // Clear before asserting so the temp dir can always be removed.
+            set_flags(&flagged, 0);
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("file flags"), "{name}: {err}");
+            assert!(
+                fs::symlink_metadata(&dst).await.is_err(),
+                "{name}: no clone left"
+            );
+        }
+
+        // CLONE_NOFOLLOW clones a symlink as a symlink; that is not a file.
+        let link = temp_dir.path().join("link");
+        fs::symlink(temp_dir.path().join("with_xattr"), &link).await?;
+        assert!(clone_file_pristine(&link, &dst, 0o555).await.is_err());
+        assert!(fs::symlink_metadata(&dst).await.is_err(), "no clone left");
+
+        // The one attribute a fresh file may carry too is tolerated. The
+        // kernel owns it and may refuse to let a test set it; only a file
+        // that really carries it proves anything.
+        let provenance = temp_dir.path().join("provenance");
+        fs::write(&provenance, b"x").await?;
+        let path_c = path_to_cstring(&provenance).unwrap();
+        // SAFETY: both C strings and the value buffer outlive the call.
+        let rc = unsafe {
+            libc::setxattr(
+                path_c.as_ptr(),
+                c"com.apple.provenance".as_ptr(),
+                [1u8; 11].as_ptr().cast(),
+                11,
+                0,
+                0,
+            )
+        };
+        if rc == 0 {
+            clone_file_pristine(&provenance, &dst, 0o555).await?;
+        }
         Ok(())
     }
 
