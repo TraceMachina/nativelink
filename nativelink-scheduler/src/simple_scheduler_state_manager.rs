@@ -1056,6 +1056,47 @@ where
         }
     }
 
+    /// A lookup by client operation id is a client asking for its action,
+    /// so the client is alive now: record that before the timeout predicate
+    /// judges the action abandoned. Without it, a client that came back
+    /// after a gap longer than `client_action_timeout` retired its own
+    /// action by asking for it (TRA-2340). The keepalive is persisted, so a
+    /// matching pass right after the rejoin sees it too; a finished action is
+    /// left as it is. A store that will not take the write leaves the record
+    /// unchanged and the predicate decides as before.
+    async fn refresh_client_keepalive(
+        &self,
+        subscriber: &T::Subscriber,
+    ) -> Result<AwaitedAction, Error> {
+        let mut awaited_action = subscriber.borrow().await?;
+        for attempt in 1..=MAX_UPDATE_RETRIES {
+            if awaited_action.state().stage.is_finished() {
+                return Ok(awaited_action);
+            }
+            awaited_action.update_client_keep_alive((self.now_fn)().now());
+            match self
+                .action_db
+                .update_awaited_action(awaited_action.clone())
+                .await
+            {
+                Ok(()) => return Ok(awaited_action),
+                Err(err) if err.code == Code::Aborted && attempt < MAX_UPDATE_RETRIES => {
+                    tokio::time::sleep(version_conflict_backoff(attempt)).await;
+                    awaited_action = subscriber.borrow().await?;
+                }
+                Err(err) => {
+                    warn!(
+                        operation_id = ?awaited_action.operation_id(),
+                        ?err,
+                        "Could not record a rejoining client's keepalive; judging the action on its stored keepalive"
+                    );
+                    break;
+                }
+            }
+        }
+        subscriber.borrow().await
+    }
+
     async fn apply_filter_predicate(
         &self,
         awaited_action: &AwaitedAction,
@@ -1774,8 +1815,8 @@ where
             let Some(subscriber) = maybe_subscriber else {
                 return Ok(Box::pin(stream::empty()));
             };
-            let awaited_action = subscriber
-                .borrow()
+            let awaited_action = self
+                .refresh_client_keepalive(&subscriber)
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
             if !self
