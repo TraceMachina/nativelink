@@ -55,7 +55,6 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::health_utils::HealthRegistryBuilder;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
-#[cfg(target_family = "unix")]
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::{background_spawn, fs, spawn};

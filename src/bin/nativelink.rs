@@ -38,7 +38,9 @@ use tokio::select;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{broadcast, oneshot};
-use tracing::{trace_span, warn};
+use tracing::trace_span;
+#[cfg(target_family = "unix")]
+use tracing::warn;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -150,6 +152,10 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     let mut shutdown_guard = ShutdownGuard::default();
 
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
+
+    // Not used in non-unix targets
+    #[cfg(not(target_family = "unix"))]
+    drop(scheduler_shutdown_rx);
 
     // SIGINT takes the SIGTERM path: a worker stopped from a terminal
     // drains like one stopped by its supervisor. A second SIGINT during
