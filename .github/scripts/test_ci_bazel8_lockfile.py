@@ -38,6 +38,32 @@ class Bazel8LockfileTest(unittest.TestCase):
             self.assertIn('--lockfile_mode=error', arguments)
             self.assertNotIn('--lockfile_mode=off', arguments)
 
+    def test_compatibility_lane_is_nightly_only_without_remote_execution(self):
+        workflow = Path('.github/workflows/native-bazel.yaml').read_text()
+        lane = workflow.split('  unit-tests:\n', 1)[1].split('\n  redis-store-tester:', 1)[0]
+        condition = next(line for line in lane.splitlines() if line.startswith('    if:'))
+        self.assertIn('schedule', condition)
+        self.assertIn('workflow_dispatch', condition)
+        self.assertNotIn('push', condition)
+        self.assertNotIn('pull_request', condition)
+        self.assertIn('exec: "off"', lane)
+        self.assertIn('mode: read', lane)
+        self.assertNotIn('API_KEY_RW', lane)
+
+    def test_lockfile_regeneration_watches_the_module_and_crate_graph(self):
+        workflow = Path('.github/workflows/bazel8-lockfile.yaml').read_text()
+        for source in ('"MODULE.bazel"', '"MODULE.bazel.lock"', '"Cargo.lock"',
+                       '".bazelversion"'):
+            self.assertIn(f'      - {source}\n', workflow)
+        self.assertIn('USE_BAZEL_VERSION: 8.8.2', workflow)
+        self.assertIn('bazel mod deps --lockfile_mode=update', workflow)
+        # The regenerated file must be copied out and the default restored,
+        # in that order, or the PR would commit a Bazel 8 default lockfile.
+        regenerate = workflow.split('cp MODULE.bazel8.lock MODULE.bazel.lock', 1)[1]
+        self.assertLess(regenerate.index('cp MODULE.bazel.lock MODULE.bazel8.lock'),
+                        regenerate.index('git restore MODULE.bazel.lock'))
+        self.assertIn('git add MODULE.bazel8.lock', workflow)
+
     def test_missing_bazel8_lockfile_stops_before_running_bazel(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

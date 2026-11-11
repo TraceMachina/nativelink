@@ -28,11 +28,12 @@ concurrency:
 jobs:
   unit-tests:
     # Bazel 8 compatibility is informational, not a per-change correctness
-    # gate: the pinned Bazel 9 suite runs on every pull request, and a
-    # compatibility regression is caught on the merge itself or by the
-    # nightly schedule. Keeping this lane off the pull-request path removes
-    # its runner cost and remote-cache flake surface from every PR.
-    if: ${{ github.event_name != 'pull_request' }}
+    # gate: the pinned Bazel 9 suite runs on every pull request and merge,
+    # and the nightly schedule catches a compatibility regression within a
+    # day. Keeping this lane off the pull-request and merge paths removes
+    # its runner cost and staging-infrastructure flake surface from both;
+    # workflow_dispatch covers an on-demand check.
+    if: ${{ contains(fromJson('["schedule", "workflow_dispatch"]'), github.event_name) }}
     strategy:
       fail-fast: false
       matrix:
@@ -66,14 +67,12 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          api-key: >-
-            ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_STAGING_API_KEY_RW
-                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
-          # Remote execution only on Linux; the action hard-fails exec on
-          # non-Linux runners, so macOS lanes fall back to cache.
-          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+          api-key: ${{ secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: read
+          # No remote execution for this informational lane: executing a
+          # Bazel 8 client graph on the staging cluster adds its flake
+          # surface without adding compatibility signal.
+          exec: "off"
 
       - name: Setup Bazel
         uses: >- # v0.19.0
