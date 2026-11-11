@@ -56,7 +56,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
+    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags, OrderDirection,
     UpdateOperationType,
 };
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
@@ -3314,6 +3314,98 @@ async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
         }
     }
 
+    Ok(())
+}
+
+/// TRA-2340: a client that comes back through `WaitExecution` after a gap
+/// longer than `client_action_timeout_s`, before anything has retired its
+/// action, finds the action live, and the action stays live afterwards.
+/// Before the fix, the lookup judged the stale keepalive first, so the
+/// rejoining client's own request retired the action and it got nothing.
+#[nativelink_test]
+async fn wait_execution_rejoin_past_the_client_timeout_finds_the_action_live() -> Result<(), Error>
+{
+    const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+    // Kept longer than every gap, so the memory backend's client mapping (an
+    // evicting map on this window) outlives the client's absence and the
+    // case isolates the keepalive judgement. The mapping's own expiry is a
+    // separate mechanism (TRA-2341).
+    const RETAIN_COMPLETED_FOR_S: u32 = 3_600;
+    for backend in Backend::ALL {
+        // Inside the timeout (the control), just past it, and well past it.
+        for gap_s in [
+            CLIENT_ACTION_TIMEOUT_S - 1,
+            CLIENT_ACTION_TIMEOUT_S + 1,
+            CLIENT_ACTION_TIMEOUT_S * 10,
+        ] {
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    worker_timeout_s: WORKER_TIMEOUT_S,
+                    client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                    retain_completed_for_s: RETAIN_COMPLETED_FOR_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([98u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            // The client goes away; no matching pass or listing runs in the
+            // meantime, so nothing has retired the action.
+            drop(action_listener);
+            MockClock::advance(Duration::from_secs(gap_s));
+
+            let Some(mut rejoined) = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await
+            else {
+                panic!("{backend:?}, gap {gap_s} s: the rejoin found nothing");
+            };
+            // A new listener's first change is the state it joined at.
+            let stage = rejoined.changed().await?.0.stage.clone();
+            assert_eq!(
+                stage,
+                ActionStage::Queued,
+                "{backend:?}, gap {gap_s} s: the rejoining client found the action retired"
+            );
+
+            // The rejoin counts as the client being back: a matching pass
+            // and a listing right after it do not retire the action.
+            scheduler.do_try_match_for_test().await?;
+            // Listed the way the matcher lists: highest priority first.
+            let mut queued = scheduler
+                .filter_operations(OperationFilter {
+                    stages: OperationStageFlags::Queued,
+                    order_by_priority_direction: Some(OrderDirection::Desc),
+                    ..Default::default()
+                })
+                .await?;
+            while queued.next().await.is_some() {}
+            let changed = rejoined.changed();
+            tokio::pin!(changed);
+            assert_eq!(
+                poll!(&mut changed),
+                Poll::Pending,
+                "{backend:?}, gap {gap_s} s: the action changed state right after the rejoin"
+            );
+        }
+    }
     Ok(())
 }
 
