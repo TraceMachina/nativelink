@@ -30,7 +30,11 @@ on:
     - cron: 17 5 * * THU
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   # workflow_ref (not workflow name) so this file and vale.yaml can share the

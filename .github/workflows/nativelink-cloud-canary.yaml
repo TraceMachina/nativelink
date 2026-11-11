@@ -12,7 +12,12 @@ on:
       - .github/actions/setup-nativelink-cloud/**
       - .github/workflows/nativelink-cloud-canary.yaml
 
-permissions: read-all
+# Jobs without their own permissions block need checkout and the Actions API
+# (ci-metadata or fuzzer artifact downloads); read-all also implies scopes a
+# GitHub App installation token cannot be granted.
+permissions:
+  actions: read
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
