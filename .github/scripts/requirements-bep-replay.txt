@@ -1,0 +1,16 @@
+# Dependencies of ci_bep_replay.py and its tests, for the hosted runner
+# (ubuntu-24.04: CPython 3.12, x86_64). Installed with --require-hashes and
+# --only-binary=:all:. Pins are releases at least two weeks old; hashes are
+# the PyPI wheels for that platform. Locally, an unhashed
+# `pip install grpcio-tools==1.84.1` is enough.
+grpcio==1.84.1 \
+    --hash=sha256:474408c92b27c823ea6aab2315e2ea52d5a4e0040b37ce1e65e89d9149c48205
+grpcio-tools==1.84.1 \
+    --hash=sha256:1524f6d99124816aa2b3783a3be220f7c890868412277d2710b20d4a80bc97be
+protobuf==7.36.2 \
+    --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2 \
+    --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
+setuptools==84.1.0 \
+    --hash=sha256:5231689c6ac8156cd155cfb98c3fd6fb252c3e7e9bd3d78b64d3c55f132624c9
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

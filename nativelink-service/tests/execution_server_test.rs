@@ -707,6 +707,43 @@ async fn execute_missing_command_returns_precondition_failure()
     Ok(())
 }
 
+// REAPI `Action.timeout` is a `google.protobuf.Duration`. A negative field, or
+// `nanos` outside 0..1e9, is malformed: the server must reject it rather than
+// read it as a huge timeout. `seconds: -1, nanos: -1` used to panic.
+#[nativelink_test]
+async fn execute_malformed_timeout_returns_invalid_argument()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    // An empty message decodes as both an empty Command and an empty Directory.
+    let empty_digest = upload_action(&cas_store, &Action::default()).await?;
+
+    for (seconds, nanos) in [(-1, -1), (-5, 0), (0, -1), (1, 1_000_000_000)] {
+        let action = Action {
+            command_digest: Some(empty_digest.into()),
+            input_root_digest: Some(empty_digest.into()),
+            timeout: Some(prost_types::Duration { seconds, nanos }),
+            ..Default::default()
+        };
+        let action_digest = upload_action(&cas_store, &action).await?;
+
+        let Err(status) = execution_server
+            .execute(Request::new(make_execute_request(action_digest)))
+            .await
+        else {
+            panic!("execute should reject timeout {seconds}s {nanos}ns");
+        };
+        assert_eq!(
+            status.code(),
+            TonicCode::InvalidArgument,
+            "timeout {seconds}s {nanos}ns: {status:?}",
+        );
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn execute_missing_input_root_returns_precondition_failure()
 -> Result<(), Box<dyn core::error::Error>> {
