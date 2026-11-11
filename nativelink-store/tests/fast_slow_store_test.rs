@@ -3146,3 +3146,27 @@ async fn a_wedged_commit_fails_at_the_grace_deadline() -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// The sizing `has()` returns `None` both for a missing object and for one
+/// the slow store considers expired, so the error names both.
+#[nativelink_test]
+async fn missing_object_error_names_expiry() -> Result<(), Error> {
+    let (fast_slow_store, _fast_store, _slow_store) = make_stores();
+    let digest = DigestInfo::try_new(VALID_HASH, 100)?;
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("an object in neither tier is not found");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("not found in either fast or slow store"),
+        "{message}"
+    );
+    assert!(
+        message.contains("or the slow store considers it expired"),
+        "{message}"
+    );
+    Ok(())
+}
