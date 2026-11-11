@@ -78,6 +78,15 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.5: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Gate the caps dependency to Linux", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Give the service integration tests the moderate timeout", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Report each running action's memory peak on the keepalive", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Return INVALID_ARGUMENT for unknown instances and missing request fields", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "escalate memory on the second worker lost under an action", group = "<!-- 1 -->⛰️  Features" },
+  { message = "pricing page rewrite, comparison table, trial request", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "run Bazel 8 compatibility nightly and on demand", group = "<!-- 4 -->🧪 Testing & CI" },
+
   # v1.8.4: pinned by subject, since their bodies trip the generic word rules.
   { message = "Add a fault policy and command counts to the fake Redis", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Add and reformat many things with Prettier", group = "<!-- 6 -->⚙️ Miscellaneous" },
