@@ -13,11 +13,11 @@ on:
       - ".github/styles/**"
       - "web/**"
 
-# Jobs without their own permissions block need checkout and the Actions API
-# (ci-metadata or fuzzer artifact downloads); read-all also implies scopes a
-# GitHub App installation token cannot be granted.
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
 permissions:
-  actions: read
   contents: read
 
 concurrency:

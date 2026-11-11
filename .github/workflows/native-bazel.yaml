@@ -19,11 +19,11 @@ on:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-# ci-metadata lists this run's jobs through the Actions API; checkout needs
-# contents. Nothing else uses the token, and token brokers that mint it from
-# a GitHub App installation cannot grant the scopes read-all implies.
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
 permissions:
-  actions: read
   contents: read
 
 concurrency:
