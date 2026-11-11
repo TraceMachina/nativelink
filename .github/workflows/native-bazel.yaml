@@ -63,14 +63,12 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          api-key: >-
-            ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_STAGING_API_KEY_RW
-                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
-          # Remote execution only on Linux; the action hard-fails exec on
-          # non-Linux runners, so macOS lanes fall back to cache.
-          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+          api-key: ${{ secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: read
+          # No remote execution for this informational lane: executing a
+          # Bazel 8 client graph on the staging cluster adds its flake
+          # surface without adding compatibility signal.
+          exec: "off"
 
       - name: Setup Bazel
         uses: >- # v0.19.0

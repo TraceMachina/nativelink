@@ -2,9 +2,17 @@
 
 The Bazel 8.8.2 lane in `native-bazel.yaml` copies `MODULE.bazel8.lock` to
 `MODULE.bazel.lock` in its disposable checkout and runs with
-`--lockfile_mode=error`. Other jobs keep the default lockfile for the version in
-`.bazelversion`. Remote cache and execution settings are independent of this
-selection.
+`--lockfile_mode=error`. It runs on the nightly schedule and on manual
+dispatch, with the staging remote cache in read-only mode and no remote
+execution. Other jobs keep the default lockfile for the version in
+`.bazelversion`.
+
+The lockfile regenerates automatically: when a change to `MODULE.bazel`,
+`MODULE.bazel.lock`, `Cargo.lock` or `.bazelversion` lands on main, the
+`CI / Bazel 8 lockfile` workflow (`bazel8-lockfile.yaml`) regenerates
+`MODULE.bazel8.lock` on a Linux x86-64 runner and opens an auto-merge PR when
+it drifted. The manual procedure below remains for local verification and for
+recovering from a failed regeneration.
 
 Generate each lockfile with the Bazel version that consumes it. Even when two
 versions accept the same lockfile schema, their module graphs and extension
