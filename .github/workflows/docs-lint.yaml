@@ -37,9 +37,11 @@ permissions:
   contents: read
 
 concurrency:
-  # workflow_ref (not workflow name) so this file and vale.yaml can share the
-  # "CI / Docs" display prefix without cancelling each other.
-  group: ${{ github.workflow_ref }}-${{ github.ref }}
+  # A file-specific literal (not the workflow name) so this file and vale.yaml
+  # can share the "CI / Docs" display prefix without cancelling each other.
+  # github.workflow_ref is unavailable where the workflow is compiled ahead of
+  # run time.
+  group: docs-lint-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
