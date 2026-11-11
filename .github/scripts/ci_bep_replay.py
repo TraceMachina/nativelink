@@ -512,12 +512,15 @@ def check_run(origin, invocation_id, link, exit_name, failed, artifact):
                        'summary': '\n'.join(summary), 'text': body}}
 
 
-def check_rows(repository, sha, token, results_url, request=github_request):
+def check_rows(repository, sha, token, results_url, request=github_request, created=()):
     """(job, result, check run URL, build link) for each build-results check on sha."""
     path = (f'/repos/{quote(repository, safe="/")}/commits/{sha}/check-runs'
             '?filter=latest&per_page=100')
+    # The listing can lag a check run created moments ago; this run's own win.
+    runs = {run.get('name'): run for run in request(path, token).get('check_runs', [])}
+    runs.update({run.get('name'): run for run in created})
     rows = []
-    for run in request(path, token).get('check_runs', []):
+    for run in runs.values():
         name = run.get('name') or ''
         if (not name.startswith(CHECK_PREFIX)
                 or (run.get('app') or {}).get('slug') != 'github-actions'
@@ -574,11 +577,12 @@ def upsert_comment(repository, pull_request, body, token, request=github_request
 
 
 def comment_on_pull_request(origin, token, results_url, request=github_request,
-                            sleep=time.sleep):
+                            sleep=time.sleep, created=()):
     """Keep one PR comment listing every published build of the PR's head commit."""
     written = None
     for _ in range(2):
-        rows = check_rows(origin.repository, origin.head_sha, token, results_url, request)
+        rows = check_rows(origin.repository, origin.head_sha, token, results_url, request,
+                          created)
         body = comment_body(origin.head_sha, rows)
         if not rows or body == written:
             break
@@ -626,9 +630,9 @@ def replay(protos, artifact, event, args, api_key, token, pull_request):
         summary['results_url'] = link = results_link(args.results_url, invocation_id)
         if token:
             repository = quote(origin.repository, safe='/')
-            github_request(f'/repos/{repository}/check-runs', token,
-                           check_run(origin, invocation_id, link, exit_name, failed, artifact),
-                           method='POST')
+            summary['check_run'] = github_request(
+                f'/repos/{repository}/check-runs', token,
+                check_run(origin, invocation_id, link, exit_name, failed, artifact), method='POST')
     return summary
 
 
@@ -690,10 +694,14 @@ def main(argv=None):
     if step_summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(step_summary, 'a', encoding='utf-8') as stream:
             stream.write(job_summary(summaries))
+    if token and any(summary.get('published') for summary in summaries) and not pull_request:
+        print('No open pull request has this head commit; not commenting.')
     if token and pull_request and any(summary.get('published') for summary in summaries):
         origin = origin_from_event(event, 'bep-comment-0', pull_request)
+        created = [summary['check_run'] for summary in summaries if summary.get('check_run')]
         try:
-            comment_on_pull_request(origin, token, args.results_url)
+            if not comment_on_pull_request(origin, token, args.results_url, created=created):
+                print('No build-results check runs found; not commenting.')
         except (urllib.error.URLError, KeyError, TypeError) as error:
             print(f'::warning::Could not update the PR comment: {error}')
     return 0
