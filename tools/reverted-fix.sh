@@ -48,13 +48,14 @@ filters=("$@")
 repo="$(git rev-parse --show-toplevel)"
 head="$(git -C "$repo" rev-parse HEAD)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/reverted-fix.XXXXXX")"
+# shellcheck disable=SC2329 # invoked by the EXIT trap
 cleanup() {
-    git -C "$repo" worktree remove --force "$work" >/dev/null 2>&1 || true
+    git -C "$repo" worktree remove --force "$work" > /dev/null 2>&1 || true
     rm -rf "$work"
 }
 trap cleanup EXIT
 
-if [[ "$fix" == *..* ]]; then
+if [[ $fix == *..* ]]; then
     range="$fix"
 else
     range="${fix}^..${fix}"
@@ -66,29 +67,30 @@ git -C "$repo" worktree add --detach --quiet "$work" "$head"
 # being judged.
 patch="$work/.reverted-fix.patch"
 git -C "$repo" diff "$range" -- . \
-    ':(exclude)*/tests/*' ':(exclude)tests/*' ':(exclude)*_test.rs' >"$patch"
-if [[ ! -s "$patch" ]]; then
+    ':(exclude)*/tests/*' ':(exclude)tests/*' ':(exclude)*_test.rs' > "$patch"
+if [[ ! -s $patch ]]; then
     echo "error: $range changes nothing outside test code" >&2
     exit 2
 fi
-if ! git -C "$work" apply --reverse --3way "$patch" >/dev/null 2>&1; then
+if ! git -C "$work" apply --reverse --3way "$patch" > /dev/null 2>&1; then
     echo "error: $range does not reverse cleanly on $head; later commits changed the same lines" >&2
     exit 2
 fi
 
 test_args=(--test "$target")
-if [[ "$target" == "lib" ]]; then
+if [[ $target == "lib" ]]; then
     test_args=(--lib)
 fi
 
 echo "Reverted ${range} (non-test files) on ${head:0:12}; running ${package} ${target} ${filters[*]:-}" >&2
 set +e
-(cd "$work" && cargo test --quiet -p "$package" "${test_args[@]}" -- "${filters[@]}") >"$work/.test.log" 2>&1
+(cd "$work" && cargo test --quiet -p "$package" "${test_args[@]}" -- "${filters[@]}") > "$work/.test.log" 2>&1
 status=$?
 set -e
 
 summary="$(grep -E '^test result:|^test .* FAILED$|panicked at' "$work/.test.log" | head -20)"
 if [[ $status -ne 0 ]]; then
+    # shellcheck disable=SC2016 # the backticks are literal text
     printf 'Reverted-fix run: with %s reverted, `cargo test -p %s %s %s` fails as it should:\n%s\n' \
         "$range" "$package" "${test_args[*]}" "${filters[*]:-}" "$summary"
     exit 0
