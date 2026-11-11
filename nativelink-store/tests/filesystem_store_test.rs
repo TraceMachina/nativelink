@@ -2407,7 +2407,7 @@ async fn older_upload_finishing_last_does_not_replace_newer_generation() -> Resu
 }
 
 // Drop root capabilities to read all files so we can write tests about permissions
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn drop_all_fs_read_caps() -> Result<(), Error> {
     use caps::{CapSet, Capability};
 
@@ -2422,6 +2422,13 @@ fn drop_all_fs_read_caps() -> Result<(), Error> {
     if caps::has_cap(None, CapSet::Permitted, Capability::CAP_DAC_OVERRIDE)? {
         caps::drop(None, CapSet::Effective, Capability::CAP_DAC_OVERRIDE)?;
     }
+    Ok(())
+}
+
+// There are no capabilities to drop off Linux; a non-root run already gets
+// permission errors, which is all these tests need.
+#[cfg(all(unix, not(target_os = "linux")))]
+const fn drop_all_fs_read_caps() -> Result<(), Error> {
     Ok(())
 }
 

@@ -17,7 +17,6 @@ rust_library(
         "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:base64",
-        "@crates//:caps",
         "@crates//:mongodb",
         "@crates//:prost",
         "@crates//:prost-types",
@@ -32,7 +31,12 @@ rust_library(
         "@crates//:uuid",
         "@crates//:walkdir",
         "@crates//:zip",
-    ],
+    ] + select({
+        # The caps crate only compiles on Linux: capabilities are a Linux
+        # kernel concept, and macOS is also `unix`.
+        "@platforms//os:linux": ["@crates//:caps"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(
