@@ -19,25 +19,6 @@ importers:
       azurite:
         specifier: 3.37.0
         version: 3.37.0(@types/node@26.6.5)(debug@4.4.3(supports-color@5.5.0))(supports-color@5.5.0)
-    devDependencies:
-      '@azure/identity':
-        specifier: ^4
-        version: 4.14.0(supports-color@5.5.0)
-      '@azure/ms-rest-js':
-        specifier: ^2
-        version: 2.7.0(supports-color@5.5.0)
-      applicationinsights:
-        specifier: ^3
-        version: 3.17.0(supports-color@5.5.0)
-      axios:
-        specifier: ^1
-        version: 1.20.0(debug@4.4.3(supports-color@5.5.0))(supports-color@5.5.0)
-      sequelize:
-        specifier: ^6
-        version: 6.37.8(mysql2@3.24.6(@types/node@26.6.5))(supports-color@5.5.0)(tedious@20.3.8(supports-color@5.5.0))
-      uuid:
-        specifier: ^11.1.1
-        version: 11.1.1
 
 packages:
 

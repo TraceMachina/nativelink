@@ -3,14 +3,6 @@
   "dependencies": {
     "azurite": "3.37.0"
   },
-  "devDependencies": {
-    "@azure/identity": "^4",
-    "@azure/ms-rest-js": "^2",
-    "applicationinsights": "^3",
-    "axios": "^1",
-    "sequelize": "^6",
-    "uuid": "^11"
-  },
   "private": true,
   "scripts": {
     "test": "node --test dependency-security.test.cjs"
