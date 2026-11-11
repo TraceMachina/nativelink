@@ -164,6 +164,9 @@ def summarize(path):
     print(f"Setup plus all iterations: {result['total_seconds']:.2f}s\n")
     print("| Iteration | Build/test (s) | Total reuse | Local hits | Disk hits | Remote hits | Cached test targets | Result |")
     print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    if not result['runs']:
+        print('Retained CI outcome: ' + result.get('reason', 'unknown'))
+        return
     for run in result['runs']:
         cache, tests = run['cache'], run['tests']
         ratio = cache['total_reuse_percent']

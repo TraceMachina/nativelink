@@ -125,6 +125,10 @@ jobs:
           retention-days: 7
 
   cluster:
+    concurrency:
+      group: retained-ci-bazel
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
       startsWith(github.ref, 'refs/heads/') &&
@@ -146,7 +150,7 @@ jobs:
       NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
       NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
+      NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}
     steps:
       - name: Start setup timer
         run: echo "BENCHMARK_STARTED=$(date +%s)" >> "$GITHUB_ENV"
