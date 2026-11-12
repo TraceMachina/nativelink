@@ -9474,7 +9474,7 @@ done
 
     #[nativelink_test]
     #[cfg(target_family = "unix")]
-    async fn persistent_worker_isolates_actions_by_instance_name()
+    async fn persistent_worker_isolates_actions_by_instance_name_when_enabled()
     -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
         const WORKER_SCRIPT_NAME: &str = "worker.sh";
@@ -9716,7 +9716,7 @@ done
 
     #[nativelink_test]
     #[cfg(target_family = "unix")]
-    async fn persistent_worker_does_not_isolate_actions_by_instance_name_when_disabled()
+    async fn persistent_worker_does_not_isolate_actions_by_instance_name_by_default()
     -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
         const WORKER_SCRIPT_NAME: &str = "worker.sh";
