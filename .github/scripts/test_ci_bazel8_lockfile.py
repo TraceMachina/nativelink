@@ -9,6 +9,21 @@ import unittest
 
 
 class Bazel8LockfileTest(unittest.TestCase):
+    def test_compatibility_lane_runs_only_on_schedule_or_manual_dispatch(self):
+        workflow = Path('.github/workflows/native-bazel.yaml').read_text()
+        job = workflow.split('  unit-tests:\n', 1)[1].split('  redis-store-tester:', 1)[0]
+        condition = next(line.strip().removeprefix('if: ') for line in job.splitlines()
+                         if line.startswith('    if: '))
+        # This allowlist excludes pushes as well as PRs, while preserving
+        # the existing nightly schedule and an explicit manual run.
+        self.assertEqual(condition,
+                         "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}")
+        self.assertIn('cron: "0 7 * * *"', workflow)
+        self.assertIn('  workflow_dispatch:', workflow)
+        self.assertIn('bazel_version: 8.8.2', job)
+        redis_job = workflow.split('  redis-store-tester:\n', 1)[1]
+        self.assertNotIn('\n    if:', redis_job)
+
     def run_compatibility_step(self, root):
         workflow = Path('.github/workflows/native-bazel.yaml').read_text()
         step = workflow.split('      - name: Run Bazel compatibility tests\n', 1)[1]

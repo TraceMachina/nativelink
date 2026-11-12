@@ -12,7 +12,7 @@ resolver = "2"
 edition = "2024"
 name = "nativelink"
 rust-version = "1.97.1"
-version = "1.8.3"
+version = "1.8.5"
 
 [package.metadata.cargo-machete]
 # Used by the nativelink_test macro in the binary's socket regression test.
@@ -31,6 +31,10 @@ strip = true
 
 [[bin]]
 name = "nativelink"
+
+[lib]
+name = "nativelink"
+path = "src/lib.rs"
 
 [features]
 nix = ["nativelink-worker/nix"]
@@ -60,7 +64,7 @@ clap = { version = "4.5.35", features = [
 futures = { version = "0.3.31", default-features = false }
 h2 = { version = "0.4.19", default-features = false }
 hex = { version = "0.4.3", default-features = false }
-hyper = { version = "1.6.0", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false, features = [
   "tracing",
 ] }
@@ -90,6 +94,9 @@ tracing = { version = "0.1.41", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "nativelink-macro" }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }

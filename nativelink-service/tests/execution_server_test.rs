@@ -132,6 +132,7 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
             action_digest: None,
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .await;
 
@@ -141,6 +142,9 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
                 response_err.message(),
                 "'instance_name' not configured for 'foo' : Failed on execute() command"
             );
+            // A bad argument, not a server fault: clients such as Bazel
+            // retry INTERNAL but fail fast on INVALID_ARGUMENT.
+            assert_eq!(response_err.code(), TonicCode::InvalidArgument);
         }
         Ok(_) => {
             panic!("Not expecting ok!");
@@ -513,6 +517,7 @@ fn make_execute_request(action_digest: DigestInfo) -> ExecuteRequest {
         action_digest: Some(action_digest.into()),
         execution_policy: None,
         results_cache_policy: None,
+        ..Default::default()
     }
 }
 
@@ -592,6 +597,57 @@ async fn buck2_execution_scope_preserves_cache_key_and_isolates_invocations() ->
     Ok(())
 }
 
+// REv2 `Action.do_not_cache`: "the Action's result cannot be cached, and
+// in-flight requests for the same Action may not be merged". The scheduler
+// must therefore receive the action as `Uncacheable`, the qualifier that
+// skips the Action Cache lookup and the in-flight merge. Bazel sets it for
+// targets tagged `no-remote-cache`.
+#[nativelink_test]
+async fn do_not_cache_action_is_scheduled_uncacheable() -> Result<(), Error> {
+    let store_manager = make_store_manager().await?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    for do_not_cache in [false, true] {
+        let action_digest = upload_action(
+            &cas_store,
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(command_digest.into()),
+                do_not_cache,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let (server, scheduler) = make_execution_server(&store_manager)?;
+        let state = MockActionStateResult {
+            states: vec![Arc::new(ActionState {
+                client_operation_id: OperationId::default(),
+                stage: ActionStage::Queued,
+                action_digest,
+                last_transition_timestamp: SystemTime::now(),
+            })],
+        };
+        let (response, (_, info)) = tokio::join!(
+            server.execute(Request::new(make_execute_request(action_digest))),
+            scheduler.expect_add_action(Ok(Box::new(state))),
+        );
+        assert!(response.is_ok());
+        assert_eq!(
+            matches!(info.unique_qualifier, ActionUniqueQualifier::Uncacheable(_)),
+            do_not_cache,
+            "do_not_cache={do_not_cache} gave {:?}",
+            info.unique_qualifier,
+        );
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn execute_missing_action_returns_precondition_failure()
 -> Result<(), Box<dyn core::error::Error>> {
@@ -648,6 +704,43 @@ async fn execute_missing_command_returns_precondition_failure()
     assert_eq!(pf.violations[0].r#type, "MISSING");
     assert_eq!(pf.violations[0].subject, blob_subject(&command_digest));
     assert_eq!(pf.violations[0].description, "Action.command_digest");
+    Ok(())
+}
+
+// REAPI `Action.timeout` is a `google.protobuf.Duration`. A negative field, or
+// `nanos` outside 0..1e9, is malformed: the server must reject it rather than
+// read it as a huge timeout. `seconds: -1, nanos: -1` used to panic.
+#[nativelink_test]
+async fn execute_malformed_timeout_returns_invalid_argument()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    // An empty message decodes as both an empty Command and an empty Directory.
+    let empty_digest = upload_action(&cas_store, &Action::default()).await?;
+
+    for (seconds, nanos) in [(-1, -1), (-5, 0), (0, -1), (1, 1_000_000_000)] {
+        let action = Action {
+            command_digest: Some(empty_digest.into()),
+            input_root_digest: Some(empty_digest.into()),
+            timeout: Some(prost_types::Duration { seconds, nanos }),
+            ..Default::default()
+        };
+        let action_digest = upload_action(&cas_store, &action).await?;
+
+        let Err(status) = execution_server
+            .execute(Request::new(make_execute_request(action_digest)))
+            .await
+        else {
+            panic!("execute should reject timeout {seconds}s {nanos}ns");
+        };
+        assert_eq!(
+            status.code(),
+            TonicCode::InvalidArgument,
+            "timeout {seconds}s {nanos}ns: {status:?}",
+        );
+    }
     Ok(())
 }
 

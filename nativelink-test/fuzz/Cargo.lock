@@ -152,6 +152,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
+name = "caps"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd1ddba47aba30b6a889298ad0109c3b8dcb0e8fc993b459daa7067d46f865e0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -374,7 +383,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1028,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.8.3"
+version = "1.8.5"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -1043,9 +1052,10 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.8.3"
+version = "1.8.5"
 dependencies = [
  "base64",
+ "caps",
  "mongodb",
  "nativelink-metric",
  "nativelink-proto",
@@ -1077,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.8.3"
+version = "1.8.5"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -1088,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.8.3"
+version = "1.8.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1097,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.8.3"
+version = "1.8.5"
 dependencies = [
  "derive_more",
  "prost",
@@ -2286,7 +2296,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

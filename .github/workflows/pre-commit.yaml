@@ -8,7 +8,11 @@ on:
     branches:
       - main
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +29,16 @@ jobs:
 
       - name: Test CI metadata and dispatch
         run: python3 -m unittest discover -s .github/scripts -p 'test_ci*.py' -v
+
+      - name: Test the fork build-results replay
+        env:
+          BEP_REPLAY_TESTS_REQUIRED: "1"
+        run: |
+          python3 -m venv "$RUNNER_TEMP/replay-venv"
+          "$RUNNER_TEMP/replay-venv/bin/pip" install --quiet --require-hashes \
+            --only-binary=:all: -r .github/scripts/requirements-bep-replay.txt
+          "$RUNNER_TEMP/replay-venv/bin/python" -m unittest discover -s .github/scripts \
+            -p 'test_ci_bep_replay.py' -v
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix

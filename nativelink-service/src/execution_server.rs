@@ -97,6 +97,34 @@ enum ExecuteOutcome<S> {
     Reject(Status),
 }
 
+/// Converts `Action.timeout` to a [`Duration`]. An absent timeout means "as
+/// long as the server allows", which the worker maps to its maximum.
+///
+/// A `google.protobuf.Duration` with a negative field, or `nanos` outside
+/// `0..1_000_000_000`, is not a usable timeout. Casting it straight to
+/// unsigned integers turned a negative timeout into a near-infinite one, and
+/// `seconds: -1, nanos: -1` panicked in `Duration::new` when the nanosecond
+/// carry overflowed. Such a timeout is now rejected with `INVALID_ARGUMENT`.
+fn action_timeout(timeout: Option<prost_types::Duration>) -> Result<Duration, Error> {
+    let Some(timeout) = timeout else {
+        return Ok(Duration::MAX);
+    };
+    let (Ok(seconds), Ok(nanos)) = (u64::try_from(timeout.seconds), u32::try_from(timeout.nanos))
+    else {
+        return Err(make_input_err!(
+            "Action.timeout must not be negative, got {}s {}ns",
+            timeout.seconds,
+            timeout.nanos
+        ));
+    };
+    if nanos >= 1_000_000_000 {
+        return Err(make_input_err!(
+            "Action.timeout nanos must be less than 1000000000, got {nanos}"
+        ));
+    }
+    Ok(Duration::new(seconds, nanos))
+}
+
 /// Build a tonic [`Status`] of code `FAILED_PRECONDITION` whose details
 /// carry a `google.rpc.PreconditionFailure` listing the missing CAS
 /// blobs.
@@ -268,7 +296,7 @@ impl InstanceInfo {
             action
                 .command_digest
                 .clone()
-                .err_tip(|| "Expected command_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected command_digest to exist"))?,
         )
         .err_tip(|| "Could not decode command digest")?;
 
@@ -276,11 +304,9 @@ impl InstanceInfo {
             action
                 .clone()
                 .input_root_digest
-                .err_tip(|| "Expected input_digest_root")?,
+                .ok_or_else(|| make_input_err!("Expected input_digest_root"))?,
         )?;
-        let timeout = action.timeout.map_or(Duration::MAX, |v| {
-            Duration::new(v.seconds as u64, v.nanos as u32)
-        });
+        let timeout = action_timeout(action.timeout)?;
 
         let mut platform_properties = HashMap::new();
         if let Some(platform) = action.platform {
@@ -306,7 +332,10 @@ impl InstanceInfo {
             digest_function,
             digest: action_digest,
         };
-        let unique_qualifier = if skip_cache_lookup {
+        // REv2 `Action.do_not_cache`: "the Action's result cannot be cached,
+        // and in-flight requests for the same Action may not be merged".
+        // `Uncacheable` skips the cache lookup and the in-flight merge.
+        let unique_qualifier = if skip_cache_lookup || action.do_not_cache {
             ActionUniqueQualifier::Uncacheable(action_key)
         } else {
             ActionUniqueQualifier::Cacheable(action_key)
@@ -611,15 +640,14 @@ impl ExecutionServer {
     {
         let instance_name = request.instance_name;
 
-        let instance_info = self
-            .instance_infos
-            .get(&instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let instance_info = self.instance_infos.get(&instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         let digest = DigestInfo::try_from(
             request
                 .action_digest
-                .err_tip(|| "Expected action_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected action_digest to exist"))?,
         )
         .err_tip(|| "Failed to unwrap action cache")?;
 

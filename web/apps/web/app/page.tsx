@@ -212,7 +212,7 @@ export default function HomePage() {
               <Eyebrow className="mb-5">
                 Build infrastructure for the agentic era
               </Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] text-foreground md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] text-foreground md:text-6xl">
                 When agents write your code,{" "}
                 <span className="bg-gradient-to-r from-brand via-brand to-brand-strong bg-clip-text text-transparent">
                   your build system is the bottleneck.
@@ -272,7 +272,7 @@ export default function HomePage() {
             <Eyebrow className="mb-4">
               Built for AI-assisted development
             </Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               Wire NativeLink into your AI coding agent.
             </h2>
             <p className="mx-auto mt-6 max-w-[640px] text-base leading-relaxed text-muted-foreground md:text-lg">
@@ -439,7 +439,7 @@ export default function HomePage() {
         <Reveal>
           <div className="mx-auto mb-14 max-w-[720px] text-center">
             <Eyebrow className="mb-4">What you get</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               Fast builds without idle infrastructure.
             </h2>
           </div>
@@ -504,7 +504,7 @@ export default function HomePage() {
             <Eyebrow className="mb-4">
               Programmatic build infrastructure for the agentic era
             </Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               When agents commit code, the build system is the last honest
               checkpoint.
             </h2>

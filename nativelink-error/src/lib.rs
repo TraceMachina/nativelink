@@ -346,6 +346,13 @@ impl From<Utf8Error> for Error {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl From<caps::errors::CapsError> for Error {
+    fn from(err: caps::errors::CapsError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {

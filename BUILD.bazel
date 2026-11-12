@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(
@@ -10,11 +10,12 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-rust_binary(
-    name = "nativelink",
+rust_library(
+    name = "nativelink_lib",
     srcs = [
-        "src/bin/nativelink.rs",
+        "src/lib.rs",
     ],
+    crate_name = "nativelink",
     deps = [
         "//nativelink-config",
         "//nativelink-error",
@@ -25,13 +26,10 @@ rust_binary(
         "//nativelink-worker",
         "@crates//:async-lock",
         "@crates//:axum",
-        "@crates//:clap",
         "@crates//:futures",
         "@crates//:h2",
         "@crates//:hyper",
         "@crates//:hyper-util",
-        "@crates//:mimalloc",
-        "@crates//:parking_lot",
         "@crates//:rustls-pki-types",
         "@crates//:tokio",
         "@crates//:tokio-rustls",
@@ -41,12 +39,35 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "nativelink",
+    srcs = [
+        "src/bin/nativelink.rs",
+    ],
+    deps = [
+        ":nativelink_lib",
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-util",
+        "//nativelink-worker",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:mimalloc",
+        "@crates//:tokio",
+        "@crates//:tokio-rustls",
+        "@crates//:tracing",
+    ],
+)
+
 rust_test(
     name = "nativelink_test",
     timeout = "short",
-    crate = ":nativelink",
+    crate = ":nativelink_lib",
     proc_macro_deps = ["//nativelink-macro"],
-    deps = ["@crates//:tracing-test"],
+    deps = [
+        "@crates//:reqwest",
+        "@crates//:tracing-test",
+    ],
 )
 
 rust_binary(

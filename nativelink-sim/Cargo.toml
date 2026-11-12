@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-sim"
-version = "1.8.3"
+version = "1.8.5"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -26,7 +26,7 @@ clap = { version = "4.5.35", features = [
   "usage",
 ], default-features = false }
 futures = { version = "0.3.31", default-features = false }
-hyper = { version = "1.6.0", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
 prost = { version = "0.14.4", default-features = false }
 prost-types = { version = "0.14.4", default-features = false }
@@ -51,6 +51,10 @@ tracing = { version = "0.1.41", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
+
+[package.metadata.cargo-machete]
+# Used by nativelink_test macro
+ignored = ["tracing", "tracing-test"]
 
 [[bin]]
 name = "fleet-sim"

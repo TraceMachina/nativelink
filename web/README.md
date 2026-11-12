@@ -23,13 +23,13 @@ web/
 - **Fumadocs 15** for the docs (MDX, Orama search, Shiki code blocks)
 - **Geist** Sans + Mono via `next/font`
 - **Biome** for lint/format
-- **Bun** + **Turborepo** for the monorepo
+- **pnpm** + **Turborepo** for the monorepo
 - **Vercel** as the deployment target
 
 ## Prerequisites
 
-- **Bun** 1.2+ — `curl -fsSL https://bun.sh/install | bash`
-- **Node.js** 20+ (Bun installs and uses its own; the engine field
+- **pnpm** 11+ — `curl -fsSL https://get.pnpm.io | sh -`
+- **Node.js** 20+ (pnpm installs and uses its own; the engine field
   enforces a minimum for tools that shell out)
 
 ## Develop
@@ -37,18 +37,18 @@ web/
 ```bash
 # Install once at the workspace root
 cd web
-bun install
+pnpm install
 
 # Run both apps in parallel via Turborepo
-bun dev
+pnpm dev
 #   marketing → http://localhost:3000
 #   docs      → http://localhost:3001
 #   marketing redirects /docs/* to the docs server, so /docs links
 #   keep working from http://localhost:3000
 
 # Or run a single app
-bun dev:web    # marketing only
-bun dev:docs   # docs only
+pnpm dev:web    # marketing only
+pnpm dev:docs   # docs only
 ```
 
 Stop everything:
@@ -57,18 +57,17 @@ Stop everything:
 lsof -i :3000 -i :3001 | awk 'NR>1 {print $2}' | sort -u | xargs kill -9
 ```
 
-(`pkill -f "next dev"` doesn't catch processes spawned via Bun.)
+(`pkill -f "next dev"` doesn't catch processes spawned via pnpm.)
 
 ## Build
 
 ```bash
-# Build everything via Turborepo (`bun run`, not `bun build`, which is
-# Bun's own bundler)
-bun run build
+# Build everything via Turborepo
+pnpm run build
 
 # Or build one app
-bun --filter @nativelink/web build
-bun --filter @nativelink/docs build
+pnpm run --filter @nativelink/web build
+pnpm run --filter @nativelink/docs build
 ```
 
 Each build runs its generators first (the docs changelog page and the
@@ -85,34 +84,33 @@ as much as possible at build time:
 
 ## Preview a production build
 
-The `bun setup`, `bun docs` and `bun preview` commands belonged to the
+The `pnpm setup`, `pnpm docs` and `pnpm preview` commands belonged to the
 previous `web/platform` layout and no longer exist. Today's equivalent:
 
 ```bash
 cd web
-bun install                                    # was: bun setup
+pnpm install
 
 # Build both apps. DOCS_URL is baked into the marketing app's /docs redirect
 # at build time; point it at the local docs server for a full preview.
-DOCS_URL=http://localhost:3001 bun run build   # was: rm -r dist && bun run build
+DOCS_URL=http://localhost:3001 pnpm run build   # was: rm -r dist && pnpm run build
 
 # Serve the builds
-bun --filter @nativelink/web start             # was: bun preview → http://localhost:3000
-bun --filter @nativelink/docs start            #                    http://localhost:3001
+pnpm run --filter @nativelink/web start             # http://localhost:3000
+pnpm run --filter @nativelink/docs start            # http://localhost:3001
 ```
 
-For a live-reloading docs server instead of a build, `bun dev:docs` replaces
-the old `bun docs`.
+For a live-reloading docs server instead of a build, use `pnpm dev:docs`
 
 ## Typecheck & lint
 
 ```bash
-bun typecheck   # tsc --noEmit on every workspace
-bun check       # biome lint
-bun format      # biome format --write
+pnpm typecheck   # tsc --noEmit on every workspace
+pnpm check       # biome lint
+pnpm format      # biome format --write
 ```
 
-CI runs `bun typecheck` and `bun check`; both must pass.
+CI runs `pnpm typecheck` and `pnpm check`; both must pass.
 
 ## Components & design tokens
 
@@ -121,7 +119,7 @@ The brand system lives in `packages/`. The full component catalog is at
 in production):
 
 ```bash
-bun dev:web
+pnpm dev:web
 # open http://localhost:3000/lab
 ```
 
