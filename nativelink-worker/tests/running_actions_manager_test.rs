@@ -9606,7 +9606,16 @@ done
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
                 root_action_directory,
-                execution_configuration: ExecutionConfiguration::default(),
+                execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings {
+                        enabled: true,
+                        pool: PoolConfig {
+                            isolate_by_instance_name: true,
+                            ..PoolConfig::default()
+                        },
+                    },
+                    ..ExecutionConfiguration::default()
+                },                
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
@@ -9839,16 +9848,7 @@ done
         let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
             RunningActionsManagerArgs {
                 root_action_directory,
-                execution_configuration: ExecutionConfiguration {
-                    persistent_workers: PersistentWorkersSettings {
-                        enabled: true,
-                        pool: PoolConfig {
-                            isolate_by_instance_name: false,
-                            ..PoolConfig::default()
-                        },
-                    },
-                    ..ExecutionConfiguration::default()
-                },
+                execution_configuration: ExecutionConfiguration::default(),
                 cas_store: cas_store.clone(),
                 ac_store: Some(Store::new(ac_store.clone())),
                 historical_store: Store::new(cas_store.clone()),
