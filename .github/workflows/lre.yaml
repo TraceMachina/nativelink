@@ -33,7 +33,9 @@ jobs:
         toolchain: [lre-cc, lre-rs]
     name: Local / ${{ matrix.toolchain }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # A runner without the remote cache builds the toolchain example from
+    # scratch; measured cold runs take 35-50 minutes.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: >- # v6.0.2
