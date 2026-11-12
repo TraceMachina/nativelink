@@ -26,7 +26,7 @@ use async_lock::Mutex;
 use futures::{StreamExt, future};
 use lru::LruCache;
 use nativelink_config::schedulers::{
-    MemoryEscalationSpec, ReservationHoldSpec, WorkerAllocationStrategy,
+    MemoryEscalationSpec, ReservationHoldSpec, WorkerAllocationStrategy, WorkerOutcomeTripwireSpec,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
@@ -40,16 +40,17 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ResourceOutcome, WorkerLoad,
 };
 use nativelink_util::action_messages::{
-    ActionStage, ActionUniqueQualifier, MISSING_INPUT_ERROR_TIP, OperationId, WorkerId,
+    ActionStage, ActionUniqueQualifier, MISSING_INPUT_ERROR_TIP, OperationId,
+    STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
     record_execution_peak_memory, record_held_workers, record_worker_connected,
     record_worker_disconnected, record_worker_hold, record_worker_keepalive,
-    record_worker_keepalive_gap, record_worker_state,
+    record_worker_keepalive_gap, record_worker_state, record_worker_tripwire,
 };
 use nativelink_util::operation_state_manager::{
-    Decline, Escalation, UpdateOperationType, WorkerStateManager,
+    Decline, Escalation, LossEscalation, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::get_node_id;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
@@ -58,11 +59,94 @@ use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
 
+/// The memory reservation an action was dispatched with, 0 without one.
+fn reservation_of(properties: &PlatformProperties, property: &str) -> u64 {
+    match properties.properties.get(property) {
+        Some(PlatformPropertyValue::Minimum(kb)) => *kb,
+        _ => 0,
+    }
+}
+
+/// Where a reservation goes next on the escalation ladder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NextReservation {
+    /// No connected worker advertises the property: nothing to grow toward.
+    NoCeiling,
+    /// The action already reserves the largest worker whole.
+    AlreadyWhole { ceiling_kb: u64 },
+    /// Nothing to grow from: no reservation and no sample.
+    NoBase,
+    /// The next reservation, and on the last step the CPU to hold with it.
+    Step {
+        value: u64,
+        cpu: Option<(String, u64)>,
+        ceiling_kb: u64,
+    },
+}
+
+/// The step after `base_kb`: the next ladder class above it, or `percent`
+/// of it, capped at the fleet's ceiling; at the ceiling the largest worker
+/// is reserved whole, its CPU too. A memory kill and a lost worker
+/// (RFC-0018) climb the same ladder through this.
+fn next_reservation(
+    policy: &MemoryEscalationSpec,
+    properties: &PlatformProperties,
+    reserved_kb: u64,
+    base_kb: u64,
+    (fleet_memory_kb, fleet_cpu): (u64, Option<u64>),
+) -> NextReservation {
+    // `max_kb` caps the fleet's ceiling; it cannot raise it past what a
+    // worker declares, or the escalation lands where nothing can run.
+    let ceiling_kb = if policy.max_kb > 0 {
+        fleet_memory_kb.min(policy.max_kb)
+    } else {
+        fleet_memory_kb
+    };
+    if ceiling_kb == 0 {
+        return NextReservation::NoCeiling;
+    }
+    let cpu_held = reservation_of(properties, &policy.cpu_property);
+    let whole_worker_cpu = fleet_cpu.filter(|cores| *cores > 0);
+    if reserved_kb >= ceiling_kb && whole_worker_cpu.is_none_or(|cores| cpu_held >= cores) {
+        return NextReservation::AlreadyWhole { ceiling_kb };
+    }
+    if base_kb == 0 {
+        return NextReservation::NoBase;
+    }
+    let next = if policy.ladder_kb.is_empty() {
+        Some(
+            base_kb
+                .saturating_mul(policy.percent)
+                .checked_div(100)
+                .unwrap_or(base_kb)
+                .max(base_kb.saturating_add(1)),
+        )
+    } else {
+        policy
+            .ladder_kb
+            .iter()
+            .copied()
+            .filter(|kb| *kb > base_kb)
+            .min()
+    };
+    let value = next.map_or(ceiling_kb, |kb| kb.min(ceiling_kb));
+    let cpu = if value >= ceiling_kb {
+        whole_worker_cpu.map(|cores| (policy.cpu_property.clone(), cores))
+    } else {
+        None
+    };
+    NextReservation::Step {
+        value,
+        cpu,
+        ceiling_kb,
+    }
+}
+
 /// Why an update ends the attempt it is about, and the error behind it;
 /// `None` for an update that keeps or completes the attempt.
 fn attempt_end_reason(update: &UpdateOperationType) -> Option<(AttemptEndReason, String)> {
     match update {
-        UpdateOperationType::UpdateWithDisconnect => {
+        UpdateOperationType::UpdateWithDisconnect(_) => {
             Some((AttemptEndReason::WorkerLost, String::new()))
         }
         UpdateOperationType::UpdateWithEscalation(escalation) => Some((
@@ -84,14 +168,22 @@ fn attempt_end_reason(update: &UpdateOperationType) -> Option<(AttemptEndReason,
         }
         // The worker turns an input missing from the CAS into a result with
         // FAILED_PRECONDITION, which the client answers by uploading it and
-        // asking again.
-        UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(result)) => result
-            .error
-            .as_ref()
-            .filter(|err| err.code == Code::FailedPrecondition)
-            .map(Error::message_string)
-            .filter(|message| message.contains(MISSING_INPUT_ERROR_TIP))
-            .map(|message| (AttemptEndReason::MissingInput, message)),
+        // asking again; a command past its timeout into one with
+        // DEADLINE_EXCEEDED.
+        UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(result)) => {
+            match result.error.as_ref() {
+                Some(err) if err.code == Code::DeadlineExceeded => {
+                    Some((AttemptEndReason::Timeout, err.message_string()))
+                }
+                Some(err) if err.code == Code::FailedPrecondition => {
+                    let message = err.message_string();
+                    message
+                        .contains(MISSING_INPUT_ERROR_TIP)
+                        .then_some((AttemptEndReason::MissingInput, message))
+                }
+                _ => None,
+            }
+        }
         UpdateOperationType::UpdateWithActionStage(_)
         | UpdateOperationType::KeepAlive
         | UpdateOperationType::ExecutionComplete => None,
@@ -268,7 +360,10 @@ use crate::match_outcome::{
 };
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
-use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker::{
+    ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerTimestamp,
+    WorkerUpdate,
+};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
@@ -350,11 +445,79 @@ fn hold_duration(spec: ReservationHoldSpec) -> Duration {
 /// A queued action a matching pass asks a worker for: which action, so a
 /// worker held for it recognises it, and since when it has waited, for
 /// whether to hold a worker for it.
+/// The platform property a worker advertises its node under (the chart's
+/// `advertiseNodeName`). A retry keeps off every worker on the node a
+/// failed attempt ran on, where the workers say which that is: a bad host
+/// takes every worker on it down with it.
+pub const NODE_NAME_PROPERTY: &str = "node_name";
+
+/// The node a worker says it is on, if it says.
+fn node_name_of(worker: &Worker) -> Option<&str> {
+    match worker
+        .total_platform_properties
+        .properties
+        .get(NODE_NAME_PROPERTY)?
+    {
+        PlatformPropertyValue::Exact(node)
+        | PlatformPropertyValue::Priority(node)
+        | PlatformPropertyValue::Ignore(node)
+        | PlatformPropertyValue::Unknown(node) => Some(node.as_str()),
+        PlatformPropertyValue::Minimum(_) => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct QueuedAction<'a> {
     pub unique_qualifier: &'a ActionUniqueQualifier,
     pub insert_timestamp: SystemTime,
+    /// Workers this action failed or timed out on: any other worker that
+    /// can run it is preferred, and these only when none other has taken
+    /// it within `AVOID_FALLBACK_AFTER` of its last requeue.
+    pub avoid: &'a [WorkerId],
+    /// The nodes of those workers, as the record remembers them: the
+    /// worker itself may be connected to another replica.
+    pub avoid_nodes: &'a [String],
+    /// When the action was last queued, from its state.
+    pub queued_since: SystemTime,
 }
+
+/// What a requeued action asks the matcher to keep off: the workers it
+/// failed on, their nodes, and whether the wait for another taker is over.
+#[derive(Debug, Clone, Copy)]
+pub struct Avoidance<'a> {
+    pub workers: &'a [WorkerId],
+    pub nodes: &'a [String],
+    /// The action has waited `AVOID_FALLBACK_AFTER` since its requeue with
+    /// no other taker, so the avoided workers may have it.
+    pub fallback_ok: bool,
+}
+
+impl Avoidance<'_> {
+    const NONE: Avoidance<'static> = Avoidance {
+        workers: &[],
+        nodes: &[],
+        fallback_ok: true,
+    };
+
+    const fn is_empty(&self) -> bool {
+        self.workers.is_empty() && self.nodes.is_empty()
+    }
+}
+
+/// The fewest workers the outcome tripwire may have drained at once on one
+/// scheduler replica, whatever `max_drained_percent` of the replica's
+/// workers comes to. Each replica brakes on the workers connected to it
+/// (the census carries worker shapes, not counts), and a replica with a
+/// handful of workers would otherwise round a node's pair down to one.
+pub const TRIPWIRE_DRAIN_FLOOR: usize = 2;
+
+/// How long a requeued action waits for a worker it did not fail on before
+/// the ones it did fail on may take it. Each scheduler replica matches its
+/// own workers only: a replica whose free workers are all avoided leaves
+/// the action for a peer with others, and only after this long with no
+/// taker (a lone worker, a fleet whose only room is the bad node) does any
+/// worker do.
+pub const AVOID_FALLBACK_AFTER: Duration = Duration::from_secs(30);
 
 /// Which of `owners`, sorted, distinct and not empty, holds a worker for
 /// `action`: the same one on every scheduler that sees the same owners,
@@ -417,6 +580,8 @@ struct ApiWorkerSchedulerImpl {
     /// How a queued action that keeps finding no room gets a worker held
     /// for it; unset means never.
     reservation_hold: Option<ReservationHoldSpec>,
+    /// When a worker's own attempt outcomes drain it; unset means never.
+    outcome_tripwire: Option<WorkerOutcomeTripwireSpec>,
     /// Where attempt-ended origin events go; unset publishes none.
     attempt_events: Option<mpsc::Sender<OriginEvent>>,
     /// Attempts whose result the state manager refused, by operation, for
@@ -825,12 +990,91 @@ impl ApiWorkerSchedulerImpl {
             record_worker_state("draining", is_draining);
         }
         worker.is_draining = is_draining;
+        if !is_draining {
+            // An operator lifting a tripped worker's drain gives it a clean
+            // slate; the tripwire judges it afresh.
+            worker.tripwire = TripwireState::Clear;
+            worker.recent_outcomes.clear();
+        }
         if is_draining {
             // A draining worker takes nothing, its holder included.
             self.end_hold(worker_id, "released");
         }
         self.capacity_changed();
         Ok(())
+    }
+
+    /// Records how an attempt on `worker_id` ended, `true` for a failure,
+    /// and drains the worker when its recent attempts say so (the outcome
+    /// tripwire): its last `min_failures` attempts all failed, or at least
+    /// `min_failures` failures among the last `window` attempts that are at
+    /// least `failure_percent` of them. At most
+    /// `max_drained_percent` of the connected workers, and at least
+    /// `TRIPWIRE_DRAIN_FLOOR`, are drained this way at once; past that the
+    /// worker is left alone and the hold is logged once.
+    fn note_worker_outcome(&mut self, worker_id: &WorkerId, failed: bool) {
+        let Some(spec) = self.outcome_tripwire else {
+            return;
+        };
+        let connected = self.workers.len();
+        let drained = self
+            .workers
+            .iter()
+            .filter(|(_, w)| w.tripwire == TripwireState::Tripped && w.is_draining)
+            .count();
+        let Some(worker) = self.workers.peek_mut(worker_id) else {
+            return;
+        };
+        if worker.is_draining {
+            return;
+        }
+        worker.recent_outcomes.push_back(failed);
+        while worker.recent_outcomes.len() > spec.window {
+            worker.recent_outcomes.pop_front();
+        }
+        let judged = worker.recent_outcomes.len();
+        let failures = worker.recent_outcomes.iter().filter(|f| **f).count();
+        // A run of failures trips on its own: a worker that was healthy and
+        // went bad carries a window of successes that would otherwise hide
+        // the turn until half of it had failed.
+        let in_a_row = worker
+            .recent_outcomes
+            .iter()
+            .rev()
+            .take_while(|failed| **failed)
+            .count();
+        let trips = in_a_row >= spec.min_failures
+            || (failures >= spec.min_failures && failures * 100 >= spec.failure_percent * judged);
+        if !trips {
+            return;
+        }
+        let allowed = (connected * spec.max_drained_percent / 100).max(TRIPWIRE_DRAIN_FLOOR);
+        if drained >= allowed {
+            if worker.tripwire != TripwireState::Held {
+                worker.tripwire = TripwireState::Held;
+                warn!(
+                    %worker_id,
+                    failures,
+                    judged,
+                    drained,
+                    allowed,
+                    "Outcome tripwire held: as many workers are already drained as it may drain at once"
+                );
+                record_worker_tripwire("held");
+            }
+            return;
+        }
+        worker.tripwire = TripwireState::Tripped;
+        warn!(
+            %worker_id,
+            failures,
+            judged,
+            "Worker drained by the outcome tripwire: its recent attempts failed"
+        );
+        record_worker_tripwire("drained");
+        if let Err(err) = self.set_drain_worker(worker_id, true) {
+            error!(%worker_id, ?err, "Failed to drain the worker the outcome tripwire judged");
+        }
     }
 
     /// Ends the hold on `worker_id`, if any, for `outcome`. The worker is
@@ -1234,6 +1478,72 @@ impl ApiWorkerSchedulerImpl {
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
         asking: Option<&ActionUniqueQualifier>,
+        avoidance: Avoidance<'_>,
+    ) -> Option<WorkerId> {
+        // The workers this action failed or timed out on, and the others on
+        // their nodes, are offered it last: only when no other worker has
+        // taken it for a while (`fallback_ok`). The nodes come from the
+        // record, which every replica reads, and from the workers this
+        // replica knows.
+        if !avoidance.is_empty() {
+            let avoid = avoidance.workers;
+            let shunned: HashSet<&str> = avoidance
+                .nodes
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    avoid
+                        .iter()
+                        .filter_map(|id| self.workers.peek(id))
+                        .filter_map(node_name_of),
+                )
+                .collect();
+            let others: HashSet<WorkerId> = candidates
+                .iter()
+                .filter(|id| !avoid.contains(id))
+                .filter(|id| {
+                    shunned.is_empty()
+                        || self
+                            .workers
+                            .peek(id)
+                            .and_then(node_name_of)
+                            .is_none_or(|node| !shunned.contains(node))
+                })
+                .cloned()
+                .collect();
+            if let Some(worker_id) = self.pick_available_worker(
+                platform_properties,
+                &others,
+                full_worker_logging,
+                asking,
+            ) {
+                return Some(worker_id);
+            }
+            if !avoidance.fallback_ok {
+                if full_worker_logging {
+                    info!(
+                        ?avoid,
+                        "Only workers this action failed on, or their nodes, are free here; leaving it for a peer"
+                    );
+                }
+                return None;
+            }
+            if full_worker_logging {
+                info!(
+                    ?avoid,
+                    "Only workers this action failed on, or their nodes, are free; offering it to one of them"
+                );
+            }
+        }
+        self.pick_available_worker(platform_properties, candidates, full_worker_logging, asking)
+    }
+
+    fn pick_available_worker(
+        &self,
+        platform_properties: &PlatformProperties,
+        candidates: &HashSet<WorkerId>,
+        full_worker_logging: bool,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> Option<WorkerId> {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
@@ -1362,6 +1672,13 @@ impl ApiWorkerSchedulerImpl {
             full_worker_logging,
             now,
             asking.map(|action| action.unique_qualifier),
+            asking.map_or(Avoidance::NONE, |action| Avoidance {
+                workers: action.avoid,
+                nodes: action.avoid_nodes,
+                fallback_ok: now
+                    .duration_since(action.queued_since)
+                    .is_ok_and(|waited| waited >= AVOID_FALLBACK_AFTER),
+            }),
         );
         if matches!(outcome, MatchOutcome::WaitingForCapacity) {
             self.consider_hold(asking, platform_properties, now, full_worker_logging);
@@ -1376,6 +1693,7 @@ impl ApiWorkerSchedulerImpl {
         full_worker_logging: bool,
         now: SystemTime,
         asking: Option<&ActionUniqueQualifier>,
+        avoidance: Avoidance<'_>,
     ) -> MatchOutcome {
         if let Some(action) = asking {
             self.note_held_action_seen(action);
@@ -1400,6 +1718,7 @@ impl ApiWorkerSchedulerImpl {
                 &candidates,
                 full_worker_logging,
                 asking,
+                avoidance,
             ) {
                 return MatchOutcome::Matched(worker_id);
             }
@@ -1475,6 +1794,80 @@ impl ApiWorkerSchedulerImpl {
             .unwrap_or((0, None))
     }
 
+    /// The reservation a lost worker's action would be requeued with, and
+    /// whether the worker's own report showed it over its reservation
+    /// (RFC-0018). The state manager decides whether to apply it. `None`
+    /// without a policy, for an operation the scheduler had asked the worker
+    /// to kill, and for one with nowhere left to grow.
+    fn loss_escalation(
+        &self,
+        worker_id: &WorkerId,
+        pending: &PendingActionInfoData,
+        fleet: (u64, Option<u64>),
+    ) -> Option<LossEscalation> {
+        let policy = self.memory_escalation.as_ref()?;
+        if pending.kill_requested_at.is_some() {
+            return None;
+        }
+        let properties = &pending.action_info.platform_properties;
+        let reserved_kb = reservation_of(properties, &policy.property);
+        let peak_kb = pending.reported_peak_memory_kb;
+        // Any amount over its reservation counts, not only past the worker's
+        // kill headroom: headroom spares an action a kill, but an action
+        // using more than it asked for is under-sized whatever the margin,
+        // and a larger reservation is the cheaper mistake than another
+        // lost worker and its co-tenants.
+        let sampled_over = reserved_kb > 0 && peak_kb > reserved_kb;
+        let (value, cpu) = match next_reservation(
+            policy,
+            properties,
+            reserved_kb,
+            reserved_kb.max(peak_kb),
+            fleet,
+        ) {
+            NextReservation::Step { value, cpu, .. } => (value, cpu),
+            skipped => {
+                // Nothing to grow from (no reservation and no report),
+                // nowhere to grow (the whole largest worker), or no fleet
+                // to grow into: the loss requeues the action as it was.
+                debug!(
+                    ?worker_id,
+                    property = %policy.property,
+                    reserved_kb,
+                    peak_kb,
+                    ?skipped,
+                    "Lost worker's action has no larger reservation to take"
+                );
+                return None;
+            }
+        };
+        Some(LossEscalation {
+            escalation: Escalation {
+                property: policy.property.clone(),
+                value,
+                reason: make_err!(
+                    Code::Unavailable,
+                    "Worker {worker_id} was lost while running this action with {reserved_kb} KiB reserved (highest reported {peak_kb} KiB)"
+                ),
+                cpu,
+            },
+            sampled_over,
+        })
+    }
+
+    /// Keeps the highest memory a keepalive reported for each operation the
+    /// worker holds; an operation it does not hold is ignored.
+    fn operation_memory_reported(&mut self, worker_id: &WorkerId, peaks: Vec<(OperationId, u64)>) {
+        let Some(worker) = self.workers.peek_mut(worker_id) else {
+            return;
+        };
+        for (operation_id, peak_kb) in peaks {
+            if let Some(pending) = worker.running_action_infos.get_mut(&operation_id) {
+                pending.reported_peak_memory_kb = pending.reported_peak_memory_kb.max(peak_kb);
+            }
+        }
+    }
+
     /// Turns a result that the worker's last usage report says was a memory
     /// kill into a requeue with a larger reservation, when escalation is
     /// configured and there is room to grow. Returns the update to apply
@@ -1510,107 +1903,63 @@ impl ApiWorkerSchedulerImpl {
             .reserved
             .map(|r| r.memory_kb)
             .filter(|kb| *kb > 0)
-            .or_else(|| {
-                match pending
-                    .action_info
-                    .platform_properties
-                    .properties
-                    .get(&policy.property)
-                {
-                    Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
-                    _ => None,
-                }
-            })
-            .unwrap_or(0);
-        let (fleet_memory_kb, fleet_cpu) =
-            self.fleet_largest_worker(&policy.property, &policy.cpu_property);
-        // `max_kb` caps the fleet's ceiling; it cannot raise it past what a
-        // worker declares, or the escalation lands where nothing can run.
-        let ceiling_kb = if policy.max_kb > 0 {
-            fleet_memory_kb.min(policy.max_kb)
-        } else {
-            fleet_memory_kb
-        };
-        if ceiling_kb == 0 {
-            return (update, false);
-        }
-        // The last step reserves the largest worker whole: its memory and,
-        // when the fleet advertises one, its CPU, so nothing shares the
-        // worker with the action. A kill there is the end: no worker in
-        // the fleet can run the action, and the client hears exactly that.
-        let cpu_held = match pending
-            .action_info
-            .platform_properties
-            .properties
-            .get(&policy.cpu_property)
-        {
-            Some(PlatformPropertyValue::Minimum(cores)) => *cores,
-            _ => 0,
-        };
-        let whole_worker_cpu = fleet_cpu.filter(|cores| *cores > 0);
-        let already_whole =
-            reserved_kb >= ceiling_kb && whole_worker_cpu.is_none_or(|cores| cpu_held >= cores);
-        if already_whole {
-            warn!(
-                ?worker_id,
-                ?operation_id,
-                reserved_kb,
-                ceiling_kb,
-                "Action killed for memory with the largest worker reserved whole; no worker in the fleet can run it"
-            );
-            let mut failed = result.clone();
-            let no_worker = make_err!(
-                Code::FailedPrecondition,
-                "Action was killed for memory at {reserved_kb} KiB with the largest worker in the fleet ({ceiling_kb} KiB) reserved for it alone; no worker can run it. It needs a bigger worker or less memory"
-            );
-            failed.error = Some(match result.error.clone() {
-                Some(worker_error) => no_worker.merge(worker_error),
-                None => no_worker,
+            .unwrap_or_else(|| {
+                reservation_of(&pending.action_info.platform_properties, &policy.property)
             });
-            return (
-                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(failed)),
-                false,
-            );
-        }
-        let base_kb = if reserved_kb > 0 {
-            reserved_kb
-        } else {
-            usage.peak_memory_kb
-        };
-        if base_kb == 0 {
-            // Nothing to grow from: no reservation and an unsampled kill.
-            // Scaling zero would hand out the smallest steps the ladder or
-            // the percent allow and burn the budget on them.
-            warn!(
-                ?worker_id,
-                ?operation_id,
-                "Action killed for memory with no reservation and no sampled peak; not escalating"
-            );
-            return (update, false);
-        }
-        // With a ladder the next class up; without one, scale. Past the
-        // top class or the ceiling, the whole worker.
-        let next = if policy.ladder_kb.is_empty() {
-            Some(
-                base_kb
-                    .saturating_mul(policy.percent)
-                    .checked_div(100)
-                    .unwrap_or(base_kb)
-                    .max(base_kb.saturating_add(1)),
-            )
-        } else {
-            policy
-                .ladder_kb
-                .iter()
-                .copied()
-                .filter(|kb| *kb > base_kb)
-                .min()
-        };
-        let value = next.map_or(ceiling_kb, |kb| kb.min(ceiling_kb));
-        let cpu = if value >= ceiling_kb {
-            whole_worker_cpu.map(|cores| (policy.cpu_property.clone(), cores))
-        } else {
-            None
+        // Grow from what the action was seen to use, not only from what it
+        // asked for: a kill sampled well past its reservation would
+        // otherwise be given a size it was just observed to exceed.
+        let base_kb = reserved_kb.max(usage.peak_memory_kb);
+        let fleet = self.fleet_largest_worker(&policy.property, &policy.cpu_property);
+        let (value, cpu, ceiling_kb) = match next_reservation(
+            policy,
+            &pending.action_info.platform_properties,
+            reserved_kb,
+            base_kb,
+            fleet,
+        ) {
+            NextReservation::NoCeiling => return (update, false),
+            NextReservation::AlreadyWhole { ceiling_kb } => {
+                // A kill at the whole of the largest worker is the end: no
+                // worker in the fleet can run the action, and the client
+                // hears exactly that.
+                warn!(
+                    ?worker_id,
+                    ?operation_id,
+                    reserved_kb,
+                    ceiling_kb,
+                    "Action killed for memory with the largest worker reserved whole; no worker in the fleet can run it"
+                );
+                let mut failed = result.clone();
+                let no_worker = make_err!(
+                    Code::FailedPrecondition,
+                    "Action was killed for memory at {reserved_kb} KiB with the largest worker in the fleet ({ceiling_kb} KiB) reserved for it alone; no worker can run it. It needs a bigger worker or less memory"
+                );
+                failed.error = Some(match result.error.clone() {
+                    Some(worker_error) => no_worker.merge(worker_error),
+                    None => no_worker,
+                });
+                return (
+                    UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(failed)),
+                    false,
+                );
+            }
+            NextReservation::NoBase => {
+                // Nothing to grow from: no reservation and an unsampled kill.
+                // Scaling zero would hand out the smallest steps the ladder or
+                // the percent allow and burn the budget on them.
+                warn!(
+                    ?worker_id,
+                    ?operation_id,
+                    "Action killed for memory with no reservation and no sampled peak; not escalating"
+                );
+                return (update, false);
+            }
+            NextReservation::Step {
+                value,
+                cpu,
+                ceiling_kb,
+            } => (value, cpu, ceiling_kb),
         };
         let reason = result.error.clone().unwrap_or_else(|| {
             make_err!(
@@ -1660,7 +2009,7 @@ impl ApiWorkerSchedulerImpl {
             if matches!(
                 update,
                 UpdateOperationType::UpdateWithDecline(_)
-                    | UpdateOperationType::UpdateWithDisconnect
+                    | UpdateOperationType::UpdateWithDisconnect(_)
             ) {
                 self.note_hold_dispatched(&action, false);
             } else {
@@ -1671,6 +2020,9 @@ impl ApiWorkerSchedulerImpl {
         let worker = self.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
+        // The node the worker says it is on, for the record to remember
+        // against a failure here.
+        let worker_node = node_name_of(worker).map(str::to_owned);
 
         // Ensure the worker is supposed to be running the operation. A
         // result for something this worker no longer holds is stale, not
@@ -1691,6 +2043,31 @@ impl ApiWorkerSchedulerImpl {
             ));
         }
 
+        // How the attempt ended, for the outcome tripwire: a failure the
+        // worker is answerable for (its command or input fetch timed out,
+        // or it errored), a success (a result, whatever the exit code), or
+        // nothing to judge (backpressure, a store down, a disconnect, a
+        // memory escalation, a decline, a kill the scheduler asked for).
+        let outcome = if worker.is_kill_requested(operation_id) {
+            None
+        } else {
+            match &update {
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(result)) => Some(
+                    result
+                        .error
+                        .as_ref()
+                        .is_some_and(|err| err.code == Code::DeadlineExceeded),
+                ),
+                UpdateOperationType::UpdateWithError(err)
+                    if err.code != Code::ResourceExhausted
+                        && !err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP) =>
+                {
+                    Some(true)
+                }
+                _ => None,
+            }
+        };
+
         let (is_finished, due_to_backpressure) = match &update {
             UpdateOperationType::UpdateWithActionStage(action_stage) => {
                 (action_stage.is_finished(), false)
@@ -1702,7 +2079,7 @@ impl ApiWorkerSchedulerImpl {
             // A decline pauses like backpressure: the worker said it has no
             // room, so it gets nothing more until it says otherwise.
             UpdateOperationType::UpdateWithDecline(_) => (true, true),
-            UpdateOperationType::UpdateWithDisconnect
+            UpdateOperationType::UpdateWithDisconnect(_)
             | UpdateOperationType::UpdateWithEscalation(_) => (true, false),
             UpdateOperationType::ExecutionComplete => {
                 // The process has exited but the action is still resident on
@@ -1749,7 +2126,7 @@ impl ApiWorkerSchedulerImpl {
         } else {
             let update_operation_res = self
                 .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
+                .update_operation_on_node(operation_id, worker_id, worker_node.as_deref(), update)
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             match &update_operation_res {
@@ -1815,6 +2192,10 @@ impl ApiWorkerSchedulerImpl {
         };
 
         self.capacity_changed();
+
+        if let Some(failed) = outcome {
+            self.note_worker_outcome(worker_id, failed);
+        }
 
         update_operation_res.merge(complete_action_res)
     }
@@ -1921,12 +2302,16 @@ impl ApiWorkerSchedulerImpl {
                 ?action_info,
                 "Worker not found in worker map in worker_notify_run_action"
             );
-            // Ensure the operation is put back to queued state.
+            // Ensure the operation is put back to queued state. The worker
+            // is already gone, so there is no record to propose a larger
+            // reservation from: this loss counts toward the budget but never
+            // escalates, even if it is the one that crosses
+            // `escalate_after_worker_losses`; the next loss will.
             self.worker_state_manager
                 .update_operation(
                     &operation_id,
                     &worker_id,
-                    UpdateOperationType::UpdateWithDisconnect,
+                    UpdateOperationType::UpdateWithDisconnect(None),
                 )
                 .await
         }
@@ -2174,6 +2559,13 @@ impl ApiWorkerSchedulerImpl {
         reason: WorkerDisconnectReason,
     ) -> Result<(), Error> {
         let mut result = Ok(());
+        // The fleet's ceiling with the lost worker still in it: the pool
+        // that lost it brings up its like, and an action escalated past
+        // what remains would otherwise be capped by one worker's absence.
+        let fleet = self
+            .memory_escalation
+            .as_ref()
+            .map(|policy| self.fleet_largest_worker(&policy.property, &policy.cpu_property));
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // Log every eviction here rather than in each caller, so a worker
             // can never leave the pool unexplained. Without this, a worker that
@@ -2194,8 +2586,21 @@ impl ApiWorkerSchedulerImpl {
             // out, a command to it failed, an operator removed it), the
             // action running on it did nothing wrong: it is a worker loss
             // with its own budget, not an attempt the action spent.
-            let update = UpdateOperationType::UpdateWithDisconnect;
+            // A worker that went away on its own may have been OOM-killed as a
+            // whole; one removed, drained, shut down or evicted for an
+            // unacknowledged kill was not, and escalates nothing.
+            let memory_plausible = matches!(
+                reason,
+                WorkerDisconnectReason::Disconnected
+                    | WorkerDisconnectReason::Timeout
+                    | WorkerDisconnectReason::Error
+            ) && !worker.is_draining;
             for (operation_id, pending) in worker.running_action_infos.drain() {
+                let update = UpdateOperationType::UpdateWithDisconnect(
+                    fleet
+                        .filter(|_| memory_plausible)
+                        .and_then(|fleet| self.loss_escalation(worker_id, &pending, fleet)),
+                );
                 // The worker can still hold an operation the executing sweep
                 // already timed out or that finished; that attempt was
                 // reported where it ended.
@@ -2209,7 +2614,7 @@ impl ApiWorkerSchedulerImpl {
                 }
                 let update_res = self
                     .worker_state_manager
-                    .update_operation(&operation_id, worker_id, update.clone())
+                    .update_operation(&operation_id, worker_id, update)
                     .await;
                 // An operation the worker was told to kill was already
                 // given up on; its loss is not a lost attempt.
@@ -2332,6 +2737,7 @@ impl ApiWorkerScheduler {
         live_memory_veto: Option<String>,
         memory_escalation: Option<MemoryEscalationSpec>,
         reservation_hold: Option<ReservationHoldSpec>,
+        outcome_tripwire: Option<WorkerOutcomeTripwireSpec>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
@@ -2364,6 +2770,7 @@ impl ApiWorkerScheduler {
                 live_memory_veto,
                 memory_escalation,
                 reservation_hold,
+                outcome_tripwire,
                 attempt_events: maybe_origin_event_tx.clone(),
                 lost_results: LostResults::default(),
                 holds: HashMap::new(),
@@ -2909,6 +3316,21 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner
             .running_operations_reported(worker_id, &reported)
             .await;
+        Ok(())
+    }
+
+    async fn worker_operation_memory_reported(
+        &self,
+        worker_id: &WorkerId,
+        peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        if peaks.is_empty() {
+            return Ok(());
+        }
+        self.inner
+            .lock()
+            .await
+            .operation_memory_reported(worker_id, peaks);
         Ok(())
     }
 

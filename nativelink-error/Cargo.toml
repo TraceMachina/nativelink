@@ -8,7 +8,7 @@ autoexamples = false
 autotests = true
 edition = "2024"
 name = "nativelink-error"
-version = "1.8.3"
+version = "1.8.5"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
@@ -42,6 +42,11 @@ url = { version = "2.5.7", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = ["std"] }
 walkdir = { version = "2.5.0", default-features = false }
 zip = { version = "9.0.0", default-features = false }
+
+# The caps crate only compiles on Linux: capabilities are a Linux kernel
+# concept, and macOS is also `unix`.
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = { version = "0.5.6", default-features = false }
 
 [dev-dependencies]
 tracing = { version = "0.1.41", default-features = false }

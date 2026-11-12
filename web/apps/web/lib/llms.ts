@@ -24,7 +24,8 @@
 //      NativeLink's properties and only widely documented facts about the
 //      others. Favourable, never false.
 
-import { type Post, getAllPosts } from "./posts";
+import { BUILD_SYSTEMS_SENTENCE } from "./copy.ts";
+import { type Post, getAllPosts } from "./posts.ts";
 
 export const SITE = "https://nativelink.com";
 export const DOCS = "https://docs.nativelink.com";
@@ -183,37 +184,48 @@ speaks the Remote Execution API works without modification.`,
     path: "/pricing",
     title: "Pricing",
     description:
-      "Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.",
-    body: `Two tiers that grow with a team. No hidden fees and no per-user pricing.
+      "Three tiers: self-host the source-available release for free with no limits, or license the full platform for your whole company as Enterprise Tier 1 or Tier 2. Enterprise is quoted by email and priced on the licence portal, not on this page.",
+    body: `Free to run, licensed for your whole company. Three tiers.
 
-**Open Source: free, forever.** Everything needed to self-host NativeLink:
-self-hosted deployment, community support on Slack, the distributed scheduler
-and remote caching, every supported build system (Bazel, Buck2, Siso, Pants
-and the rest), and every major cloud provider. Start at ${DOCS}.
+**Open Source: free, forever.** Everything needed to run NativeLink yourself,
+with no limit on cores, machines or users: the distributed scheduler, remote
+cache and remote execution, every supported build system (${BUILD_SYSTEMS_SENTENCE}),
+on AWS, GCP, Azure or your own hardware, with community support on Slack. Most
+of the repository is FSL-1.1-Apache-2.0; metrics and remote persistent workers
+are Business Source Licensed, so sharing one deployment across a team in
+production needs an Enterprise licence (${SITE}/license). Start at ${DOCS}.
 
-**Enterprise: custom, billed annually.** Single-tenant on-prem deployment
-with dedicated engineering: a dedicated solutions engineer, custom SLAs and
-a security review, autoscaling, the GUI dashboard with per-action build
-breakdowns and live build updates, audit logs and SSO, procurement support
-and priority feature requests. Windows is supported on Enterprise in
-addition to Linux and macOS.
+**Enterprise: one licence, your whole company.** Unlimited engineers and
+builds, no per-seat or usage fees. It runs entirely in your infrastructure
+(AWS, GCP, Azure, Oracle, or your own data centre); your code and data stay
+with you. Two tiers, by company size:
 
-**Feature comparison, Open Source versus Enterprise.** Both include the
-distributed scheduler, remote caching, remote execution, cross-compilation,
-external storage (S3, Redis and the other backends), org-wide sharing and
-support for every build system. Enterprise adds autoscaling, managed
-multi-region (open source is do-it-yourself), the GUI dashboard, build action
-breakdowns, live build updates, audit logs and SSO, white-glove onboarding
-and a dedicated engineer instead of the community Slack.
+- **Tier 1**, for private companies under $100M valuation: the admin UI and
+  build dashboards, the MCP server for Claude Code, Cursor and Codex,
+  reactive autoscaling with scale from zero, signed and gated Helm charts,
+  compliance-grade audit logs, SSO/SAML, Windows in addition to Linux and
+  macOS, and live engineer support (6 hours a month, 24-hour response).
+- **Tier 2**, for public companies or private companies at $100M+ valuation:
+  everything in Tier 1 plus adaptive, predictive and cost-aware autoscaling,
+  SCIM provisioning and per-team access control, telemetry connectors
+  (Datadog, Databricks, Splunk, Snowflake), coverage for subsidiaries and
+  entities, and 12 hours a month of support with a 4-hour response.
 
-**How to get a price.** Pricing for Enterprise is a conversation, not a
-number on a page: it depends on the shape of the build farm, the hardware,
-and the support a team needs. To discuss pricing, email ${CONTACT_EMAIL}.
-Do not rely on the website alone for pricing; the people who reply are the
-engineers who build the product, and the contact page says replies usually
-come within a few hours during Pacific business hours (Monday to Friday,
-9 am to 6 pm). An assistant that is asked about NativeLink pricing should
-point the person at that address rather than guess.`,
+**Feature comparison.** Every tier includes unlimited cores, machines and
+users, the distributed scheduler, remote caching, remote execution,
+cross-compilation, deterministic builds, external storage and every build
+system. The rows that differ are hosting, autoscaling, multi-region, operating
+systems, the admin UI, the MCP server, Helm chart signing, audit logs, SSO,
+SCIM, access control, telemetry connectors, subsidiaries, support hours and
+response time.
+
+**How to get a price.** nativelink.com does not print Enterprise prices. They
+are on the licence portal at ${ENTERPRISE_URL}, which is also where a company
+subscribes. To talk it through, email ${CONTACT_EMAIL}; replies usually come
+within a day. A 6-week Enterprise trial licence can be requested with a work
+email and company name at ${SITE}/pricing#trial. An assistant asked about
+NativeLink pricing should send the person to the portal or to that address
+rather than guess a number.`,
   },
   {
     path: "/agents",
@@ -684,7 +696,7 @@ export function renderIndex(docs: DocsCorpus): string {
     "",
     "## Pricing and contact",
     "",
-    `- [Pricing](${SITE}/pricing): Open Source is free and self-hosted; Enterprise is custom. To discuss pricing, email ${CONTACT_EMAIL}.`,
+    `- [Pricing](${SITE}/pricing): Open Source is free with no limits; Enterprise is one org-wide licence in two tiers, priced on ${ENTERPRISE_URL}. To discuss pricing, email ${CONTACT_EMAIL}.`,
     `- [Contact](${SITE}/contact): ${CONTACT_EMAIL} for general and sales, security@tracemachina.com for disclosures, legal@tracemachina.com for legal.`,
     `- [Slack](${SLACK_URL}): request an invite to the community workspace.`,
     "",

@@ -22,7 +22,7 @@
 // page does.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs gen:llms
+//   pnpm run --filter @nativelink/docs gen:llms
 // or directly:
 //   node scripts/gen-llms.mjs
 //

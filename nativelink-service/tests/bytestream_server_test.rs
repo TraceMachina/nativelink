@@ -95,6 +95,7 @@ async fn rejects_incomplete_bytestream_without_verification_wrapper()
                     slow_direction: nativelink_config::stores::StoreDirection::default(),
                     bypass_dedup_threshold_bytes: 0,
                     has_slow_write_wait_timeout_s: 0,
+                    leader_inactivity_timeout_s: 0,
                 }))
             } else {
                 memory_spec
@@ -1752,6 +1753,27 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::err
             "Expected response to match what is in store"
         );
     }
+    Ok(())
+}
+
+// An unknown instance name is a bad argument, not a server fault. Bazel
+// retries INTERNAL with backoff but fails fast on INVALID_ARGUMENT.
+#[nativelink_test]
+pub async fn read_unknown_instance_is_invalid_argument() -> Result<(), Box<dyn core::error::Error>>
+{
+    let store_manager = make_store_manager().await?;
+    let bs_server = make_bytestream_server(store_manager.as_ref(), None)?;
+    let Err(status) = bs_server
+        .read(Request::new(ReadRequest {
+            resource_name: format!("unknown_instance/blobs/{HASH1}/55"),
+            read_offset: 0,
+            read_limit: 0,
+        }))
+        .await
+    else {
+        panic!("a read for an unknown instance must fail");
+    };
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
     Ok(())
 }
 

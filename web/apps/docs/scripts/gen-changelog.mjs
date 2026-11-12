@@ -37,7 +37,7 @@
 // VERCEL_GIT_* variables — same bytes, no drift.
 //
 // Usage from web/:
-//   bun --filter @nativelink/docs gen:changelog
+//   pnpm run --filter @nativelink/docs gen:changelog
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

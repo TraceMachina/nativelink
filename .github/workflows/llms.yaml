@@ -34,7 +34,11 @@ on:
     - cron: 41 4 * * MON
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}
@@ -65,7 +69,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun --filter @nativelink/web gen:llms
+            pnpm install && pnpm run --filter @nativelink/web gen:llms
           "
 
       - name: Open auto-merge PR

@@ -22,7 +22,7 @@ at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.
 
 - [NativeLink: build infrastructure for the agentic era](https://nativelink.com/): When agents write your code, your build system is the bottleneck. NativeLink is the high-performance remote build cache and remote execution platform for Bazel and beyond.
 - [Product](https://nativelink.com/product): One platform: remote caching, remote execution and observability in a single Rust-native binary, for codebases that grow faster than they can be provisioned.
-- [Pricing](https://nativelink.com/pricing): Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.
+- [Pricing](https://nativelink.com/pricing): Three tiers: self-host the source-available release for free with no limits, or license the full platform for your whole company as Enterprise Tier 1 or Tier 2. Enterprise is quoted by email and priced on the licence portal, not on this page.
 - [For agents](https://nativelink.com/agents): What NativeLink is and how to read about it as a machine: the fetch order for the three llms files, the MCP server's five tools, skills for Claude Code, Codex and Cursor, and the rules for contributing with an agent.
 - [Company](https://nativelink.com/company): NativeLink is built by Trace Machina, whose mission is to accelerate the progress of humanity in the machine age.
 - [Community](https://nativelink.com/community): Where to read, ask and contribute: the docs, the NativeLink Slack, and the GitHub repository with its contributors.
@@ -42,8 +42,8 @@ at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
 - [Case Study: LastMile AI](https://nativelink.com/resources/blog/case-study-last-mile-ai) (2025-09-25): LastMile AI is an AI startup creating tools to enable developers to build AI agents. The team comes from backgrounds in top research and engineering organizations, building infrastructure and devel…
 - [Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake, Nativelink and BuildStream](https://nativelink.com/resources/blog/accelerating-cmake-with-nativelink) (2025-08-12): Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and…
-- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Trust Root Support in Nativelink](https://nativelink.com/resources/blog/adding-trust-roots-to-nativelink) (2025-05-15): Open source thrives on community contributions, and today’s story is a perfect example of why. External engineer Sam Eskandar identified a pain point in Nativelink's TLS configuration and delivered…
+- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Thirdwave Automation and NativeLink](https://nativelink.com/resources/blog/case-study-thirdwave-automation) (2025-03-06): “Our business relies on delivering autonomous systems with an exceptional level of safety. With NativeLink’s massively-parallel cloud service, we can now iterate faster and continuously learn from…
 - [Fortune 50 Manufacturer Uses NativeLink For 20x Accelerated Build Speed and 30x Improved Storage Density](https://nativelink.com/resources/blog/case-study-fortune-50-manufacturer) (2025-01-21): A Fortune 50 Manufacturer builds a Chromium-based browser, and it has been an integral part of their product lineup, requiring robust and efficient build infrastructure to keep up with its evolving…
 - [NativeLink for Semiconductors](https://nativelink.com/resources/blog/semiconductors) (2024-12-04): NativeLink has become a critical architectural component for companies developing custom silicon. From the outset, our mission was to build an open-source simulation platform designed to scale with…
@@ -188,7 +188,7 @@ The complete map is at https://docs.nativelink.com/llms.txt; the sections below 
 
 ## Pricing and contact
 
-- [Pricing](https://nativelink.com/pricing): Open Source is free and self-hosted; Enterprise is custom. To discuss pricing, email contact@tracemachina.com.
+- [Pricing](https://nativelink.com/pricing): Open Source is free with no limits; Enterprise is one org-wide licence in two tiers, priced on https://enterprise.nativelink.com. To discuss pricing, email contact@tracemachina.com.
 - [Contact](https://nativelink.com/contact): contact@tracemachina.com for general and sales, security@tracemachina.com for disclosures, legal@tracemachina.com for legal.
 - [Slack](https://nativelink.com/community#slack): request an invite to the community workspace.
 

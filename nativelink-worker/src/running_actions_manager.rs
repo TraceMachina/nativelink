@@ -94,8 +94,9 @@ use crate::persistent_worker::{
     WorkerKey,
 };
 use crate::process_table::{
-    ProcessTableCache, live_process_table, process_exists, read_process_cpu_ticks,
-    read_process_memory_kb, ticks_to_millis, worker_pgid,
+    EXACT_MEMORY_READ_WALKS_PAGES, ProcessTableCache, live_process_table, process_exists,
+    read_process_cpu_ticks, read_process_memory_bound_kb, read_process_memory_kb, ticks_to_millis,
+    worker_pgid,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -291,6 +292,10 @@ enum OverLimit {
 #[derive(Debug, Default)]
 pub struct ActionMemoryWatch {
     last_memory_kb: AtomicU64,
+    /// The highest figure the sampler has read for the action; it only
+    /// rises. Reported on the keepalive so a scheduler that loses this
+    /// worker can tell which action grew past its reservation.
+    peak_memory_kb: AtomicU64,
     /// The memory reservation the action runs under, 0 when it has none.
     reserved_memory_kb: AtomicU64,
     kill_requested_percent: AtomicU64,
@@ -305,6 +310,16 @@ pub struct ActionMemoryWatch {
 impl ActionMemoryWatch {
     pub fn last_memory_kb(&self) -> u64 {
         self.last_memory_kb.load(Ordering::Relaxed)
+    }
+
+    pub fn peak_memory_kb(&self) -> u64 {
+        self.peak_memory_kb.load(Ordering::Relaxed)
+    }
+
+    /// Records a sample: the last figure, and the peak if it is higher.
+    pub fn observe(&self, memory_kb: u64) {
+        self.last_memory_kb.store(memory_kb, Ordering::Relaxed);
+        self.peak_memory_kb.fetch_max(memory_kb, Ordering::Relaxed);
     }
 
     pub fn reserved_memory_kb(&self) -> u64 {
@@ -430,16 +445,27 @@ struct Ceilings {
 /// times a second.
 const DISK_SAMPLE_EVERY: u32 = 40;
 
+/// `oom_limit_kb` is what a SIGKILL nobody here sent is judged against (see
+/// [`classify_outcome`]): the enforced ceiling, or the pod's limit without
+/// one. It is not enforced; the sampler keeps its figure exact near it.
 fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
+    oom_limit_kb: Option<u64>,
     disk_directory: Option<(PathBuf, SystemTime)>,
     process_table: Arc<ProcessTableCache>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory, process_table)
+        sample_action_resource_usage(
+            pgid,
+            stop_rx,
+            ceilings,
+            oom_limit_kb,
+            disk_directory,
+            process_table
+        )
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -572,6 +598,7 @@ async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
     mut ceilings: Ceilings,
+    oom_limit_kb: Option<u64>,
     disk_directory: Option<(PathBuf, SystemTime)>,
     process_table: Arc<ProcessTableCache>,
 ) -> SampledResourceUsage {
@@ -592,10 +619,16 @@ async fn sample_action_resource_usage(
     // served before, which is not this action's.
     let mut baseline_ticks: Option<u64> = None;
 
+    let mut memory_gate = ExactMemoryGate::new(oom_limit_kb);
+
     let watch = ceilings.watch.clone();
-    let sample = async |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
+    let sample = async |peak_memory_kb: &mut u64,
+                        cpu_ticks_by_pid: &mut HashMap<u32, u64>,
+                        memory_gate: &mut ExactMemoryGate,
+                        exact: bool| {
         let table = process_table.current().await;
-        let observed = sample_process_group(pgid, &table, &watch, cpu_ticks_by_pid);
+        let observed =
+            sample_process_group(pgid, &table, &watch, cpu_ticks_by_pid, memory_gate, exact);
         if let Some(memory_kb) = observed {
             *peak_memory_kb = (*peak_memory_kb).max(memory_kb);
         }
@@ -603,16 +636,19 @@ async fn sample_action_resource_usage(
     };
 
     loop {
-        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).await;
+        let observed = sample(
+            &mut peak_memory_kb,
+            &mut cpu_ticks_by_pid,
+            &mut memory_gate,
+            false,
+        )
+        .await;
         if baseline_ticks.is_none() {
             baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
         }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
-            ceilings
-                .watch
-                .last_memory_kb
-                .store(memory_kb, Ordering::Relaxed);
+            ceilings.watch.observe(memory_kb);
         }
         if observed.is_none() && !process_exists(pgid) {
             // The group leader has been reaped and no member process remains,
@@ -695,14 +731,24 @@ async fn sample_action_resource_usage(
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    if let Some(memory_kb) = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).await {
-                        last_memory_kb = memory_kb;
-                    }
                     break;
                 }
             }
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
+    }
+    // The final figure settles the peak and how the action ended, so every
+    // way out takes it exact. A pooled process is still there to read; a
+    // finished group has nothing left and changes nothing.
+    if let Some(memory_kb) = sample(
+        &mut peak_memory_kb,
+        &mut cpu_ticks_by_pid,
+        &mut memory_gate,
+        true,
+    )
+    .await
+    {
+        last_memory_kb = memory_kb;
     }
     // What the action left on disk at the end is the figure that matters
     // for sizing; this walk, one stat per entry under the action directory,
@@ -818,14 +864,16 @@ pub fn action_membership_live(seed_groups: &[u32]) -> ActionMembers {
 }
 
 /// Sums the resident memory of every process that belongs to the action
-/// (see [`action_membership`]) and records their CPU ticks, and the groups
-/// they are in in `watch`. Returns `None` when no member process can be
-/// read (the action has no processes left).
+/// (see [`action_membership`] and [`members_memory_kb`]) and records their
+/// CPU ticks, and the groups they are in in `watch`. Returns `None` when no
+/// member process can be read (the action has no processes left).
 fn sample_process_group(
     pgid: u32,
     table: &[(ProcEntry, Option<u64>)],
     watch: &ActionMemoryWatch,
     cpu_ticks_by_pid: &mut HashMap<u32, u64>,
+    memory_gate: &mut ExactMemoryGate,
+    exact: bool,
 ) -> Option<u64> {
     let entries: Vec<ProcEntry> = table.iter().map(|(entry, _)| *entry).collect();
     let mut seeds = watch.process_groups.lock().clone();
@@ -835,12 +883,12 @@ fn sample_process_group(
         groups,
     } = action_membership(&seeds, worker_pgid(), &entries);
     *watch.process_groups.lock() = groups.into_iter().collect();
-    let mut total_kb = 0;
-    let mut found_any_process = false;
+    let mut member_pids = Vec::new();
     for &(entry, ticks) in table {
         if !members.contains(&entry.pid) {
             continue;
         }
+        member_pids.push(entry.pid);
         // Read now, not from the shared snapshot: a request to a pooled
         // process can start and end within one snapshot's lifetime, and
         // would then measure nothing.
@@ -850,12 +898,99 @@ fn sample_process_group(
             let slot = cpu_ticks_by_pid.entry(entry.pid).or_insert(0);
             *slot = (*slot).max(ticks);
         }
-        if let Some(memory_kb) = read_process_memory_kb(entry.pid) {
-            total_kb += memory_kb;
-            found_any_process = true;
+    }
+    members_memory_kb(&member_pids, memory_gate, exact)
+}
+
+/// How long the sampler may reuse an exact memory figure; see
+/// [`ExactMemoryGate`].
+const EXACT_MEMORY_MAX_AGE: Duration = Duration::from_secs(2);
+
+/// How far, in percent, the members' RSS may move from where it was when
+/// the exact memory figure was read before the sampler reads it again; see
+/// [`ExactMemoryGate`].
+const EXACT_MEMORY_MAX_DRIFT_PERCENT: u64 = 10;
+
+/// Decides which samples read the exact memory figure. On Linux that is
+/// `Pss` from `smaps_rollup`, a walk of the page tables that costs several
+/// milliseconds per resident GiB, four times a second for every running
+/// action. The members' RSS is a counter read that `Pss` never exceeds, so
+/// a sample reuses the last exact figure, capped at the RSS, only while:
+/// - the RSS is under 90% of the limit a kill is judged against, so no
+///   ceiling kill and no near-limit OOM classification (see
+///   [`classify_outcome`]) can follow from the figure;
+/// - the RSS is within [`EXACT_MEMORY_MAX_DRIFT_PERCENT`] of where it was
+///   at the last exact read, so an action is read again as it grows, and
+///   one that ends before the next refresh still reports its peak;
+/// - that read is under [`EXACT_MEMORY_MAX_AGE`] old. `Pss` can rise while
+///   the RSS stays flat, when another process sharing the pages exits, so
+///   this age alone bounds how far the peak and the figure the pressure
+///   monitor compares can trail.
+#[derive(Debug, Clone, Copy)]
+pub struct ExactMemoryGate {
+    oom_limit_kb: Option<u64>,
+    last: Option<ExactMemoryReading>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExactMemoryReading {
+    read_at: Instant,
+    bound_kb: u64,
+    exact_kb: u64,
+}
+
+impl ExactMemoryGate {
+    /// `oom_limit_kb` is what a SIGKILL nobody here sent is judged against.
+    pub const fn new(oom_limit_kb: Option<u64>) -> Self {
+        Self {
+            oom_limit_kb,
+            last: None,
         }
     }
-    found_any_process.then_some(total_kb)
+
+    /// The figure for a sample whose members' RSS is `bound_kb`, when the
+    /// last exact one serves; `None` when the sample must read it.
+    pub fn reuse(&self, bound_kb: u64, now: Instant) -> Option<u64> {
+        let last = self.last?;
+        let under_ceiling = self
+            .oom_limit_kb
+            .is_none_or(|limit_kb| bound_kb.saturating_mul(10) < limit_kb.saturating_mul(9));
+        let fresh = now.saturating_duration_since(last.read_at) < EXACT_MEMORY_MAX_AGE;
+        let steady = bound_kb.abs_diff(last.bound_kb).saturating_mul(100)
+            <= last.bound_kb.saturating_mul(EXACT_MEMORY_MAX_DRIFT_PERCENT);
+        (under_ceiling && fresh && steady).then(|| last.exact_kb.min(bound_kb))
+    }
+
+    pub const fn record(&mut self, bound_kb: u64, exact_kb: u64, now: Instant) {
+        self.last = Some(ExactMemoryReading {
+            read_at: now,
+            bound_kb,
+            exact_kb,
+        });
+    }
+}
+
+/// The members' memory summed, `None` when none of them can be read. Where
+/// the exact figure walks pages (see [`EXACT_MEMORY_READ_WALKS_PAGES`]) it
+/// is read only when `exact` asks for it or `memory_gate` cannot reuse the
+/// last one.
+fn members_memory_kb(pids: &[u32], memory_gate: &mut ExactMemoryGate, exact: bool) -> Option<u64> {
+    let sum = |read: fn(u32) -> Option<u64>| {
+        pids.iter()
+            .filter_map(|&pid| read(pid))
+            .reduce(|total_kb, kb| total_kb + kb)
+    };
+    if !EXACT_MEMORY_READ_WALKS_PAGES {
+        return sum(read_process_memory_kb);
+    }
+    let bound_kb = sum(read_process_memory_bound_kb)?;
+    let now = Instant::now();
+    if !exact && let Some(memory_kb) = memory_gate.reuse(bound_kb, now) {
+        return Some(memory_kb);
+    }
+    let exact_kb = sum(read_process_memory_kb)?;
+    memory_gate.record(bound_kb, exact_kb, now);
+    Some(exact_kb)
 }
 
 /// The value of a `Field:    1234 kB` line in `/proc` text, in KiB.
@@ -3537,6 +3672,8 @@ impl RunningActionImpl {
                                         // kill's victim.
                                         watch: Arc::new(ActionMemoryWatch::default()),
                                     },
+                                    // Its outcome is classified against no limit.
+                                    None,
                                     None,
                                     self.running_actions_manager.process_table.clone(),
                                 )
@@ -3828,6 +3965,11 @@ impl RunningActionImpl {
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
+        // What a SIGKILL nobody here sent is judged against; the sampler
+        // keeps its figure exact near it.
+        let oom_limit_kb = memory_reservation
+            .map(|(_, limit_kb)| limit_kb)
+            .or(self.running_actions_manager.pod_memory_limit_kb);
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
@@ -3857,6 +3999,7 @@ impl RunningActionImpl {
                     over_limit_tx,
                     watch: self.memory_watch.clone(),
                 },
+                oom_limit_kb,
                 disk_directory,
                 self.running_actions_manager.process_table.clone(),
             )
@@ -4131,9 +4274,7 @@ impl RunningActionImpl {
                         None => SampledResourceUsage::default(),
                     };
 
-                    let memory_limit_kb = memory_reservation
-                        .map(|(_, limit_kb)| limit_kb)
-                        .or(self.running_actions_manager.pod_memory_limit_kb);
+                    let memory_limit_kb = oom_limit_kb;
                     // The signal that ended the process, where the platform reports one.
                     #[cfg(target_family = "unix")]
                     let signal = exit_status.signal();
@@ -4940,6 +5081,13 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn metrics(&self) -> &Arc<Metrics>;
+
+    /// The highest memory sampled so far for each running operation that
+    /// has been sampled, as `(operation id, KiB)`, for the keepalive
+    /// (RFC-0018). Empty where nothing samples.
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -6299,6 +6447,17 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     #[inline]
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        self.running_actions
+            .lock()
+            .iter()
+            .filter_map(|(operation_id, action)| {
+                let peak_kb = action.upgrade()?.memory_watch.peak_memory_kb();
+                (peak_kb > 0).then(|| (operation_id.to_string(), peak_kb))
+            })
+            .collect()
     }
 }
 
