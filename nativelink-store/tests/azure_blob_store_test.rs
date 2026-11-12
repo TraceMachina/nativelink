@@ -170,10 +170,6 @@ impl MockTransport {
         self.stage_block.lock().unwrap().push_back(response);
     }
 
-    fn push_block_list(&self, response: CannedResponse) {
-        self.block_list.lock().unwrap().push_back(response);
-    }
-
     fn deleted(&self) -> Vec<String> {
         self.deleted.lock().unwrap().clone()
     }
@@ -1347,57 +1343,35 @@ async fn incomplete_multipart_upload_never_commits_azure_blocks() -> Result<(), 
     Ok(())
 }
 
-// Size validation must run inside the guarded upload so failure also discards
-// staged blocks, while retaining any previously committed copy.
+// A size-validation failure fails the upload and leaves the staged blocks
+// alone: every upload of a digest stages under the same blob name, so a
+// cleanup here would also destroy the blocks a concurrent upload of the same
+// digest has staged and poison its commit with InvalidBlockList. Azure
+// collects uncommitted blocks on its own.
 #[nativelink_test(start_paused = true)]
-async fn invalid_multipart_size_discards_staged_blocks_and_preserves_committed_copy()
--> Result<(), Error> {
+async fn invalid_multipart_size_fails_without_touching_staged_blocks() -> Result<(), Error> {
     const BLOCK: usize = 5 * 1024 * 1024;
     for upload_size in [
         UploadSizeInfo::ExactSize(8 * 1024 * 1024),
         UploadSizeInfo::MaxSize(4 * 1024 * 1024),
     ] {
-        for existing_copy in [false, true] {
-            let mock = MockTransport::new();
-            let committed = if existing_copy {
-                &["old-a", "old-b"][..]
-            } else {
-                &[]
-            };
-            mock.push_block_list(block_list_ok(
-                committed,
-                &["00000000000000000000000000000000"],
-            ));
-            let store = create_test_store(Arc::clone(&mock), None, None)?;
-            let digest = DigestInfo::try_new(TEST_HASH, 8 * 1024 * 1024)?;
-            let (mut tx, rx) = make_buf_channel_pair();
-            let send = async move {
-                tx.send(Bytes::from(vec![7u8; BLOCK])).await?;
-                tx.send_eof()
-            };
-            let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
-            sent?;
-            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
-            // The discard runs in the background after its grace period.
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            tokio::task::yield_now().await;
-            assert_eq!(mock.request_count(), 3, "stage, inspect, then discard");
-            if existing_copy {
-                assert_eq!(mock.deleted(), Vec::<String>::new());
-                let retained = mock
-                    .committed_block_list()
-                    .expect("retain committed blocks");
-                let retained = core::str::from_utf8(&retained).expect("utf-8");
-                for id in committed {
-                    let encoded = azure_core::base64::encode(id.as_bytes());
-                    assert!(retained.contains(&format!("<Committed>{encoded}</Committed>")));
-                }
-                assert!(!retained.contains("<Latest>") && !retained.contains("<Uncommitted>"));
-            } else {
-                assert_eq!(mock.deleted(), vec![format!("/{TEST_CONTAINER}/{digest}")]);
-                assert!(mock.committed_block_list().is_none());
-            }
-        }
+        let mock = MockTransport::new();
+        let store = create_test_store(Arc::clone(&mock), None, None)?;
+        let digest = DigestInfo::try_new(TEST_HASH, 8 * 1024 * 1024)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            tx.send(Bytes::from(vec![7u8; BLOCK])).await?;
+            tx.send_eof()
+        };
+        let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
+        sent?;
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+        // Nothing may touch the blob later from the background either.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(mock.request_count(), 1, "only the staged block");
+        assert_eq!(mock.deleted(), Vec::<String>::new());
+        assert!(mock.committed_block_list().is_none());
     }
     Ok(())
 }
@@ -1410,11 +1384,13 @@ fn two_block_payload() -> Vec<u8> {
         .collect()
 }
 
-/// A block that fails to stage fails the upload, and the blocks that did
-/// stage are discarded: with nothing committed under the name, the blob is
-/// deleted, and no block list is ever committed.
+/// A block that fails to stage fails the upload and leaves the blocks that
+/// did stage alone, whether or not a committed copy exists under the name:
+/// concurrent uploads of the same digest share the blob name, so discarding
+/// staged blocks here would destroy theirs too. Azure collects uncommitted
+/// blocks on its own.
 #[nativelink_test(start_paused = true)]
-async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error> {
+async fn failed_staged_upload_leaves_staged_blocks_alone() -> Result<(), Error> {
     let send_data = two_block_payload();
     let mock = MockTransport::new();
     // The first block stages, the second is refused for good.
@@ -1424,7 +1400,6 @@ async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error
         headers: Vec::new(),
         body: Vec::new(),
     });
-    mock.push_block_list(block_list_ok(&[], &["00000000000000000000000000000000"]));
     let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
 
     let digest = DigestInfo::try_new(TEST_HASH, send_data.len())?;
@@ -1433,18 +1408,16 @@ async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error
         .await
         .expect_err("the refused block fails the upload");
     assert_eq!(err.code, Code::Aborted, "{err:?}");
-    // The discard runs in the background after its grace period.
+    // Nothing may touch the blob later from the background either.
     tokio::time::sleep(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
 
     assert_eq!(
-        mock.deleted(),
-        vec![format!(
-            "/{TEST_CONTAINER}/{TEST_HASH}-{}",
-            2 * 5 * 1024 * 1024
-        )],
-        "the name holding only staged blocks is deleted"
+        mock.request_count(),
+        2,
+        "the two stage attempts and nothing else"
     );
+    assert_eq!(mock.deleted(), Vec::<String>::new(), "no blob is deleted");
     assert!(
         mock.committed_block_list().is_none(),
         "no block list is committed for a failed upload"
@@ -1452,64 +1425,14 @@ async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error
     Ok(())
 }
 
-/// When the name already holds a committed blob (a re-upload of a key that
-/// exists), the committed blocks are kept: re-committing that list is what
-/// discards the staged ones, and nothing is deleted.
-#[nativelink_test(start_paused = true)]
-async fn failed_staged_upload_keeps_the_committed_blocks() -> Result<(), Error> {
-    let send_data = two_block_payload();
-    let mock = MockTransport::new();
-    mock.push_stage_block(created());
-    mock.push_stage_block(CannedResponse {
-        status: StatusCode::BadRequest,
-        headers: Vec::new(),
-        body: Vec::new(),
-    });
-    mock.push_block_list(block_list_ok(
-        &["old-a", "old-b"],
-        &["00000000000000000000000000000000"],
-    ));
-    let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
-
-    let digest = DigestInfo::try_new(TEST_HASH, send_data.len())?;
-    store
-        .update_oneshot(StoreKey::from(&digest), send_data.into())
-        .await
-        .expect_err("the refused block fails the upload");
-    // The discard runs in the background after its grace period.
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
-
-    assert!(
-        mock.deleted().is_empty(),
-        "a committed blob is never deleted"
-    );
-    let committed = mock
-        .committed_block_list()
-        .expect("the committed list is re-committed to drop the staged blocks");
-    let committed = core::str::from_utf8(&committed).expect("utf-8");
-    for id in ["old-a", "old-b"] {
-        let encoded = azure_core::base64::encode(id.as_bytes());
-        assert!(
-            committed.contains(&format!("<Committed>{encoded}</Committed>")),
-            "{id} must be kept as a committed block: {committed}"
-        );
-    }
-    assert!(
-        !committed.contains("<Latest>") && !committed.contains("<Uncommitted>"),
-        "only the committed blocks are kept: {committed}"
-    );
-    Ok(())
-}
-
 /// An upload whose future is dropped before it finishes (the `ByteStream` that
-/// fed it died and the server swept the stream) still discards the blocks it
-/// staged, from a background task, since the dropped future runs nothing.
+/// fed it died and the server swept the stream) leaves the blocks it staged
+/// alone: a concurrent upload of the same digest may be staging under the
+/// same blob name, and Azure collects uncommitted blocks on its own.
 #[nativelink_test(start_paused = true)]
-async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
+async fn dropped_staged_upload_leaves_its_blocks_alone() -> Result<(), Error> {
     const BLOCK: usize = 5 * 1024 * 1024;
     let mock = MockTransport::new();
-    mock.push_block_list(block_list_ok(&[], &["00000000000000000000000000000000"]));
     let store = create_test_store(Arc::clone(&mock), None, None)?;
 
     let digest = DigestInfo::try_new(TEST_HASH, 2 * BLOCK)?;
@@ -1534,15 +1457,11 @@ async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
     assert_eq!(mock.request_count(), 1, "one staged block");
     drop(update_fut);
 
-    // The guard's background task waits out its grace period, then reads
-    // the block list and deletes the uncommitted blob.
+    // No background task may touch the blob after the drop.
     tokio::time::sleep(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
-    assert_eq!(
-        mock.deleted(),
-        vec![format!("/{TEST_CONTAINER}/{TEST_HASH}-{}", 2 * BLOCK)],
-        "the dropped upload's staged blocks are discarded"
-    );
+    assert_eq!(mock.request_count(), 1, "still only the staged block");
+    assert_eq!(mock.deleted(), Vec::<String>::new());
     assert!(mock.committed_block_list().is_none());
     Ok(())
 }
