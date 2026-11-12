@@ -20,7 +20,11 @@ on:
       - "**/*.lock"
       - "**/*.nix"
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -32,8 +36,10 @@ jobs:
     name: Build / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
+    # Nothing in this job consumes an OIDC token; the Nix cache authenticates
+    # with an Attic token, and a pull-request build's GitHub token is capped
+    # at contents:read anyway.
     permissions:
-      id-token: write
       contents: read
 
     steps:
