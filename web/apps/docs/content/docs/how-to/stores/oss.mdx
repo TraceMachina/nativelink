@@ -16,9 +16,9 @@ OSS lists the required object and multipart operations in its
 [S3 compatibility reference](https://www.alibabacloud.com/help/en/oss/developer-reference/compatibility-with-amazon-s3).
 This is an API compatibility basis, not evidence of a successful live deployment.
 
-This provider is available in development builds. It does not migrate objects
-from another backend. Object names are `key_prefix` followed by the standard
-NativeLink store key, as in the [S3 store](/how-to/stores/s3-and-compatible).
+This provider is available in development builds. Object names are `key_prefix`
+followed by the standard NativeLink store key, as in the
+[S3 store](/how-to/stores/s3-and-compatible).
 
 ## Configure the store [#configure-the-store]
 
@@ -27,10 +27,10 @@ variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
 expansion. For temporary credentials, also configure `session_token`, for example
 `${OSS_SESSION_TOKEN}`. Keep the values out of source control.
 
-There is no fallback to the AWS credential chain or `AWS_*` variables, so an AWS
-S3 store in the same process can use its own credentials. Different OSS stores
-can reference different variable names. Automatic Alibaba Cloud RAM role
-discovery is not supported.
+The provider requires explicit credentials and ignores the AWS credential chain
+and `AWS_*` variables, so an AWS S3 store in the same process can use its own
+credentials. Different OSS stores can reference different variable names.
+Automatic Alibaba Cloud RAM role discovery is not supported.
 
 ```json5
 stores: [
@@ -53,29 +53,57 @@ Use a separate `key_prefix`, such as `ac/`, for the Action Cache. The optional
 `https://s3.oss-cn-hangzhou-internal.aliyuncs.com`. It must be HTTPS and must not
 contain a bucket, object path, user information, query, or fragment. A native OSS
 REST endpoint (`oss-...`) is not interchangeable with an S3-compatible endpoint
-(`s3.oss-...`). Bucket-specific CNAME addressing is not supported by this adapter.
-Check [OSS endpoint access restrictions](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
-for the bucket's account and region before deploying.
+(`s3.oss-...`).
+
+## Endpoint access restrictions [#endpoint-access-restrictions]
+
+Alibaba Cloud restricts default public endpoints for accounts that activated OSS
+on or after March 20, 2025, at 00:00 UTC+8, when the bucket is in a Chinese mainland
+region. Data operations can fail with `PublicEndpointForbidden` (HTTP 400).
+The [OSS policy notice](https://www.alibabacloud.com/en/notice/oss_update_notice_policy_change_in_calling_data_api_operations_via_the_default_public_domain_name_45a)
+describes the affected operations. The
+[AWS SDK access guide](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+also lists this restriction; the S3-compatible endpoint is not a workaround.
+
+For affected accounts accessing a bucket over the public internet, Alibaba Cloud
+requires a custom domain name (CNAME). This adapter does not support bucket-specific
+CNAME addressing, so it cannot serve that deployment. Setting `endpoint` to a
+bucket's custom domain does not enable CNAME support.
+
+For a workload in an Alibaba Cloud VPC with access to the bucket's regional
+internal endpoint, use the
+[documented internal-endpoint option](https://www.alibabacloud.com/help/en/oss/user-guide/0048-00000401).
+For a bucket in `cn-hangzhou`, set this field in the OSS store configuration:
+
+```json5
+endpoint: "https://s3.oss-cn-hangzhou-internal.aliyuncs.com",
+```
+
+The internal endpoint is not reachable from the public internet. Accounts that
+activated OSS before the policy cutoff and buckets outside Chinese mainland
+regions are outside the scope of this notice. Confirm the account, bucket region,
+and network access before choosing an endpoint.
 
 ## Retry and resource behavior [#retry-and-resource-behavior]
 
 The optional `retry` object uses the standard store retry policy. SDK retries
 are disabled, but the shared HTTP transport also retries: its attempts can
-multiply the store retry loop. There is not yet one total retry budget.
+multiply the store retry loop. A total retry budget is not yet implemented.
 
 Each SDK operation attempt has a 120-second timeout. The custom HTTP connector
 does not currently apply the SDK connection-timeout setting to TCP connections.
 Receiving an upload part before an SDK call, reading a download body after the
 response headers, and waiting for a consumer are not covered by a total transfer
-deadline. These limits need separate validation before production use.
+deadline.
 
 Uploads and downloads use the existing S3 transfer implementation, including
 multipart uploads and transfer size validation. Its buffering and concurrency
 behavior is inherited. `multipart_max_concurrent_uploads` bounds both queued
 parts and concurrent part requests per upload (default: 2). Part sizes depend
 on the declared upload size. This adapter does not provide a global byte budget
-or upload admission queue. There are no OSS-specific spool, TTL, or read-proxy
-settings. To expire cached objects, configure bucket lifecycle rules separately.
+or upload admission queue. OSS-specific spool, TTL, and read-proxy settings are
+not supported. To expire cached objects, configure bucket lifecycle rules
+separately.
 
 ## Verify [#verify]
 

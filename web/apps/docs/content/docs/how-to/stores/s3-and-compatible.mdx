@@ -1,6 +1,6 @@
 ---
 title: S3 and compatible
-description: "Back the cache with Amazon S3, Cloudflare R2 or NetApp ONTAP S3: one store type, three providers, and the shared options that decide cost and failure behaviour."
+description: "Back the cache with Amazon S3, Cloudflare R2, Alibaba Cloud OSS, or NetApp ONTAP S3, and choose the options that decide cost and failure behaviour."
 ---
 
 {/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
@@ -14,22 +14,25 @@ behind a local fast tier, with credentials that aren't in the config file.
   A config file you can edit (see [Configuration](/configuration)), and a bucket you can write to.
 </Prerequisites>
 
-Three providers share one store type and one block of common options. `aws`
-and `r2` share one implementation (R2 is the S3 store with a derived endpoint
-and region `auto`); `ontap` has its own, with a few differences noted below.
-They differ mainly in how the endpoint and credentials are derived:
+Four S3-compatible providers use the `experimental_cloud_object_store` type.
+`aws`, `r2`, and `oss` share the S3 transfer implementation; `ontap` has its own.
+R2 derives its endpoint from an account ID and uses region `auto`. OSS is available
+in development builds and has its own configuration fields rather than the common
+options used by the other three providers. The providers differ in how they
+derive endpoints and credentials:
 
 | Provider | `provider` value | Identifies the endpoint by |
 | --- | --- | --- |
 | Amazon S3 | `aws` | `region` + `bucket` |
 | Cloudflare R2 | `r2` | `account_id` (endpoint is `https://{account_id}.r2.cloudflarestorage.com`) |
+| Alibaba Cloud OSS | `oss` | `region` (endpoint is `https://s3.oss-{region}.aliyuncs.com`) or an explicit S3-compatible service `endpoint` |
 | NetApp ONTAP S3 | `ontap` | an explicit `endpoint` plus `vserver_name` |
 
 [GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure) and
 [OCI Object Storage](/how-to/stores/oci-object-storage) use the same store type
 with their own `provider` values and have their own pages.
 
-In development builds, S3, R2, and ONTAP validate small uploads before issuing a PUT and multipart
+In development builds, S3, R2, OSS, and ONTAP validate small uploads before issuing a PUT and multipart
 uploads before completion. A small upload is buffered through EOF before its
 request starts; multipart uploads continue to stream parts. See
 [upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
@@ -74,8 +77,10 @@ rules can then treat them differently.
 
 ### Other services that speak S3 [#other-services-that-speak-s3]
 
-The `aws` provider reaches any S3-compatible service, not only AWS. Four
-optional fields cover the difference:
+The `aws` provider can reach other S3-compatible services. For Alibaba Cloud OSS,
+use the dedicated [`oss` provider](#alibaba-cloud-oss), which configures its
+addressing and checksum requirements. Four optional fields configure other
+services:
 
 | Field | Set it when |
 | --- | --- |
@@ -123,6 +128,22 @@ R2 charges no egress, which changes the arithmetic on how small a fast tier
 you can get away with.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalR2Spec" />
+
+## Alibaba Cloud OSS [#alibaba-cloud-oss]
+
+The `oss` provider uses Alibaba Cloud's S3-compatible API with virtual-hosted
+addressing and explicit credentials for each store. It requires `region`,
+`bucket`, `access_key_id`, and `secret_access_key`; it does not fall back to the
+AWS credential chain. Optional fields include `session_token`, `endpoint`,
+`key_prefix`, `retry`, and `multipart_max_concurrent_uploads` (default: 2).
+
+Follow the [OSS guide](/how-to/stores/oss) for configuration and verification.
+Check its [endpoint access restrictions](/how-to/stores/oss#endpoint-access-restrictions)
+before choosing a public endpoint. Affected accounts with Chinese mainland
+buckets need an internal endpoint reachable from their Alibaba Cloud VPC;
+bucket-specific CNAME access over the public internet is not supported by this
+adapter. The common-options block below applies to `aws`, `r2`, and `ontap`, not
+`oss`.
 
 ## NetApp ONTAP S3 [#netapp-ontap-s3]
 
@@ -183,10 +204,10 @@ often the slowest thing in the build, and the answer is usually stale-tolerant.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 
-## The options all three share [#the-options-all-three-share]
+## Common options for AWS, R2, and ONTAP [#the-options-all-three-share]
 
-Every provider flattens the same block of common options. These are the ones
-worth setting deliberately:
+The `aws`, `r2`, and `ontap` providers flatten the same block of common options.
+These are the ones worth setting deliberately:
 
 | Field | Default | What it decides |
 | --- | --- | --- |
@@ -285,6 +306,8 @@ For `aws`, the credential chain found nothing. Confirm the process can see
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, or that the instance/task
 role is attached and reachable. For `r2`, set `access_key_id` and
 `secret_access_key` explicitly, because R2 tokens are not in the AWS chain.
+The `oss` provider requires explicit OSS credentials for each store; see the
+[OSS credential configuration](/how-to/stores/oss#configure-the-store).
 
 </Accordion>
 

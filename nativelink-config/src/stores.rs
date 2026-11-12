@@ -242,8 +242,8 @@ pub enum StoreSpec {
     ///      "provider": "oss",
     ///      "region": "cn-hangzhou",
     ///      "bucket": "example-build-cache",
-    ///      "access_key_id": "${OSS_ACCESS_KEY_ID}",
-    ///      "secret_access_key": "${OSS_ACCESS_KEY_SECRET}",
+    ///      "access_key_id": "oss_access_key_id",
+    ///      "secret_access_key": "oss_secret_access_key",
     ///      "key_prefix": "cas/"
     ///    }
     ///    ```
