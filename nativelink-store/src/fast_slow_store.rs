@@ -462,7 +462,8 @@ impl FastSlowStore {
                         name_missing_digest(
                             make_err!(
                                 Code::NotFound,
-                                "Object {} not found in either fast or slow store. \
+                                "Object {} not found in either fast or slow store, \
+                                    or the slow store considers it expired (consider_expired_after_s). \
                                     If using multiple workers, ensure all workers share the same CAS storage path.",
                                 key.as_str()
                             ),
