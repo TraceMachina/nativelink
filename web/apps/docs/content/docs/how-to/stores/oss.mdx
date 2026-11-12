@@ -55,6 +55,44 @@ contain a bucket, object path, user information, query, or fragment. A native OS
 REST endpoint (`oss-...`) is not interchangeable with an S3-compatible endpoint
 (`s3.oss-...`).
 
+## Use a custom domain [#use-a-custom-domain]
+
+Set `cname: true` to use an HTTPS custom domain bound to the bucket. This option
+requires an explicit `endpoint`. The provider uses that host directly, without
+adding the bucket name to the host or path. The default is `cname: false`, which
+keeps virtual-hosted service-endpoint addressing.
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oss",
+      region: "cn-hangzhou",
+      bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
+      endpoint: "https://cache.example.com",
+      cname: true,
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+An object named `cas/key` uses `https://cache.example.com/cas/key`. Keep `bucket`
+set to the actual bucket and `region` set to its region. Requests still use AWS
+SigV4, with the custom host included in the signature. This mode does not switch
+to the native OSS REST protocol.
+
+Before starting NativeLink, [bind the custom domain to the bucket and configure
+DNS](https://www.alibabacloud.com/help/en/oss/user-guide/access-buckets-via-custom-domain-names),
+then configure a valid TLS certificate for the domain. Setting `cname` does not
+create the binding, DNS record, or certificate. Mainland buckets require a domain
+with ICP registration. The endpoint must not contain an object path, credentials,
+query, or fragment. Confirm S3 API compatibility against the real domain before
+deployment; wire replay tests do not verify the OSS domain binding or policy.
+
 ## Endpoint access restrictions [#endpoint-access-restrictions]
 
 Alibaba Cloud restricts default public endpoints for accounts that activated OSS
@@ -66,9 +104,9 @@ describes the affected operations. The
 also lists this restriction; the S3-compatible endpoint is not a workaround.
 
 For affected accounts accessing a bucket over the public internet, Alibaba Cloud
-requires a custom domain name (CNAME). This adapter does not support bucket-specific
-CNAME addressing, so it cannot serve that deployment. Setting `endpoint` to a
-bucket's custom domain does not enable CNAME support.
+requires a custom domain name (CNAME). Use the [custom-domain mode](#use-a-custom-domain)
+with an endpoint bound to the bucket. Setting `endpoint` alone keeps the default
+service-endpoint addressing and adds the bucket name to the host.
 
 For a workload in an Alibaba Cloud VPC with access to the bucket's regional
 internal endpoint, use the

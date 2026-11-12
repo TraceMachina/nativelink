@@ -25,7 +25,7 @@ derive endpoints and credentials:
 | --- | --- | --- |
 | Amazon S3 | `aws` | `region` + `bucket` |
 | Cloudflare R2 | `r2` | `account_id` (endpoint is `https://{account_id}.r2.cloudflarestorage.com`) |
-| Alibaba Cloud OSS | `oss` | `region` (endpoint is `https://s3.oss-{region}.aliyuncs.com`) or an explicit S3-compatible service `endpoint` |
+| Alibaba Cloud OSS | `oss` | `region` (endpoint is `https://s3.oss-{region}.aliyuncs.com`), an explicit service `endpoint`, or a bucket-bound custom domain with `cname: true` |
 | NetApp ONTAP S3 | `ontap` | an explicit `endpoint` plus `vserver_name` |
 
 [GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure) and
@@ -134,15 +134,16 @@ you can get away with.
 The `oss` provider uses Alibaba Cloud's S3-compatible API with virtual-hosted
 addressing and explicit credentials for each store. It requires `region`,
 `bucket`, `access_key_id`, and `secret_access_key`; it does not fall back to the
-AWS credential chain. Optional fields include `session_token`, `endpoint`,
+AWS credential chain. Optional fields include `session_token`, `endpoint`, `cname`,
 `key_prefix`, `retry`, and `multipart_max_concurrent_uploads` (default: 2).
 
 Follow the [OSS guide](/how-to/stores/oss) for configuration and verification.
 Check its [endpoint access restrictions](/how-to/stores/oss#endpoint-access-restrictions)
 before choosing a public endpoint. Affected accounts with Chinese mainland
-buckets need an internal endpoint reachable from their Alibaba Cloud VPC;
-bucket-specific CNAME access over the public internet is not supported by this
-adapter. The common-options block below applies to `aws`, `r2`, and `ontap`, not
+buckets need an internal endpoint reachable from their Alibaba Cloud VPC or a
+bucket-bound custom domain with `cname: true` and an explicit HTTPS `endpoint`.
+Verify S3 API compatibility against the real custom domain before deployment.
+The common-options block below applies to `aws`, `r2`, and `ontap`, not
 `oss`.
 
 ## NetApp ONTAP S3 [#netapp-ontap-s3]

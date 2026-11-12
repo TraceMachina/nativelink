@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
+use hmac::{Hmac, Mac};
 use http::StatusCode;
 use nativelink_config::stores::{ExperimentalOssSpec, Retry};
 use nativelink_error::{Code, Error};
@@ -28,6 +29,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
+use sha2::{Digest, Sha256};
 
 const HOST: &str = "test-bucket.s3.oss-cn-hangzhou.aliyuncs.com";
 const NOW: fn() -> MockInstantWrapped = MockInstantWrapped::default;
@@ -53,6 +55,209 @@ fn spec() -> ExperimentalOssSpec {
 
 fn store(mock: StaticReplayClient) -> Result<Arc<TestStore>, Error> {
     OssStore::new_with_http_client(&spec(), mock, NOW)
+}
+
+fn cname_spec() -> ExperimentalOssSpec {
+    ExperimentalOssSpec {
+        cname: true,
+        endpoint: Some("https://cache.example.com".into()),
+        session_token: Some("TESTTOKEN".into()),
+        ..spec()
+    }
+}
+
+// Independently verify the emitted signature, including the custom host and
+// singly encoded S3 path, rather than just checking the credential scope.
+fn assert_cname_signature(request: &aws_smithy_runtime_api::client::orchestrator::HttpRequest) {
+    let uri = url::Url::parse(request.uri()).unwrap();
+    assert_eq!(uri.host_str(), Some("cache.example.com"));
+    let headers = request.headers();
+    let authorization = headers.get("authorization").unwrap();
+    let signed_headers = authorization
+        .split("SignedHeaders=")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap();
+    let mut canonical_headers = String::new();
+    for name in signed_headers.split(';') {
+        let value = if name == "host" {
+            "cache.example.com"
+        } else {
+            headers.get(name).unwrap()
+        };
+        canonical_headers.push_str(name);
+        canonical_headers.push(':');
+        canonical_headers.push_str(value.trim());
+        canonical_headers.push('\n');
+    }
+    assert!(signed_headers.split(';').any(|name| name == "host"));
+    let mut query: Vec<_> = uri
+        .query()
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .map(|pair| {
+            if pair.contains('=') {
+                pair.to_string()
+            } else {
+                format!("{pair}=")
+            }
+        })
+        .collect();
+    query.sort_unstable();
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{canonical_headers}\n{signed_headers}\n{}",
+        request.method(),
+        uri.path(),
+        query.join("&"),
+        headers.get("x-amz-content-sha256").unwrap(),
+    );
+    let date = headers.get("x-amz-date").unwrap();
+    let scope = format!("{}/cn-hangzhou/s3/aws4_request", &date[..8]);
+    assert!(authorization.contains(&format!("Credential=TESTKEY/{scope},")));
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{date}\n{scope}\n{:x}",
+        Sha256::digest(canonical_request.as_bytes())
+    );
+    let mut key = b"AWS4TESTSECRET".to_vec();
+    for value in [&date[..8], "cn-hangzhou", "s3", "aws4_request"] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
+        mac.update(value.as_bytes());
+        key = mac.finalize().into_bytes().to_vec();
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
+    mac.update(string_to_sign.as_bytes());
+    assert!(authorization.ends_with(&format!("Signature={:x}", mac.finalize().into_bytes())));
+    assert_eq!(headers.get("x-amz-security-token"), Some("TESTTOKEN"));
+}
+
+#[test]
+fn cname_requires_an_explicit_valid_endpoint() {
+    assert_eq!(
+        OssStore::build_aws_spec(&ExperimentalOssSpec {
+            cname: true,
+            ..spec()
+        })
+        .unwrap_err()
+        .code,
+        Code::InvalidArgument
+    );
+    for endpoint in [
+        "http://cache.example.com",
+        "https://user:hidden@cache.example.com",
+        "https://cache.example.com/bucket",
+        "https://cache.example.com/?token=hidden",
+        "https://cache.example.com/#hidden",
+        "",
+    ] {
+        let error = OssStore::build_aws_spec(&ExperimentalOssSpec {
+            endpoint: Some(endpoint.into()),
+            ..cname_spec()
+        })
+        .unwrap_err();
+        assert_eq!(error.code, Code::InvalidArgument);
+        assert!(!error.to_string().contains("hidden"));
+    }
+}
+
+#[nativelink_test]
+async fn cname_reads_and_writes_use_bound_host_and_valid_signatures() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .header("content-length", "5")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+        event(StatusCode::PARTIAL_CONTENT, "ell"),
+        event(StatusCode::OK, ""),
+    ]);
+    let store = OssStore::new_with_http_client(&cname_spec(), mock.clone(), NOW)?;
+    let key = StoreKey::new_str("a b%?c");
+    assert_eq!(store.has(key.clone()).await?, Some(5));
+    assert_eq!(
+        store.get_part_unchunked(key.clone(), 1, Some(3)).await?,
+        "ell"
+    );
+    store.update_oneshot(key, "hello".into()).await?;
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert_eq!(
+            url::Url::parse(request.uri()).unwrap().path(),
+            "/cas/a%20b%25%3Fc"
+        );
+        assert_cname_signature(request);
+    }
+    assert_eq!(requests[0].method(), "HEAD");
+    assert_eq!(requests[1].method(), "GET");
+    assert_eq!(requests[1].headers().get("range"), Some("bytes=1-3"));
+    assert_eq!(requests[2].method(), "PUT");
+    assert_ne!(
+        requests[2].headers().get("content-encoding"),
+        Some("aws-chunked")
+    );
+    assert_eq!(requests[2].headers().get("content-length"), Some("5"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cname_multipart_completion_and_abort_keep_bound_host() -> Result<(), Error> {
+    for max_size in [10, 2] {
+        let mock = StaticReplayClient::new(vec![
+            event(
+                StatusCode::OK,
+                "<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+            ),
+            ReplayEvent::new(
+                http::Request::builder().body(SdkBody::empty()).unwrap(),
+                http::Response::builder()
+                    .header("etag", "part-etag")
+                    .body(SdkBody::empty())
+                    .unwrap(),
+            ),
+            event(
+                StatusCode::OK,
+                "<CompleteMultipartUploadResult><ETag>object-etag</ETag></CompleteMultipartUploadResult>",
+            ),
+        ]);
+        let store = OssStore::new_with_http_client(&cname_spec(), mock.clone(), NOW)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let upload = store.update(
+            StoreKey::new_str("key"),
+            rx,
+            UploadSizeInfo::MaxSize(max_size),
+        );
+        let send = async {
+            tx.send("hello".into()).await?;
+            tx.send_eof()
+        };
+        let (written, sent) = tokio::join!(upload, send);
+        sent?;
+        let final_method = if max_size == 10 {
+            assert_eq!(written?, 5);
+            "POST"
+        } else {
+            assert_eq!(written.unwrap_err().code, Code::InvalidArgument);
+            "DELETE"
+        };
+        let requests: Vec<_> = mock.actual_requests().collect();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].method(), "POST");
+        assert!(requests[0].uri().contains("uploads"));
+        assert_eq!(requests[1].method(), "PUT");
+        assert!(requests[1].uri().contains("partNumber=1"));
+        assert!(requests[1].uri().contains("uploadId=upload-1"));
+        assert_eq!(requests[2].method(), final_method);
+        assert!(requests[2].uri().contains("uploadId=upload-1"));
+        for request in &requests {
+            assert_eq!(url::Url::parse(request.uri()).unwrap().path(), "/cas/key");
+            assert_cname_signature(request);
+        }
+    }
+    Ok(())
 }
 
 fn event(status: StatusCode, body: &'static str) -> ReplayEvent {

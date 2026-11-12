@@ -842,3 +842,22 @@ fn oss_credentials_are_required_and_redacted_from_debug() {
         assert!(!debug.contains(credential));
     }
 }
+
+#[test]
+fn oss_cname_defaults_to_false_and_round_trips() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+
+    let config = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
+    let mut spec: ExperimentalOssSpec = serde_json5::from_str(config).unwrap();
+    assert!(!spec.cname);
+    spec.cname = true;
+    spec.endpoint = Some("https://cache.example.com".into());
+    let round_trip: ExperimentalOssSpec =
+        serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
+    assert!(round_trip.cname);
+    assert_eq!(round_trip.endpoint, spec.endpoint);
+    for invalid in ["null", "1", "\"true\""] {
+        let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
+        assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
+    }
+}

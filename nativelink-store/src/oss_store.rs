@@ -17,11 +17,13 @@ use std::sync::Arc;
 
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
+use aws_sdk_s3::config::endpoint::{Endpoint, EndpointFuture, Params, ResolveEndpoint};
 use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::config::{
     Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
 };
 use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
+use aws_smithy_types::endpoint::EndpointAuthScheme;
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalAwsSpec, ExperimentalOssSpec};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::instant_wrapper::InstantWrapper;
@@ -33,6 +35,15 @@ use crate::s3_store::S3Store;
 /// See <https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss>.
 #[derive(Debug, Clone, Copy)]
 pub struct OssStore;
+
+#[derive(Debug)]
+struct CnameResolver(Endpoint);
+
+impl ResolveEndpoint for CnameResolver {
+    fn resolve_endpoint(&self, _params: &Params) -> EndpointFuture<'_> {
+        EndpointFuture::ready(Ok(self.0.clone()))
+    }
+}
 
 impl OssStore {
     #[allow(clippy::new_ret_no_self)]
@@ -63,11 +74,11 @@ impl OssStore {
     {
         let aws_spec = Self::build_aws_spec(spec)?;
         let region = Region::new(spec.region.clone());
-        let config = aws_sdk_s3::Config::builder()
+        let endpoint = Self::endpoint(spec)?;
+        let mut config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .app_name(AppName::new("nativelink").expect("valid app name"))
             .region(region)
-            .endpoint_url(Self::endpoint(spec)?)
             // OSS documents virtual-hosted addressing for its S3 interface.
             .force_path_style(false)
             // Do not add optional trailing checksums / aws-chunked encoding.
@@ -87,17 +98,37 @@ impl OssStore {
                 None,
                 "oss-config",
             ))
-            .http_client(http_client)
-            .build();
+            .http_client(http_client);
+        if spec.cname {
+            config = config.endpoint_resolver(CnameResolver(
+                Endpoint::builder()
+                    .url(endpoint)
+                    .auth_scheme(
+                        EndpointAuthScheme::with_capacity("sigv4", 3)
+                            .put("disableDoubleEncoding", true)
+                            .put("signingName", "s3")
+                            .put("signingRegion", spec.region.clone()),
+                    )
+                    .build(),
+            ));
+        } else {
+            config = config.endpoint_url(endpoint);
+        }
         S3Store::new_with_client_and_jitter(
             &aws_spec,
-            Client::from_conf(config),
+            Client::from_conf(config.build()),
             spec.retry.make_jitter_fn(),
             now_fn,
         )
     }
 
     pub fn endpoint(spec: &ExperimentalOssSpec) -> Result<String, Error> {
+        if spec.cname && spec.endpoint.is_none() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "OSS cname requires an explicit endpoint bound to the bucket"
+            ));
+        }
         let endpoint = spec
             .endpoint
             .clone()
@@ -114,7 +145,7 @@ impl OssStore {
         {
             return Err(make_err!(
                 Code::InvalidArgument,
-                "OSS endpoint must be an HTTPS service URL without credentials, path, query or fragment"
+                "OSS endpoint must be an HTTPS URL without credentials, path, query or fragment"
             ));
         }
         Ok(endpoint)

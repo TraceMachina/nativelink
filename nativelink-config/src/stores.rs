@@ -235,6 +235,10 @@ pub enum StoreSpec {
     ///    Uses the OSS S3-compatible endpoint and AWS `SigV4`. Supply the OSS
     ///    access key explicitly per store, for example by shell-expanding
     ///    `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` in the config.
+    ///    Set `cname` to true with an explicit HTTPS `endpoint` to use a custom
+    ///    domain bound to the bucket, without adding the bucket to the host or
+    ///    path. The default is false. Configure the domain binding, DNS, and
+    ///    TLS certificate before starting the store.
     ///
     ///    **Example JSON Config:**
     ///    ```json
@@ -244,6 +248,7 @@ pub enum StoreSpec {
     ///      "bucket": "example-build-cache",
     ///      "access_key_id": "oss_access_key_id",
     ///      "secret_access_key": "oss_secret_access_key",
+    ///      "cname": false,
     ///      "key_prefix": "cas/"
     ///    }
     ///    ```
@@ -995,9 +1000,16 @@ pub struct ExperimentalOssSpec {
 
     /// Optional HTTPS S3-compatible service endpoint, without a bucket or path.
     /// Default: `https://s3.oss-{region}.aliyuncs.com`.
+    /// With `cname: true`, this must be the custom domain bound to the bucket.
     /// Native OSS REST endpoints are not interchangeable with this endpoint.
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub endpoint: Option<String>,
+
+    /// Use `endpoint` as the bucket's custom domain without adding the bucket
+    /// to the host or path. Requires an explicit HTTPS endpoint, an OSS domain
+    /// binding, and a valid certificate for that domain. Default: false.
+    #[serde(default)]
+    pub cname: bool,
 
     /// Prefix prepended verbatim to each object key, for example `cas/`.
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
@@ -1024,6 +1036,7 @@ impl core::fmt::Debug for ExperimentalOssSpec {
             .field("region", &self.region)
             .field("bucket", &self.bucket)
             .field("endpoint", &self.endpoint)
+            .field("cname", &self.cname)
             .field("key_prefix", &self.key_prefix)
             .field("retry", &self.retry)
             .field(

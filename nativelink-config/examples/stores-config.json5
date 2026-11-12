@@ -123,6 +123,7 @@
           "bucket": "example-build-cache",
           "access_key_id": "oss_access_key_id",
           "secret_access_key": "oss_secret_access_key",
+          "cname": false,
           "key_prefix": "cas/"
         }
     },
