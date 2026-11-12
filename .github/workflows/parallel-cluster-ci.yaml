@@ -89,16 +89,40 @@ jobs:
       - name: Show Bazel version
         run: bazel --version
 
+      - name: Prepare build event directory
+        run: mkdir -p "$RUNNER_TEMP/bep"
+
       - name: Run project-pinned Bazel tests
         env:
           NL_API_KEY: ${{ secrets.NATIVELINK_CLUSTER_API_KEY }}
           NL_ENDPOINTS: ${{ vars.NATIVELINK_CLUSTER_ENDPOINT }} ${{ vars.NATIVELINK_CLUSTER_BEP_ENDPOINT }}
         run: |
-          ./tools/bazel-retry.sh test //... \
+          # Bazel records the client environment; keep the job token out.
+          # Forks get an empty key, whose name staging would still refuse.
+          [ -n "$NL_API_KEY" ] || unset NL_API_KEY
+          env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-toolchain \
             --config=nl-quiet \
             --lockfile_mode=error \
-            --verbose_failures
+            --verbose_failures \
+            --build_event_binary_file="$RUNNER_TEMP/bep/events.pb"
+
+      # Keyless runs only: event files record the key a run held.
+      - name: Stage build events for the build-results UI
+        if: always() && contains(fromJSON('["public", "none"]'), steps.setup-nativelink-cloud.outputs.credential)
+        run: |
+          python3 .github/scripts/ci_bep_artifact.py \
+            --events "$RUNNER_TEMP/bep/events.pb" \
+            --output "$RUNNER_TEMP/bep-artifact"
+
+      - name: Upload build events
+        if: always() && contains(fromJSON('["public", "none"]'), steps.setup-nativelink-cloud.outputs.credential)
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: bep-${{ github.job }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/bep-artifact/
+          if-no-files-found: ignore
+          retention-days: 7
 
   cluster:
     if: >-
@@ -113,6 +137,16 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # Job-level rather than step-level: the runner echoes a step's env block
+    # into the log header, and these cluster coordinates do not belong in
+    # console output.
+    env:
+      NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
+      NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
+      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
+      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+      NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
+      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
     steps:
       - name: Start setup timer
         run: echo "BENCHMARK_STARTED=$(date +%s)" >> "$GITHUB_ENV"
@@ -144,12 +178,6 @@ jobs:
           NL_INSTANCE: ${{ vars.NATIVELINK_CLUSTER_INSTANCE }}
           NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
           NL_WORKER_IMAGE: ${{ vars.NATIVELINK_CLUSTER_WORKER_IMAGE }}
-          NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
-          NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
-          NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-          NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
-          NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-          NL_GKE_POD: ${{ vars.NL_GKE_POD }}
           REPETITIONS: ${{ inputs.repetitions || '1' }}
         run: |
           python3 .github/scripts/cluster_ci.py --repetitions "$REPETITIONS" \

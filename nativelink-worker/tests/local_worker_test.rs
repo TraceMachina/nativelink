@@ -41,8 +41,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_declined, execute_result,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, OperationMemory,
+    StartExecute, UpdateForWorker, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -1286,6 +1286,76 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
     ))
 }
 
+/// RFC-0018: every keepalive carries each running action's sampled peak, so
+/// a scheduler that loses this worker can tell which action outgrew its
+/// reservation.
+#[nativelink_test]
+async fn keepalive_reports_running_peaks() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.01),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    *test_context.actions_manager.memory_peaks.lock().unwrap() =
+        vec![("op-a".to_string(), 15_000_000), ("op-b".to_string(), 800)];
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    for _ in 0..30 {
+        let first = test_context
+            .client
+            .keep_alive_requests
+            .lock()
+            .unwrap()
+            .first()
+            .cloned();
+        if let Some(request) = first {
+            let mut memory = request
+                .running_operations
+                .expect("the keepalive reports running operations")
+                .memory;
+            memory.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+            assert_eq!(
+                memory,
+                vec![
+                    OperationMemory {
+                        operation_id: "op-a".to_string(),
+                        peak_memory_kb: 15_000_000,
+                    },
+                    OperationMemory {
+                        operation_id: "op-b".to_string(),
+                        peak_memory_kb: 800,
+                    },
+                ]
+            );
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(make_err!(Code::DeadlineExceeded, "No keepalive was sent"))
+}
+
 /// A keepalive that never completes does not end the connection by itself:
 /// a send waits behind whatever the scheduler is still processing, and the
 /// scheduler's liveness timeout is the clock. When the scheduler closes the
@@ -2042,5 +2112,46 @@ async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Erro
         }
         other => panic!("a lost registration must read Initializing, got {other:?}"),
     }
+    Ok(())
+}
+
+/// The reconnect backoff takes its jitter from `with_jitter_fn`: with the
+/// lowest jitter the first two delays are half the 0.5 s and 1 s figures.
+#[nativelink_test]
+async fn reconnect_backoff_takes_its_jitter_from_the_jitter_fn() -> Result<(), Error> {
+    use utils::local_worker_test_utils::MockWorkerApiClient;
+    use utils::mock_running_actions_manager::MockRunningActionsManager;
+
+    let delays = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = std::sync::Mutex::new(Some(done_tx));
+    let recorded = delays.clone();
+    let worker = nativelink_worker::local_worker::LocalWorker::<MockWorkerApiClient, _>::new_with_connection_factory_and_actions_manager(
+        Arc::new(LocalWorkerConfig::default()),
+        Arc::new(MockRunningActionsManager::new()),
+        Box::new(|| Box::pin(async { Err(make_err!(Code::Unavailable, "no scheduler")) })),
+        Box::new(move |delay| {
+            let mut delays = recorded.lock().unwrap();
+            delays.push(delay);
+            let done = (delays.len() == 2)
+                .then(|| done_tx.lock().unwrap().take())
+                .flatten();
+            if let Some(done) = done {
+                done.send(()).unwrap();
+            }
+            // Yield, so the reconnect loop lets this test run.
+            Box::pin(tokio::task::yield_now())
+        }),
+    )
+    .with_jitter_fn(Box::new(|| 0));
+    let (shutdown, _) = tokio::sync::broadcast::channel(1);
+    let run = nativelink_util::spawn!("jitter_test_worker", worker.run(shutdown.subscribe()));
+    done_rx.await.unwrap();
+    drop(run);
+    let delays = delays.lock().unwrap().clone();
+    assert_eq!(
+        delays[..2],
+        [Duration::from_millis(250), Duration::from_millis(500)]
+    );
     Ok(())
 }

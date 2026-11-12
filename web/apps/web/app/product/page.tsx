@@ -4,11 +4,15 @@ import {
   Eyebrow,
   FAQ,
   type FAQItem,
+  FeatureCard,
   Reveal,
   Section,
+  Stat,
+  StatGrid,
 } from "@nativelink/ui";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import { CtaButton } from "@/components/cta-button";
+import { CLAIMS, LLVM } from "@/lib/copy";
 import { GET_STARTED, TALK_TO_US } from "@/lib/cta";
 
 export const metadata = { title: "Product" };
@@ -18,8 +22,10 @@ const pillars = [
     eyebrow: "Remote cache",
     title: "Cache once. Reuse forever.",
     body: "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Siso, Pants, Goma — and CMake via recc.",
-    metric: "10B+",
-    metricLabel: "requests / month",
+    stat: {
+      value: CLAIMS.requestsPerMonth.value,
+      label: CLAIMS.requestsPerMonth.label,
+    },
     icon: (
       <path
         d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12"
@@ -31,8 +37,10 @@ const pillars = [
     eyebrow: "Remote build execution",
     title: "Distribute across every core you have.",
     body: "Offload compilation and tests to a worker fleet that scales horizontally — on AWS, GCP, or bare metal. Hermetic by design, deterministic by default. Specialized hardware (GPUs, ARM, Apple Silicon) supported natively.",
-    metric: "4-15×",
-    metricLabel: "faster builds",
+    stat: {
+      value: CLAIMS.fasterBuilds.value,
+      label: CLAIMS.fasterBuilds.label,
+    },
     icon: (
       <>
         <circle cx="6" cy="6" r="3" />
@@ -47,8 +55,10 @@ const pillars = [
     eyebrow: "Self-host",
     title: "Run it on your own infrastructure.",
     body: "Self-host the source-available release with one Docker command, and move to dedicated infrastructure when your scale demands it. Same code path. Same performance.",
-    metric: "<10m",
-    metricLabel: "time to first hit",
+    stat: {
+      value: CLAIMS.timeToFirstHit.value,
+      label: CLAIMS.timeToFirstHit.label,
+    },
     icon: (
       <path
         d="M6 18H4C2.9 18 2 17.1 2 16C2 14.9 2.9 14 4 14H4.2C4.7 11.7 6.7 10 9 10C11.3 10 13.3 11.7 13.8 14H14C15.1 14 16 14.9 16 16C16 17.1 15.1 18 14 18H6Z M16 13L18 11L20 13M18 11V18"
@@ -61,8 +71,7 @@ const pillars = [
     eyebrow: "Built on Rust",
     title: "Performance that doesn't stall.",
     body: "No garbage collector. No race conditions at scale. No mystery latency spikes. Memory safety without the runtime tax — which is why NativeLink can serve ten billion requests a month on infrastructure that would buckle other systems.",
-    metric: "0",
-    metricLabel: "GC pauses",
+    stat: { value: "0 GC pauses", label: "no runtime stalls" },
     icon: (
       <path
         d="M12 3L4 7v6c0 4 4 7 8 8 4-1 8-4 8-8V7L12 3Z M9 12l2 2 4-4"
@@ -91,24 +100,68 @@ const integrationGroups = [
   { label: "Storage", items: ["S3", "GCS", "Redis", "Local", "Memory"] },
 ];
 
+/** The six capabilities are the substance of the security section; the heading only introduces them. */
 const securityPoints = [
-  { label: "SSO / SAML", body: "Okta, Azure AD, Google Workspace." },
-  { label: "End-to-end TLS", body: "mTLS between every hop in the pipeline." },
+  {
+    label: "SSO / SAML",
+    body: "Okta, Azure AD, Google Workspace.",
+    icon: (
+      <path
+        d="M12 3 4 7v5c0 5 3.5 8.5 8 9 4.5-.5 8-4 8-9V7l-8-4Z M9 12l2 2 4-4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    ),
+  },
+  {
+    label: "End-to-end TLS",
+    body: "mTLS between every hop in the pipeline.",
+    icon: (
+      <path
+        d="M7 11V8a5 5 0 0 1 10 0v3 M6 11h12v9H6z M12 15v2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    ),
+  },
   {
     label: "Content-addressed",
     body: "Every artifact tamper-evident by hash.",
+    icon: (
+      <path d="M9 4 7 20 M17 4l-2 16 M4 9h17 M3 15h17" strokeLinecap="round" />
+    ),
   },
   {
     label: "Signed inputs",
     body: "Worker inputs and outputs cryptographically signed.",
+    icon: (
+      <path
+        d="M4 20c4-1 6-3 7-6l6-6 3 3-6 6c-3 1-5 3-6 7 M14 7l3 3"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    ),
   },
   {
     label: "Hermetic builds",
     body: "No surprise dependencies pulled mid-build.",
+    icon: (
+      <path
+        d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Z M4 7.5l8 4.5 8-4.5 M12 12v9"
+        strokeLinejoin="round"
+      />
+    ),
   },
   {
     label: "Audit trails",
     body: "Queryable provenance for every action result.",
+    icon: (
+      <path
+        d="M8 4h8a2 2 0 0 1 2 2v14H6V6a2 2 0 0 1 2-2Z M9 9h6 M9 13h6 M9 17h4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    ),
   },
 ];
 
@@ -162,7 +215,7 @@ export default function ProductPage() {
           <Reveal>
             <div className="mx-auto max-w-[900px] text-center">
               <Eyebrow className="mb-5">Product</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 One platform.{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   Every build. Every machine.
@@ -206,40 +259,13 @@ export default function ProductPage() {
         <div className="grid gap-4 md:grid-cols-2">
           {pillars.map((p, i) => (
             <Reveal key={p.title} delay={i * 0.06}>
-              <article className="group relative h-full overflow-hidden rounded-2xl border border-border bg-surface p-8 transition-all hover:border-brand/40 hover:shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.4)]">
-                <div className="flex items-start justify-between">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
-                    <svg
-                      width="22"
-                      height="22"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      aria-hidden="true"
-                    >
-                      {p.icon}
-                    </svg>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-2xl font-semibold tracking-tight text-foreground">
-                      {p.metric}
-                    </div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted">
-                      {p.metricLabel}
-                    </div>
-                  </div>
-                </div>
-                <Eyebrow tone="muted" className="mt-6 text-[10px]">
-                  {p.eyebrow}
-                </Eyebrow>
-                <h3 className="mt-2 text-2xl font-semibold leading-tight tracking-tight text-foreground">
-                  {p.title}
-                </h3>
-                <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                  {p.body}
-                </p>
-              </article>
+              <FeatureCard
+                icon={p.icon}
+                eyebrow={p.eyebrow}
+                title={p.title}
+                body={p.body}
+                stat={p.stat}
+              />
             </Reveal>
           ))}
         </div>
@@ -247,47 +273,72 @@ export default function ProductPage() {
 
       {/* SECURITY */}
       <Section width="default" className="border-t border-border/60 py-28">
-        <div className="grid gap-12 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
-          <Reveal>
-            <Eyebrow className="mb-4">Security & provenance</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              Trust at every hop.{" "}
-              <span className="text-brand">Provenance at every step.</span>
-            </h2>
-            <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              When humans commit code, you need traceability. When agents commit
-              code, you need it doubly. NativeLink makes every input explicit
-              and every output verifiable.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-2">
-              <Badge variant="success">SOC 2 in progress</Badge>
-              <Badge variant="outline">mTLS</Badge>
-              <Badge variant="outline">SSO/SAML</Badge>
-              <Badge variant="outline">Audit logs</Badge>
+        <Reveal>
+          {/* A compact header: the heading introduces the six capabilities, it does not outweigh them. */}
+          <div className="mb-12 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-[640px]">
+              <Eyebrow className="mb-4">Security & provenance</Eyebrow>
+              <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.03em] md:text-4xl">
+                Trust at every hop.{" "}
+                <span className="text-brand">Provenance at every step.</span>
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-muted-foreground">
+                When humans commit code, you need traceability. When agents
+                commit code, you need it doubly. NativeLink makes every input
+                explicit and every output verifiable.
+              </p>
             </div>
-          </Reveal>
+            {/* Compliance lives here, apart from the capabilities, so a certification never reads
+                as a feature. The Security page holds the detail and the report requests. */}
+            <a
+              href="/security"
+              className="group/compliance flex items-center gap-3 lg:shrink-0"
+              aria-label="SOC 2 and ISO 27001 certified. Read the security program."
+            >
+              <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+                Certified
+              </span>
+              <Badge variant="success">SOC 2</Badge>
+              <Badge variant="success">ISO 27001</Badge>
+              <span
+                aria-hidden="true"
+                className="font-mono text-[12px] text-brand transition-transform group-hover/compliance:translate-x-0.5"
+              >
+                →
+              </span>
+            </a>
+          </div>
+        </Reveal>
 
-          <Reveal delay={0.1}>
-            <ul className="grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-2">
-              {securityPoints.map((s) => (
-                <li
-                  key={s.label}
-                  className="flex flex-col gap-2 bg-surface px-6 py-5"
-                >
-                  <span className="flex items-center gap-2 font-mono text-sm font-semibold text-foreground">
-                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-brand-soft text-[10px] text-brand">
-                      ✓
-                    </span>
+        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {securityPoints.map((s, i) => (
+            <Reveal key={s.label} delay={i * 0.05}>
+              <li className="flex h-full gap-4 rounded-2xl border border-border bg-surface p-6 transition-colors hover:border-brand/40">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand">
+                  <svg
+                    width="22"
+                    height="22"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    aria-hidden="true"
+                  >
+                    {s.icon}
+                  </svg>
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-lg font-semibold leading-tight tracking-tight text-foreground">
                     {s.label}
                   </span>
-                  <span className="text-sm leading-relaxed text-muted-foreground">
+                  <span className="mt-1.5 block text-[15px] leading-relaxed text-muted-foreground">
                     {s.body}
                   </span>
-                </li>
-              ))}
-            </ul>
-          </Reveal>
-        </div>
+                </span>
+              </li>
+            </Reveal>
+          ))}
+        </ul>
       </Section>
 
       {/* INTEGRATIONS */}
@@ -332,7 +383,7 @@ export default function ProductPage() {
         <Section width="narrow" className="py-28 text-center">
           <Reveal>
             <Eyebrow className="mb-5">Proof at scale</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               LLVM builds <span className="text-brand">4× faster</span> on
               NativeLink.
             </h2>
@@ -343,30 +394,23 @@ export default function ProductPage() {
               migration. No proprietary client. Just your existing CMake setup,
               pointed at NativeLink.
             </p>
-            <div className="mt-10 grid grid-cols-3 gap-6">
-              <div>
-                <div className="font-mono text-3xl font-semibold tracking-tight text-brand md:text-4xl">
-                  4×
-                </div>
-                <div className="mt-1 text-xs text-muted">faster builds</div>
-              </div>
-              <div className="border-x border-border/60">
-                <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                  17m → 4m
-                </div>
-                <div className="mt-1 text-xs text-muted">
-                  full project compile
-                </div>
-              </div>
-              <div>
-                <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                  0
-                </div>
-                <div className="mt-1 text-xs text-muted">
-                  build-system rewrite
-                </div>
-              </div>
-            </div>
+            <StatGrid columns={3} className="mt-10 text-center md:gap-x-6">
+              <Stat
+                value={LLVM.speedup.value}
+                label={LLVM.speedup.label}
+                className="items-center"
+              />
+              <Stat
+                value={LLVM.wallTime.value}
+                label={LLVM.wallTime.label}
+                className="items-center md:border-x md:border-border/60"
+              />
+              <Stat
+                value={CLAIMS.noRewrites.value}
+                label={CLAIMS.noRewrites.label}
+                className="items-center"
+              />
+            </StatGrid>
             <div className="mt-10 flex justify-center">
               <Button variant="link" asChild>
                 <a

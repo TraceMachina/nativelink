@@ -48,6 +48,9 @@ pub type ConnectWorkerStream =
 
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
+/// Makes the unique part of a new worker's id.
+pub type WorkerIdFn = Box<dyn Fn() -> String + Send + Sync>;
+
 /// How often workers are told to kill operations the scheduler no longer
 /// has executing on them, unless overridden by
 /// `kill_revoked_operations_interval_s` in the worker API config.
@@ -57,6 +60,7 @@ pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
+    worker_id_fn: Option<WorkerIdFn>,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -77,6 +81,24 @@ impl WorkerApiServer {
             rand::rng().fill_bytes(&mut out);
             out
         };
+        let now_fn: Arc<NowFn> = Arc::new(Box::new(move || {
+            SystemTime::now().duration_since(UNIX_EPOCH).map_err(|err| {
+                Error::from_std_err(Code::Internal, &err)
+                    .append("System time is now behind unix epoch")
+            })
+        }));
+        Self::spawn_timers(config, schedulers, &now_fn);
+        Self::with_shared_now_fn(config, schedulers, now_fn, node_id)
+    }
+
+    /// Starts the worker timeout and revoked-operation timers for every
+    /// scheduler, reading the time from `now_fn`. `new()` calls it; a server
+    /// built with `new_with_now_fn()` has no timers until this is called.
+    pub fn spawn_timers(
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        now_fn: &Arc<NowFn>,
+    ) {
         let kill_revoked_enabled = !config.disable_kill_revoked_operations;
         let kill_revoked_interval_s = if config.kill_revoked_operations_interval_s == 0 {
             DEFAULT_KILL_REVOKED_OPERATIONS_INTERVAL_S
@@ -88,15 +110,20 @@ impl WorkerApiServer {
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
             // eventually see the Arc went away and return.
             let weak_scheduler = Arc::downgrade(scheduler);
+            let now_fn = now_fn.clone();
             background_spawn!("worker_api_server", async move {
                 let mut timeout_ticker = interval(Duration::from_secs(1));
                 let mut kill_ticker = interval(Duration::from_secs(kill_revoked_interval_s));
                 loop {
                     tokio::select! {
                         _ = timeout_ticker.tick() => {
-                            let timestamp = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .expect("Error: system time is now behind unix epoch");
+                            let timestamp = match now_fn() {
+                                Ok(timestamp) => timestamp,
+                                Err(err) => {
+                                    error!(?err, "Failed to read the time for remove_timedout_workers");
+                                    continue;
+                                }
+                            };
                             match weak_scheduler.upgrade() {
                                 Some(scheduler) => {
                                     if let Err(err) =
@@ -123,18 +150,6 @@ impl WorkerApiServer {
                 }
             });
         }
-
-        Self::new_with_now_fn(
-            config,
-            schedulers,
-            Box::new(move || {
-                SystemTime::now().duration_since(UNIX_EPOCH).map_err(|err| {
-                    Error::from_std_err(Code::Internal, &err)
-                        .append("System time is now behind unix epoch")
-                })
-            }),
-            node_id,
-        )
     }
 
     /// Same as `new()`, but you can pass a custom `now_fn`, that returns a Duration since `UNIX_EPOCH`
@@ -143,6 +158,15 @@ impl WorkerApiServer {
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
         now_fn: NowFn,
+        node_id: [u8; 6],
+    ) -> Result<Self, Error> {
+        Self::with_shared_now_fn(config, schedulers, Arc::new(now_fn), node_id)
+    }
+
+    fn with_shared_now_fn(
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        now_fn: Arc<NowFn>,
         node_id: [u8; 6],
     ) -> Result<Self, Error> {
         let scheduler = schedulers
@@ -156,9 +180,18 @@ impl WorkerApiServer {
             .clone();
         Ok(Self {
             scheduler,
-            now_fn: Arc::new(now_fn),
+            now_fn,
             node_id,
+            worker_id_fn: None,
         })
+    }
+
+    /// Takes the unique part of each worker id from `worker_id_fn` instead
+    /// of a time-based UUID, for tests that need the same ids every run.
+    #[must_use]
+    pub fn with_worker_id_fn(mut self, worker_id_fn: WorkerIdFn) -> Self {
+        self.worker_id_fn = Some(worker_id_fn);
+        self
     }
 
     pub fn into_service(self) -> Server<Self> {
@@ -207,10 +240,13 @@ impl WorkerApiServer {
 
         // Now register the worker with the scheduler.
         let worker_id = {
+            let unique = self.worker_id_fn.as_ref().map_or_else(
+                || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
+                |worker_id_fn| worker_id_fn(),
+            );
             let worker_id = WorkerId(format!(
-                "{}{}",
+                "{}{unique}",
                 connect_worker_request.worker_id_prefix,
-                Uuid::now_v6(&self.node_id).hyphenated()
             ));
             let mut worker = Worker::new(
                 worker_id.clone(),
@@ -390,6 +426,24 @@ impl WorkerConnection {
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         if let Some(running) = keep_alive_request.running_operations {
+            // The memory first: the running report can release an operation
+            // the worker left out, and a peak for it is then dropped anyway.
+            let peaks: Vec<(OperationId, u64)> = running
+                .memory
+                .into_iter()
+                .map(|memory| {
+                    (
+                        OperationId::from(memory.operation_id),
+                        memory.peak_memory_kb,
+                    )
+                })
+                .collect();
+            if !peaks.is_empty() {
+                self.scheduler
+                    .worker_operation_memory_reported(&self.worker_id, peaks)
+                    .await
+                    .err_tip(|| "Could not process the memory report in inner_keep_alive()")?;
+            }
             self.scheduler
                 .worker_running_operations_reported(
                     &self.worker_id,

@@ -16,8 +16,10 @@ comparison or matrix. The earlier comparison reader remains available for
 historical aggregate reports; the dispatch helpers accept only the cluster lane.
 
 The hosted Nix Bazel Dev job and the duplicate project-pinned native Bazel job
-are replaced by this lane for branch builds. Bazel 8 compatibility and Redis
-topology checks also run on every pull request to `main`. Sanitizer,
+are replaced by this lane for branch builds. Bazel 8.8.2 compatibility runs daily
+at 07:00 UTC and on manual dispatch of `CI / Bazel`, using its separate lockfile.
+It skips pull requests and branch pushes. Redis topology checks continue to run
+on every pull request to `main`. Sanitizer,
 Cargo/Windows, Nix toolchain/installation, integration and release checks retain
 their separate coverage. Their workloads are not equivalent to `test //...`.
 

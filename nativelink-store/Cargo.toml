@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.8.3"
+version = "1.8.5"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -16,7 +16,7 @@ nativelink-util = { path = "../nativelink-util" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
-aws-config = { version = "1.11.0", default-features = false, features = [
+aws-config = { version = "1.13.2", default-features = false, features = [
   "sso",
 ] }
 aws-sdk-s3 = { version = "1.144.0", features = [
@@ -65,7 +65,7 @@ http = { version = "1.3.1", default-features = false }
 http-body = { version = "1.0.1", default-features = false }
 http-body-util = { version = "0.1.3", default-features = false }
 humantime = { version = "2.3.0", default-features = false }
-hyper = { version = "1.6.0", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 hyper-rustls = { version = "0.27.5", default-features = false, features = [
   "http1",
   "http2",
@@ -192,6 +192,11 @@ tracing-test = { version = "0.2.5", default-features = false, features = [
 zip = { version = "9.0.0", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ] }
+
+# The caps crate only compiles on Linux: capabilities are a Linux kernel
+# concept, and macOS is also `unix`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+caps = { version = "0.5.6", default-features = false }
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro

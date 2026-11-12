@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import { defaultFooterColumns } from "../src/components/site-footer";
 import { defaultNavLinks } from "../src/components/site-header";
 import { leavesSite } from "../src/lib/nav";

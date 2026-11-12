@@ -61,7 +61,9 @@
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-xl: 20px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
 
   /* Animations */
   --animate-fade-in: fadeIn 0.6s ease-out forwards;

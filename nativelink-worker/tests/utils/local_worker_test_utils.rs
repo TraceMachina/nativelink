@@ -86,6 +86,8 @@ pub(crate) struct MockWorkerApiClient {
     pub going_away_count: Arc<AtomicU64>,
     pub going_away_drain: Arc<std::sync::atomic::AtomicBool>,
     pub execution_complete_count: Arc<AtomicU64>,
+    /// Every keepalive request the worker sent, in order.
+    pub keep_alive_requests: Arc<std::sync::Mutex<Vec<KeepAliveRequest>>>,
 }
 
 impl MockWorkerApiClient {
@@ -103,6 +105,7 @@ impl MockWorkerApiClient {
             going_away_count: Arc::new(AtomicU64::new(0)),
             going_away_drain: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             execution_complete_count: Arc::new(AtomicU64::new(0)),
+            keep_alive_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -216,8 +219,9 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
+    async fn keep_alive(&mut self, request: KeepAliveRequest) -> Result<(), Error> {
         debug!("Got KeepAlive");
+        self.keep_alive_requests.lock().unwrap().push(request);
         if self.keep_alive_hangs.load(Ordering::Acquire) {
             self.keep_alives_hanging.fetch_add(1, Ordering::AcqRel);
             core::future::pending::<()>().await;

@@ -246,7 +246,12 @@ rust_test_suite(
         "@crates//:webpki-roots",
         "@crates//:wincode",
         "@crates//:zip",
-    ],
+    ] + select({
+        # The caps crate only compiles on Linux: capabilities are a Linux
+        # kernel concept, and macOS is also `unix`.
+        "@platforms//os:linux": ["@crates//:caps"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

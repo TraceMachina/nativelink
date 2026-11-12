@@ -18,6 +18,7 @@ export { ExternalLinkIcon } from "./components/external-link-icon";
 export { SiteFooter } from "./components/site-footer";
 export { Eyebrow } from "./components/eyebrow";
 export { Stat, StatGrid } from "./components/stat";
+export { FeatureCard } from "./components/feature-card";
 export { VideoEmbed, YouTubeEmbed } from "./components/video-embed";
 export { VideoFacade } from "./components/video-facade";
 export { FinalCTA } from "./components/final-cta";
