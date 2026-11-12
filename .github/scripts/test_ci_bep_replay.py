@@ -254,6 +254,15 @@ class CommentTest(unittest.TestCase):
         kept = next(c for c in github.comments if c['id'] == 5)
         self.assertIn('| unit-tests | Passed |', kept['body'])
 
+    def test_a_check_run_the_listing_does_not_show_yet_is_still_commented(self):
+        github = FakeGitHub([])
+        just_created = check('Build results / pull-request', '1 failing test')
+        body = ci_bep_replay.comment_on_pull_request(
+            self.origin, 'token', 'https://ui.example/a/acct/builds/', github,
+            sleep=lambda _: None, created=[just_created])
+        self.assertIn('| pull-request | 1 failing test |', body)
+        self.assertEqual(len(github.comments), 1)
+
     def test_nothing_is_posted_without_published_builds(self):
         github = FakeGitHub([check('Lint', 'Passed')])
         self.assertIsNone(self.comment(github))
