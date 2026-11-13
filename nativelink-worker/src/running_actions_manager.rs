@@ -70,6 +70,7 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics::{INPUT_MOUNT_METRICS, record_input_relink, record_prepare_retry};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
+use nativelink_util::origin_event::CACHE_MISS_TARGET;
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
@@ -5404,22 +5405,27 @@ impl UploadActionResults {
                 results_cache_policy: None,
                 digest_function: hasher.proto_digest_func().into(),
             };
-            return grpc_store
+            grpc_store
                 .update_action_result(Request::new(update_action_request))
                 .await
-                .map(|_| ())
-                .err_tip(|| "Caching ActionResult");
+                .err_tip(|| "Caching ActionResult")?;
+        } else {
+            let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
+            action_result
+                .encode(&mut store_data)
+                .err_tip(|| "Encoding ActionResult for caching")?;
+
+            ac_store
+                .update_oneshot(action_digest, store_data.split().freeze())
+                .await
+                .err_tip(|| "Caching ActionResult")?;
         }
-
-        let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
-        action_result
-            .encode(&mut store_data)
-            .err_tip(|| "Encoding ActionResult for caching")?;
-
-        ac_store
-            .update_oneshot(action_digest, store_data.split().freeze())
-            .await
-            .err_tip(|| "Caching ActionResult")
+        debug!(
+            target: CACHE_MISS_TARGET,
+            action_digest = %action_digest,
+            "Action result written to the action cache"
+        );
+        Ok(())
     }
 
     async fn upload_historical_results_with_message(
@@ -5459,6 +5465,19 @@ impl UploadActionResults {
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
         let should_upload_ac_results =
             Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
+        if !should_upload_ac_results {
+            // The next lookup for this digest will miss. Say why here, on the
+            // same target as the miss itself, so an operator can tell "never
+            // written" from "evicted".
+            debug!(
+                target: CACHE_MISS_TARGET,
+                action_digest = %action_info,
+                exit_code = action_result.exit_code,
+                has_error = action_result.error.is_some(),
+                strategy = ?self.upload_ac_results_strategy,
+                "Not writing action result to the action cache"
+            );
+        }
         // Shortcut so we don't need to convert to proto if not needed.
         if !should_upload_ac_results && !should_upload_historical_results {
             return Ok(());

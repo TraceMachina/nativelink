@@ -117,6 +117,24 @@ async fn setup() -> Result<(Arc<CompletenessCheckingStore>, Arc<MemoryStore>, Di
     Ok((ac_store, cas_store, action_result_digest))
 }
 
+/// An action result that was never written is a plain miss, recorded on the
+/// cache-miss target without naming any output, which is how it is told apart
+/// from an entry whose outputs were evicted.
+#[nativelink_test]
+async fn absent_action_result_is_logged_as_not_found() -> Result<(), Error> {
+    let (ac_store, _cas_store, _action_result_digest) = setup().await?;
+    let never_written = DigestInfo::new([9u8; 32], 0);
+
+    let res = ac_store.has_many(&[never_written.into()]).await.unwrap();
+    assert!(res[0].is_none(), "An absent record must read as missing.");
+
+    assert!(logs_contain(
+        "Action result not found in the action cache, or its output tree could not be read"
+    ));
+    assert!(!logs_contain("missing_digest="));
+    Ok(())
+}
+
 #[nativelink_test]
 async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
     {
@@ -177,6 +195,10 @@ async fn verify_has_function_call_checks_cas() -> Result<(), Error> {
             .has_many(&[action_result_digest.into()])
             .await
             .unwrap();
+        // The incomplete entry is recorded on the cache-miss target, naming
+        // the output that is gone, so eviction can be told from never-written.
+        assert!(logs_contain("Action result incomplete"));
+        assert!(logs_contain(&format!("missing_digest={OUTPUT_FILE}")));
         assert!(
             res[0].is_none(),
             "Results should be none with missing root file."
