@@ -440,6 +440,11 @@ async fn empty_cas_upload_does_not_publish_dedup_index() -> Result<(), Error> {
     )?;
     for digest in ZERO_BYTE_DIGESTS {
         store.update_oneshot(digest, bytes::Bytes::new()).await?;
+        assert_eq!(store.has(digest).await?, Some(0));
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            bytes::Bytes::new()
+        );
     }
     assert_eq!(index.len_for_test(), 0);
     assert_eq!(content.len_for_test(), 0);
