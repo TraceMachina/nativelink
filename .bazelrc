@@ -212,6 +212,16 @@ build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 # is needed to load the rust toolchains in Bazel
 build:asan --extra_toolchains=@rust_toolchains//:all
 
+# CFI for x86_64-unknown-linux-gnu.
+# Prerequisite: register a nightly Rust toolchain with a cfi-instrumented
+# std/sysroot. @rust_toolchains supplies prebuilt std and cannot run this mode.
+# CI uses Cargo -Zbuild-std instead; this config does not rebuild std.
+# Rust-only CFI; native cross-language CFI requires matching Clang LTO.
+build:cfi --config=nightly
+build:cfi --@rules_rust//:extra_rustc_flags=-Zsanitizer=cfi
+build:cfi --@rules_rust//rust/settings:lto=fat
+build:cfi --@rules_rust//:extra_rustc_flag=-Ccodegen-units=1
+
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
 # since they tend to produce irreproducible false negatives.
 build:tsan --config=nightly --config=debug
