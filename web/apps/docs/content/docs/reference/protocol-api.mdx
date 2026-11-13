@@ -164,6 +164,11 @@ writes its result to the Action Cache; that part is tracked in
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
 
+**Empty executable inputs stay executable.** When the worker's directory
+cache materializes an input root, a zero-byte file whose `FileNode` sets
+`is_executable` gets mode 0o555, like any other executable input it copies,
+and other zero-byte files get 0o444.
+
 **Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
 request missing a digest it requires, is a client error, so every service
 answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
