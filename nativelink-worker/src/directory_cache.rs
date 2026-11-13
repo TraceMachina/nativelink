@@ -33,11 +33,15 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
+#[cfg(target_os = "macos")]
+use nativelink_store::filesystem_store::make_temp_key;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+#[cfg(target_os = "macos")]
+use nativelink_util::fs_util::clone_file_pristine;
 use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
@@ -65,6 +69,12 @@ const TEMP_PREFIX: &str = ".tmp-";
 
 /// Prefix for eviction tombstones awaiting background deletion.
 const TOMBSTONE_PREFIX: &str = ".del-";
+
+/// Name of the file the `experimental_clone_executables` startup probe
+/// clones into `cache_root`. Removed by the probe itself; a leftover from a
+/// crash is swept with the rest of `cache_root` at the next startup.
+#[cfg(target_os = "macos")]
+const CLONE_PROBE_NAME: &str = ".clone-probe";
 
 /// Minimum interval between summary log lines, in nanoseconds (one minute).
 const SUMMARY_LOG_INTERVAL_NANOS: u64 = 60_000_000_000;
@@ -106,6 +116,8 @@ pub struct DirectoryCacheConfig {
     pub max_concurrent_fetches: usize,
     /// See `nativelink-config`'s `DirectoryCacheConfig::experimental_get_tree_prefetch`.
     pub experimental_get_tree_prefetch: bool,
+    /// See `nativelink-config`'s `DirectoryCacheConfig::experimental_clone_executables`.
+    pub experimental_clone_executables: bool,
 }
 
 /// Receives every CAS digest before the directory cache starts materializing
@@ -130,6 +142,7 @@ impl Default for DirectoryCacheConfig {
             experimental_subtree_caching: false,
             max_concurrent_fetches: DEFAULT_MAX_CONCURRENT_FETCHES,
             experimental_get_tree_prefetch: false,
+            experimental_clone_executables: false,
         }
     }
 }
@@ -249,6 +262,20 @@ pub struct DirectoryCache {
     clonefile_hits: AtomicU64,
     /// Count of materializations that used per-file `fs::hard_link`.
     hardlink_hits: AtomicU64,
+    /// Whether executable files are cloned from the CAS blob instead of
+    /// copied: `experimental_clone_executables` is set, the fast tier is a
+    /// `FilesystemStore`, and the startup probe could clone from it into
+    /// `cache_root`. Fixed for the life of the cache.
+    #[cfg(target_os = "macos")]
+    clone_executables: bool,
+    /// Count of executable files given their private inode by cloning the
+    /// CAS blob with APFS `clonefile(2)`. Only ever non-zero on macOS with
+    /// `experimental_clone_executables` enabled.
+    executable_clone_hits: AtomicU64,
+    /// Count of files given a private inode by fetching the blob and
+    /// writing a full copy: executables that could not be cloned, plus
+    /// non-executables that could not be hardlinked.
+    file_copy_hits: AtomicU64,
     /// Count of subtree materializations served from the cache by the
     /// subtree's own `Directory` digest. Only ever non-zero when
     /// `experimental_subtree_caching` is enabled.
@@ -317,15 +344,38 @@ impl DirectoryCache {
             );
         }
 
+        #[cfg(target_os = "macos")]
+        let clone_executables = config.experimental_clone_executables
+            && if let Some(filesystem_store) = &filesystem_store {
+                Self::probe_clone_executables(filesystem_store, &config.cache_root).await
+            } else {
+                warn!(
+                    "experimental_clone_executables needs a FilesystemStore fast store; \
+                     executable files will be copied"
+                );
+                false
+            };
+        #[cfg(not(target_os = "macos"))]
+        if config.experimental_clone_executables {
+            warn!(
+                "experimental_clone_executables only has an effect on macOS; \
+                 executable files will be copied"
+            );
+        }
+
         let cache = Self {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
             filesystem_store,
+            #[cfg(target_os = "macos")]
+            clone_executables,
             fetch_permits: Semaphore::new(max_concurrent_fetches),
             clonefile_hits: AtomicU64::new(0),
             hardlink_hits: AtomicU64::new(0),
+            executable_clone_hits: AtomicU64::new(0),
+            file_copy_hits: AtomicU64::new(0),
             subtree_hits: AtomicU64::new(0),
             subtree_misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
@@ -336,6 +386,56 @@ impl DirectoryCache {
         };
         cache.sweep_cache_root().await;
         Ok(cache)
+    }
+
+    /// Clones one empty file from the `FilesystemStore` into `cache_root`
+    /// to find out, once, whether executables can be cloned at all: both
+    /// must be on the same APFS volume. The store's temp directory stands in
+    /// for its content directory — the store renames every blob from one to
+    /// the other, so they are on one filesystem — and is where the store
+    /// already creates and prunes scratch files. A failure is logged once
+    /// and turns cloning off for the life of the cache, so a layout that
+    /// can never clone does not pay a failed `clonefile(2)` per file.
+    #[cfg(target_os = "macos")]
+    async fn probe_clone_executables(
+        filesystem_store: &FilesystemStore,
+        cache_root: &Path,
+    ) -> bool {
+        let probe_key = make_temp_key(&StoreKey::Digest(DigestInfo::zero_digest()));
+        let (probe_entry, probe_file, src) = match filesystem_store.make_temp_file(probe_key).await
+        {
+            Ok(probe) => probe,
+            Err(e) => {
+                warn!(
+                    error = ?e,
+                    "experimental_clone_executables: could not create a probe file in the \
+                     filesystem store; executable files will be copied"
+                );
+                return false;
+            }
+        };
+        drop(probe_file);
+        let src = PathBuf::from(src);
+        let dst = cache_root.join(CLONE_PROBE_NAME);
+        drop(fs::remove_file(&dst).await);
+        let result = clone_file_pristine(&src, &dst, 0o555).await;
+        drop(fs::remove_file(&dst).await);
+        // Dropping the entry makes the store delete its probe file.
+        drop(probe_entry);
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(
+                    cas_file = %src.display(),
+                    cache_file = %dst.display(),
+                    error = %e,
+                    "experimental_clone_executables: a filesystem store file cannot be cloned \
+                     into the directory cache (they must be on the same APFS volume); \
+                     executable files will be copied"
+                );
+                false
+            }
+        }
     }
 
     /// Sweeps pre-existing content of `cache_root`. The in-memory map starts
@@ -405,6 +505,8 @@ impl DirectoryCache {
         info!(
             clonefile_hits = self.clonefile_hits.load(Ordering::Relaxed),
             hardlink_hits = self.hardlink_hits.load(Ordering::Relaxed),
+            executable_clone_hits = self.executable_clone_hits.load(Ordering::Relaxed),
+            file_copy_hits = self.file_copy_hits.load(Ordering::Relaxed),
             subtree_hits = self.subtree_hits.load(Ordering::Relaxed),
             subtree_misses = self.subtree_misses.load(Ordering::Relaxed),
             evictions = self.evictions.load(Ordering::Relaxed),
@@ -1085,7 +1187,11 @@ impl DirectoryCache {
     /// This imposes two correctness rules, both handled here:
     ///  * Executable files (`FileNode.is_executable`) need the `+x` bit, which
     ///    cannot be applied to a shared CAS inode. They are given their own
-    ///    private inode via fetch+write and then chmod'd — never hardlinked.
+    ///    private inode and then chmod'd — never hardlinked. That inode is
+    ///    a fetch+write copy, or, on macOS with
+    ///    `experimental_clone_executables`, an APFS `clonefile(2)` clone of
+    ///    the CAS blob (its own mode, copy-on-write data, nothing read or
+    ///    written) with the copy as the fallback whenever a clone fails.
     ///  * If the blob is not locally hardlinkable (the fast tier is not a
     ///    `FilesystemStore`, or the blob is not present in it / was evicted),
     ///    fall back to fetch+write for that file rather than failing.
@@ -1115,8 +1221,32 @@ impl DirectoryCache {
         }
 
         // Executable files need their own inode to carry the +x bit without
-        // mutating the shared CAS blob — copy, never hardlink.
+        // mutating the shared CAS blob — clone or copy, never hardlink.
         if file_node.is_executable {
+            #[cfg(target_os = "macos")]
+            if self.clone_executables
+                && let Some(filesystem_store) = &self.filesystem_store
+            {
+                match self
+                    .clone_cas_blob_executable(filesystem_store, &digest, &file_path)
+                    .await
+                {
+                    Ok(()) => {
+                        self.executable_clone_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
+                    }
+                    // The blob left the filesystem tier, it carries
+                    // metadata a copy would not, ... — never fatal: a
+                    // failed clone leaves nothing behind, and the copy
+                    // below builds the same file the way it always has.
+                    Err(e) => trace!(
+                        ?digest,
+                        ?file_path,
+                        error = ?e,
+                        "CAS blob not clonable, copying instead"
+                    ),
+                }
+            }
             return self.copy_file_to(&digest, &file_path, true).await;
         }
 
@@ -1188,6 +1318,59 @@ impl DirectoryCache {
             .await
     }
 
+    /// Gives the executable `digest` its private `0o555` inode at `file_path`
+    /// by cloning the `FilesystemStore` CAS blob with APFS `clonefile(2)`
+    /// instead of fetching it into memory and writing it back out.
+    ///
+    /// A clone is a new inode that shares the blob's data blocks
+    /// copy-on-write, so its chmod lands on the clone alone and the shared
+    /// `0o444` CAS inode is never touched — the same guarantee
+    /// `copy_file_to` gives, without reading or writing the file's bytes.
+    /// The blob's path is resolved and cloned under the entry lock, exactly
+    /// like `hardlink_cas_blob`, so an eviction cannot move it mid-clone.
+    /// A clone that would carry more than the blob's bytes (extended
+    /// attributes, BSD file flags) is discarded; see `clone_file_pristine`.
+    ///
+    /// The clone keeps the blob's mtime, as the hardlink of a
+    /// non-executable file does.
+    ///
+    /// Any error means "not clonable" and leaves nothing at `file_path`;
+    /// callers fall back to `copy_file_to`.
+    #[cfg(target_os = "macos")]
+    async fn clone_cas_blob_executable(
+        &self,
+        filesystem_store: &FilesystemStore,
+        digest: &DigestInfo,
+        file_path: &Path,
+    ) -> Result<(), Error> {
+        {
+            let _permit = self.acquire_fetch_permit().await?;
+            self.cas_store
+                .populate_fast_store(StoreKey::Digest(*digest))
+                .await
+                .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
+        }
+
+        let file_entry = filesystem_store
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "Resolving CAS file entry for clone")?;
+
+        let dst = file_path.to_path_buf();
+        file_entry
+            .get_file_path_locked(move |src| async move {
+                clone_file_pristine(Path::new(&src), &dst, 0o555)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to clone CAS blob into cache entry: {}",
+                            dst.display()
+                        )
+                    })
+            })
+            .await
+    }
+
     /// Fetches the blob for `digest` from the CAS and writes a private copy at
     /// `file_path`, then chmods it read-only (`0o555` when `executable`, else
     /// `0o444`). This is safe because the copy has its own inode, unshared with
@@ -1198,6 +1381,7 @@ impl DirectoryCache {
         file_path: &Path,
         executable: bool,
     ) -> Result<(), Error> {
+        self.file_copy_hits.fetch_add(1, Ordering::Relaxed);
         let data = {
             let _permit = self.acquire_fetch_permit().await?;
             self.cas_store
@@ -1465,6 +1649,8 @@ impl DirectoryCache {
             in_use_entries: in_use,
             clonefile_hits: self.clonefile_hits.load(Ordering::Relaxed),
             hardlink_hits: self.hardlink_hits.load(Ordering::Relaxed),
+            executable_clone_hits: self.executable_clone_hits.load(Ordering::Relaxed),
+            file_copy_hits: self.file_copy_hits.load(Ordering::Relaxed),
             subtree_hits: self.subtree_hits.load(Ordering::Relaxed),
             subtree_misses: self.subtree_misses.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
@@ -1490,6 +1676,18 @@ impl MetricsComponent for DirectoryCache {
             &self.hardlink_hits,
             MetricKind::Counter,
             "Materializations that used per-file hardlinks"
+        );
+        publish!(
+            "executable_clone_hits",
+            &self.executable_clone_hits,
+            MetricKind::Counter,
+            "Executable files cloned from the CAS blob with APFS clonefile(2) (macOS only)"
+        );
+        publish!(
+            "file_copy_hits",
+            &self.file_copy_hits,
+            MetricKind::Counter,
+            "Files fetched and written as a full private copy"
         );
         publish!(
             "subtree_hits",
@@ -1535,6 +1733,11 @@ pub struct CacheStats {
     pub clonefile_hits: u64,
     /// Materializations that used per-file `fs::hard_link`.
     pub hardlink_hits: u64,
+    /// Executable files cloned from the CAS blob with APFS `clonefile(2)`
+    /// (macOS).
+    pub executable_clone_hits: u64,
+    /// Files fetched and written as a full private copy.
+    pub file_copy_hits: u64,
     /// Subtree materializations served from the cache by digest. Always zero
     /// unless `experimental_subtree_caching` is enabled.
     pub subtree_hits: u64,
@@ -2475,6 +2678,821 @@ mod tests {
         drop(prepared);
         fs::remove_file(&dest).await?;
         assert!(cache.get_or_create(digest, &dest).await?);
+        Ok(())
+    }
+
+    /// What the executable-clone tests need to know about a CAS blob file.
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, PartialEq, Eq)]
+    struct BlobStat {
+        ino: u64,
+        mode: u32,
+        nlink: u64,
+        content: Vec<u8>,
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn stat_blob(path: &Path) -> BlobStat {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let m = fs::metadata(path).await.unwrap();
+        BlobStat {
+            ino: m.ino(),
+            mode: m.permissions().mode() & 0o7777,
+            nlink: m.nlink(),
+            content: fs::read(path).await.unwrap(),
+        }
+    }
+
+    /// Seeds a directory holding one executable `tool` (64 KiB, so it spans
+    /// several filesystem blocks) and pulls the blob into the filesystem
+    /// tier. Returns the store, the root digest, the blob's bytes and the
+    /// CAS blob's on-disk path.
+    #[cfg(target_os = "macos")]
+    async fn setup_executable_store(
+        temp_dir: &TempDir,
+    ) -> (Arc<FastSlowStore>, DigestInfo, Vec<u8>, PathBuf) {
+        let (cas_store, slow_store) = make_fast_slow_store(temp_dir).await;
+
+        let content: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let file_digest = upload_blob(&slow_store, 21, &content).await;
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: "tool".to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = upload_blob(&slow_store, 22, &dir_data).await;
+
+        cas_store
+            .populate_fast_store(StoreKey::Digest(file_digest))
+            .await
+            .unwrap();
+        let cas_path = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_file_entry_for_digest(&file_digest)
+            .await
+            .unwrap()
+            .get_file_path_locked(|p| async move { Ok(PathBuf::from(p)) })
+            .await
+            .unwrap();
+        (cas_store, dir_digest, content, cas_path)
+    }
+
+    /// On macOS an executable is a `clonefile(2)` clone of the CAS blob: it
+    /// has the bytes and the 0o555 mode the copy path produces, on its own
+    /// inode, and the CAS blob keeps its inode, its 0o444 mode, its single
+    /// link and its bytes.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_construct_executable_clones_cas_blob() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+        assert_eq!(cas_before.mode, 0o444, "CAS blobs are stored read-only");
+        assert_eq!(cas_before.nlink, 1);
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 1, "executable must be cloned");
+        assert_eq!(stats.file_copy_hits, 0, "nothing may be copied");
+
+        // Both the cache entry and the action's materialized tree.
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}: mode", file.display());
+            assert_eq!(got.content, content, "{}: bytes", file.display());
+            assert_ne!(got.ino, cas_before.ino, "{}: private inode", file.display());
+            assert_eq!(got.nlink, 1, "{}: not a hardlink", file.display());
+        }
+
+        assert_eq!(
+            stat_blob(&cas_path).await,
+            cas_before,
+            "CAS blob inode, mode, link count and bytes must be untouched"
+        );
+        Ok(())
+    }
+
+    /// Copy-on-write isolation: rewriting, truncating and chmod-ing the
+    /// cloned executable never reaches the CAS blob it shares blocks with.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_is_isolated_from_cas_blob() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        assert_eq!(cache.stats().await.executable_clone_hits, 1);
+        let clone = cache.get_cache_path(&dir_digest).join("tool");
+
+        // chmod the clone.
+        fs::set_permissions(&clone, std::fs::Permissions::from_mode(0o700)).await?;
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after chmod");
+
+        // Overwrite a range in the middle of the clone, in place.
+        let mut file = fs::OpenOptions::new().write(true).open(&clone).await?;
+        file.seek(std::io::SeekFrom::Start(8192)).await?;
+        file.write_all(&vec![0xAA; 20_000]).await?;
+        file.sync_all().await?;
+        drop(file);
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after overwrite");
+        let mut expected = content.clone();
+        expected[8192..28_192].fill(0xAA);
+        assert_eq!(fs::read(&clone).await?, expected, "the write hit the clone");
+
+        // Truncate the clone.
+        let file = fs::OpenOptions::new().write(true).open(&clone).await?;
+        file.set_len(100).await?;
+        file.sync_all().await?;
+        drop(file);
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after truncate");
+        assert_eq!(fs::metadata(&clone).await?.len(), 100);
+
+        // The action's tree is a clone of the entry taken before any of
+        // that, so it is still pristine.
+        assert_eq!(fs::read(dest.join("tool")).await?, content);
+        Ok(())
+    }
+
+    /// The clone owns a reference to its data blocks: evicting the CAS blob
+    /// from the `FilesystemStore` (rename to temp, then unlink) leaves the
+    /// cached executable intact and readable.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_survives_cas_eviction() -> Result<(), Error> {
+        use nativelink_util::store_trait::StoreDriver;
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let file_digest = DigestInfo::new([21u8; 32], content.len() as u64);
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store.clone(),
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        assert_eq!(cache.stats().await.executable_clone_hits, 1);
+
+        // Evict the blob through the store itself (rename to the temp
+        // directory, unlink once the entry drops), and wait for the file to
+        // really leave the disk.
+        let filesystem_store = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_arc()
+            .unwrap();
+        assert!(
+            Pin::new(filesystem_store.as_ref())
+                .remove(file_digest.into())
+                .await?,
+            "the blob must have been in the filesystem store"
+        );
+        assert!(
+            filesystem_store
+                .get_file_entry_for_digest(&file_digest)
+                .await
+                .is_err()
+        );
+        assert!(!cas_path.exists(), "eviction must move the CAS blob away");
+        let mut blob_files_left = usize::MAX;
+        for _ in 0..500 {
+            blob_files_left = 0;
+            let mut pending = vec![temp_dir.path().join("cas_temp")];
+            while let Some(dir) = pending.pop() {
+                let mut entries = fs::read_dir(&dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir() {
+                        pending.push(entry.path());
+                    } else if entry.metadata().await?.len() == content.len() as u64 {
+                        blob_files_left += 1;
+                    }
+                }
+            }
+            if blob_files_left == 0 {
+                break;
+            }
+            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(blob_files_left, 0, "the evicted blob must be unlinked");
+
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.content, content, "{}", file.display());
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+        }
+        Ok(())
+    }
+
+    /// Clones racing the store's own eviction of the same blob: the clone is
+    /// taken under the entry path lock, so each attempt either clones the
+    /// complete blob (fetched back into the fast tier if the eviction got
+    /// there first) or finds it gone and falls back to the copy. Every
+    /// materialized executable must be byte-exact and 0o555 either way.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_races_cas_eviction() -> Result<(), Error> {
+        use nativelink_util::store_trait::StoreDriver;
+
+        const ROUNDS: usize = 200;
+        const CLONES_PER_ROUND: usize = 8;
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _dir_digest, content, _cas_path) = setup_executable_store(&temp_dir).await;
+        let file_digest = DigestInfo::new([21u8; 32], content.len() as u64);
+        let filesystem_store = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_arc()
+            .unwrap();
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let file_node = FileNode {
+            name: "tool".to_string(),
+            digest: Some(file_digest.into()),
+            is_executable: true,
+            ..Default::default()
+        };
+
+        for round in 0..ROUNDS {
+            let mut parents = Vec::new();
+            for i in 0..CLONES_PER_ROUND {
+                let parent = temp_dir.path().join(format!("r{round}-{i}"));
+                fs::create_dir_all(&parent).await?;
+                parents.push(parent);
+            }
+            // One eviction per round, swept across the windows of
+            // `create_file` by a delay that varies with the round.
+            let evict = async {
+                tokio::time::sleep(core::time::Duration::from_micros((round % 25) as u64 * 40))
+                    .await;
+                Pin::new(filesystem_store.as_ref())
+                    .remove(file_digest.into())
+                    .await
+            };
+            let creates = futures::future::join_all(
+                parents
+                    .iter()
+                    .map(|parent| cache.create_file(parent, &file_node)),
+            );
+            let (evicted, created) = tokio::join!(evict, creates);
+            evicted?;
+            for (parent, result) in parents.iter().zip(created) {
+                result?;
+                let got = stat_blob(&parent.join("tool")).await;
+                assert_eq!(got.mode, 0o555, "round {round}");
+                assert_eq!(got.nlink, 1, "round {round}");
+                assert!(got.content == content, "round {round}: wrong bytes");
+                fs::remove_dir_all(parent).await?;
+            }
+        }
+
+        // Every file was built by one path or the other, never neither.
+        let stats = cache.stats().await;
+        assert_eq!(
+            stats.executable_clone_hits + stats.file_copy_hits,
+            (ROUNDS * CLONES_PER_ROUND) as u64
+        );
+        assert!(stats.executable_clone_hits > 0, "{stats:?}");
+        Ok(())
+    }
+
+    /// When `clonefile(2)` fails — here because the destination already
+    /// exists (EEXIST) — the executable is built by the fetch+write copy
+    /// instead, with the same bytes and mode, and the CAS blob is still
+    /// untouched.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_failure_falls_back_to_copy() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+
+        // A leftover at the destination: clonefile(2) refuses to replace
+        // it and leaves it alone, and the copy overwrites it as it always
+        // has.
+        let parent = temp_dir.path().join("parent");
+        fs::create_dir_all(&parent).await?;
+        let dst = parent.join("tool");
+        fs::write(&dst, b"stale").await?;
+
+        let file_node = FileNode {
+            name: "tool".to_string(),
+            digest: Some(DigestInfo::new([21u8; 32], content.len() as u64).into()),
+            is_executable: true,
+            ..Default::default()
+        };
+        cache.create_file(&parent, &file_node).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "the clone must have failed");
+        assert_eq!(stats.file_copy_hits, 1, "the copy must have run");
+        let got = stat_blob(&dst).await;
+        assert_eq!(got.content, content);
+        assert_eq!(got.mode, 0o555);
+        assert_ne!(got.ino, cas_before.ino);
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    /// The default: without `experimental_clone_executables` an executable
+    /// is built by the fetch+write copy, exactly as before the option
+    /// existed, and nothing is cloned or probed.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_copied_unless_clone_enabled() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(!cache.config.experimental_clone_executables, "default");
+        assert!(!cache.clone_executables);
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "nothing may be cloned");
+        assert_eq!(stats.file_copy_hits, 1, "the executable must be copied");
+        let got = stat_blob(&cache.get_cache_path(&dir_digest).join("tool")).await;
+        assert_eq!(got.mode, 0o555);
+        assert_eq!(got.content, content);
+        assert_ne!(got.ino, cas_before.ino);
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    /// The startup probe succeeds when the store and the cache share a
+    /// volume, and cleans up after itself on both sides.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_clone_probe_succeeds_and_leaves_nothing() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _slow_store) = make_fast_slow_store(&temp_dir).await;
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: cache_root.clone(),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables, "same volume: probe must succeed");
+        assert!(!logs_contain("executable files will be copied"));
+        assert!(!cache_root.join(CLONE_PROBE_NAME).exists());
+
+        // The store deletes its own probe file in the background.
+        let mut files_left = usize::MAX;
+        for _ in 0..500 {
+            files_left = 0;
+            let mut pending = vec![temp_dir.path().join("cas_temp")];
+            while let Some(dir) = pending.pop() {
+                let mut entries = fs::read_dir(&dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir() {
+                        pending.push(entry.path());
+                    } else {
+                        files_left += 1;
+                    }
+                }
+            }
+            if files_left == 0 {
+                break;
+            }
+            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(files_left, 0, "probe file left in the store's temp dir");
+        Ok(())
+    }
+
+    /// A failed startup probe is logged once and turns cloning off for the
+    /// life of the cache: executables are copied without a clone attempt.
+    /// The failure here is a `cache_root` the probe cannot write to (EACCES);
+    /// a cross-volume layout (EXDEV) takes the same branch.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_clone_probe_failure_disables_cloning() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            // root ignores directory permissions, so the probe would succeed.
+            return Ok(());
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, _cas_path) = setup_executable_store(&temp_dir).await;
+        let cache_root = temp_dir.path().join("cache");
+        fs::create_dir_all(&cache_root).await?;
+        fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o555)).await?;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await;
+        fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o755)).await?;
+        let cache = cache?;
+
+        assert!(!cache.clone_executables, "the probe must have failed");
+        assert!(logs_contain("cannot be cloned into the directory cache"));
+        assert!(logs_contain("executable files will be copied"));
+
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0);
+        assert_eq!(stats.file_copy_hits, 1);
+        let got = stat_blob(&dest.join("tool")).await;
+        assert_eq!(got.mode, 0o555);
+        assert_eq!(got.content, content);
+        Ok(())
+    }
+
+    /// The window between `populate_fast_store` and the clone: the blob is
+    /// populated but gone from the filesystem tier by the time its entry is
+    /// looked up. Staged deterministically by pointing the cache's
+    /// `FilesystemStore` handle at a second, empty store, so the populate
+    /// succeeds against the real fast tier and the lookup finds nothing. The
+    /// executable must then be built, correctly, by the copy.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_copied_when_blob_vanishes_before_clone() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let mut cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables);
+        let empty_store = FilesystemStore::new(&FilesystemSpec {
+            content_path: temp_dir
+                .path()
+                .join("empty_content")
+                .to_string_lossy()
+                .into_owned(),
+            temp_path: temp_dir
+                .path()
+                .join("empty_temp")
+                .to_string_lossy()
+                .into_owned(),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?;
+        cache.filesystem_store = Some(empty_store);
+
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "there was nothing to clone");
+        assert_eq!(stats.file_copy_hits, 1, "the copy must have run");
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+            assert_eq!(got.nlink, 1, "{}", file.display());
+            assert!(got.content == content, "{}: wrong bytes", file.display());
+        }
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn path_cstring(path: &Path) -> std::ffi::CString {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    /// Names of the extended attributes on `path`.
+    #[cfg(target_os = "macos")]
+    fn xattr_names(path: &Path) -> Vec<String> {
+        let path_c = path_cstring(path);
+        let mut names = vec![0u8; 4096];
+        // SAFETY: `names` is a writable buffer of the length passed.
+        let size = unsafe {
+            libc::listxattr(
+                path_c.as_ptr(),
+                names.as_mut_ptr().cast(),
+                names.len(),
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert!(size >= 0, "listxattr: {}", std::io::Error::last_os_error());
+        names.truncate(size.unsigned_abs());
+        names
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_file_flags(path: &Path, flags: u32) {
+        let path_c = path_cstring(path);
+        // SAFETY: `path_c` is a NUL-terminated C string that outlives the call.
+        let rc = unsafe { libc::chflags(path_c.as_ptr(), flags) };
+        assert_eq!(rc, 0, "chflags: {}", std::io::Error::last_os_error());
+    }
+
+    /// A CAS blob carrying an extended attribute is not cloned — the clone
+    /// would hand that attribute to the action — but copied, and the copy
+    /// does not have it.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_with_xattr_on_blob_is_copied() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Setting an attribute needs write permission; the blob is 0o444.
+            fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o644)).await?;
+            let path_c = path_cstring(&cas_path);
+            // SAFETY: both C strings and the value buffer outlive the call.
+            let rc = unsafe {
+                libc::setxattr(
+                    path_c.as_ptr(),
+                    c"com.apple.quarantine".as_ptr(),
+                    b"0081;0;test;".as_ptr().cast(),
+                    12,
+                    0,
+                    0,
+                )
+            };
+            assert_eq!(rc, 0, "setxattr: {}", std::io::Error::last_os_error());
+            fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o444)).await?;
+        }
+        assert!(xattr_names(&cas_path).contains(&"com.apple.quarantine".to_string()));
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables);
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "a dirty blob is not cloned");
+        assert_eq!(stats.file_copy_hits, 1, "it is copied");
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+            assert!(got.content == content, "{}: wrong bytes", file.display());
+            assert!(
+                !xattr_names(&file).contains(&"com.apple.quarantine".to_string()),
+                "{}: inherited the blob's attribute",
+                file.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// A CAS blob carrying a BSD file flag is copied, not cloned: the clone
+    /// would inherit the flag, and an immutable (`uchg`) clone could be
+    /// neither chmod'd nor ever deleted from the cache. Nothing in the cache
+    /// entry or the action tree carries a flag afterwards.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_with_file_flags_on_blob_is_copied() -> Result<(), Error> {
+        use std::os::macos::fs::MetadataExt;
+
+        for (name, flags) in [("nodump", libc::UF_NODUMP), ("uchg", libc::UF_IMMUTABLE)] {
+            let temp_dir = TempDir::new().unwrap();
+            let (cas_store, dir_digest, content, cas_path) =
+                setup_executable_store(&temp_dir).await;
+            set_file_flags(&cas_path, flags);
+
+            let cache_root = temp_dir.path().join("cache");
+            let cache = DirectoryCache::new(
+                DirectoryCacheConfig {
+                    max_entries: 10,
+                    max_size_bytes: 1024 * 1024,
+                    cache_root: cache_root.clone(),
+                    experimental_clone_executables: true,
+                    ..Default::default()
+                },
+                cas_store,
+            )
+            .await?;
+            let dest = temp_dir.path().join("dest");
+            let result = cache.get_or_create(dir_digest, &dest).await;
+            // Clear the flag before any assertion can fail, so the temp
+            // directory (and the immutable blob in it) can be deleted.
+            set_file_flags(&cas_path, 0);
+            result?;
+
+            let stats = cache.stats().await;
+            assert_eq!(stats.executable_clone_hits, 0, "{name}: not cloned");
+            assert_eq!(stats.file_copy_hits, 1, "{name}: copied");
+            for file in [
+                cache.get_cache_path(&dir_digest).join("tool"),
+                dest.join("tool"),
+            ] {
+                let got = stat_blob(&file).await;
+                assert_eq!(got.mode, 0o555, "{name}: {}", file.display());
+                assert!(got.content == content, "{name}: wrong bytes");
+                assert_eq!(
+                    fs::metadata(&file).await?.st_flags(),
+                    0,
+                    "{name}: {} inherited a file flag",
+                    file.display()
+                );
+            }
+            // Nothing immutable is left behind anywhere under the cache.
+            fs::remove_dir_all(&dest).await?;
+            fs::remove_dir_all(&cache_root).await?;
+        }
+        Ok(())
+    }
+
+    /// Without a `FilesystemStore` fast tier there is no blob file to clone
+    /// or hardlink, so every file is copied, executable or not, with the
+    /// modes the copy path always produced.
+    #[cfg(unix)]
+    #[nativelink_test]
+    async fn test_executable_copied_without_filesystem_store() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let fast_store = MemoryStore::new(&MemorySpec::default());
+        let slow_store = MemoryStore::new(&MemorySpec::default());
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Memory(MemorySpec::default()),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
+            },
+            Store::new(fast_store),
+            Store::new(slow_store.clone()),
+        );
+        let slow_store = Store::new(slow_store);
+
+        let tool = upload_blob(&slow_store, 31, b"#!/bin/sh\necho ran\n").await;
+        let data = upload_blob(&slow_store, 32, b"plain data").await;
+        let directory = ProtoDirectory {
+            files: vec![
+                FileNode {
+                    name: "data".to_string(),
+                    digest: Some(data.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(tool.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = upload_blob(&slow_store, 33, &dir_data).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0);
+        assert_eq!(stats.file_copy_hits, 2);
+        let mode = |name: &'static str| {
+            let path = dest.join(name);
+            async move {
+                fs::metadata(&path)
+                    .await
+                    .map(|m| m.permissions().mode() & 0o7777)
+            }
+        };
+        assert_eq!(mode("tool").await?, 0o555);
+        assert_eq!(mode("data").await?, 0o444);
+        assert_eq!(fs::read(dest.join("tool")).await?, b"#!/bin/sh\necho ran\n");
+        assert_eq!(fs::read(dest.join("data")).await?, b"plain data");
         Ok(())
     }
 }

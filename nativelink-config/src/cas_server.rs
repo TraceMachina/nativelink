@@ -1876,6 +1876,46 @@ pub struct DirectoryCacheConfig {
     /// Default: false
     #[serde(default)]
     pub experimental_get_tree_prefetch: bool,
+
+    /// Optional and experimental, macOS only: build the cache's copy of an
+    /// executable input file as an APFS `clonefile(2)` clone of the worker's
+    /// local CAS blob instead of reading the blob into memory and writing a
+    /// second copy of it.
+    ///
+    /// A non-executable input is hardlinked from the `filesystem` store. An
+    /// executable one cannot be: the hardlink would share the blob's inode,
+    /// and setting its executable bit would change the mode of the blob
+    /// itself. It is therefore given a private inode, which without this
+    /// option means buffering the whole blob in memory and storing its bytes
+    /// a second time. Bazel marks every file it outputs as executable, so on
+    /// a Bazel workload that can be every input. A clone is also a private
+    /// inode, with its own mode, but it shares the blob's data blocks
+    /// copy-on-write: nothing is read or written.
+    ///
+    /// Requirements: the fast store of the worker's CAS is a `filesystem`
+    /// store, and its `content_path` and this cache's `cache_root` are on
+    /// the same APFS volume. This is checked once at startup; if a clone is
+    /// not possible a warning is logged and executable files are copied as
+    /// before. A single file that cannot be cloned is copied as well. On
+    /// other operating systems the option logs a warning and does nothing.
+    ///
+    /// What changes for an action: a cloned file keeps the modification time
+    /// of the CAS blob (as a hardlinked non-executable input does) where a
+    /// copy has the time the cache entry was built. A clone would also carry
+    /// the blob's extended attributes and BSD file flags, so a blob that has
+    /// either is copied instead.
+    ///
+    /// What does not change: `max_size_bytes` still counts the full size of
+    /// every file in an entry, so the cache evicts exactly as before even
+    /// though clones take no space of their own. Conversely, evicting a blob
+    /// from the `filesystem` store frees no disk space while a cache entry
+    /// or an action directory still holds a clone of it. Disk use is never
+    /// higher than with copies. Each clone is still a file, so the number of
+    /// files in the cache is unchanged.
+    ///
+    /// Default: false (executable files are copied; existing behavior)
+    #[serde(default)]
+    pub experimental_clone_executables: bool,
 }
 
 const fn default_directory_cache_max_entries() -> usize {
