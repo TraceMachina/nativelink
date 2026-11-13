@@ -43,6 +43,8 @@ use nativelink_util::evicting_map::{EvictingMap, EvictionSnapshot, LenEntry};
 use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 #[cfg(unix)]
+use nativelink_util::mach_o;
+#[cfg(unix)]
 use nativelink_util::spawn_blocking;
 #[cfg(unix)]
 use nativelink_util::store_trait::RemoveItemCallback;
@@ -78,13 +80,53 @@ enum Version {
 
 /// Suffix for the sibling directory that holds per-digest read-only
 /// **executable** (0o555) variants of CAS blobs (see
-/// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
+/// [`FilesystemStore::get_executable_source`]). It is a sibling of
 /// `content_path` rather than a child so the normal content/temp scan and prune
 /// logic never touches it. Cleared on writable startup; entries are
 /// regenerable. If the wipe is blocked by a read-only filesystem, executable
 /// variants are disabled so surviving files are never trusted.
 #[cfg(unix)]
 const EXECUTABLE_DIR_SUFFIX: &str = ".exec";
+
+/// The folder of the executable directory that holds the variants of Mach-O
+/// main executables, beside [`DIGEST_FOLDER_V2`] for every other variant. The
+/// folder a variant is in says how callers materialize it (see
+/// [`ExecutableSource`]), so that knowledge is created, wiped and evicted with
+/// the file itself. Only used on macOS.
+#[cfg(unix)]
+const MAIN_EXECUTABLE_FOLDER: &str = "main";
+
+/// Path of `digest`'s executable variant in `folder` of the executable
+/// directory.
+#[cfg(unix)]
+fn executable_variant_path(content_path: &str, folder: &str, digest: &DigestInfo) -> OsString {
+    format!("{content_path}{EXECUTABLE_DIR_SUFFIX}/{folder}/{digest}").into()
+}
+
+/// The executable variant to materialize an input from, and how.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutableSource {
+    /// Hardlink it into the input tree; every action shares its inode.
+    Shared(OsString),
+    /// Clone it into the input tree, giving the action a private inode,
+    /// because it is a Mach-O main executable. dyld resolves `@executable_path`
+    /// from the name the kernel last associated with the executable's vnode,
+    /// not from the path that was exec'd, so through a shared inode a tool can
+    /// look for its libraries next to the variant, or in another action's tree,
+    /// which that action may already have deleted. Libraries are unaffected,
+    /// since dyld resolves `@loader_path` from the path it opened; and every
+    /// other input has to keep sharing its inode, because clang tells two paths
+    /// to one header apart by inode. Only macOS produces this.
+    Private(OsString),
+}
+
+impl ExecutableSource {
+    pub fn path(&self) -> &OsStr {
+        match self {
+            Self::Shared(path) | Self::Private(path) => path,
+        }
+    }
+}
 
 const MAX_CONCURRENT_VARIANT_LOOKUPS: usize = 32;
 
@@ -698,7 +740,10 @@ async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
     }
 
     let executable_dir = format!("{content_path}{EXECUTABLE_DIR_SUFFIX}");
-    let executable_digest_dir = format!("{executable_dir}/{DIGEST_FOLDER_V2}");
+    let mut variant_dirs = vec![format!("{executable_dir}/{DIGEST_FOLDER_V2}")];
+    if cfg!(target_os = "macos") {
+        variant_dirs.push(format!("{executable_dir}/{MAIN_EXECUTABLE_FOLDER}"));
+    }
     spawn_blocking!("filesystem_store_prepare_executable_dir", move || {
         match std::fs::remove_dir_all(&executable_dir) {
             Ok(()) => {}
@@ -713,13 +758,17 @@ async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
             }
         }
 
-        match std::fs::create_dir_all(&executable_digest_dir) {
-            Ok(()) => Ok(true),
-            Err(err) if is_non_writable_error(&err) => Ok(false),
-            Err(err) => Err(Error::from(err).append(format!(
-                "Failed to create executable dir {executable_digest_dir}"
-            ))),
+        for variant_dir in variant_dirs {
+            match std::fs::create_dir_all(&variant_dir) {
+                Ok(()) => {}
+                Err(err) if is_non_writable_error(&err) => return Ok(false),
+                Err(err) => {
+                    return Err(Error::from(err)
+                        .append(format!("Failed to create executable dir {variant_dir}")));
+                }
+            }
         }
+        Ok(true)
     })
     .await
     .err_tip(|| "Failed to join executable-dir preparation task")?
@@ -1289,7 +1338,7 @@ where
 }
 
 /// Deletes a digest's `.exec` variant (see
-/// [`FilesystemStore::get_executable_hardlink_source`]) when that digest is
+/// [`FilesystemStore::get_executable_source`]) when that digest is
 /// evicted or replaced in the primary CAS `evicting_map`. Without this, the
 /// `.exec` directory is invisible to `max_bytes` and is only ever cleared by
 /// the startup `remove_dir_all`, so it grows without bound at runtime (#2474).
@@ -1311,22 +1360,34 @@ impl RemoveItemCallback for ExecutableVariantRemover {
             let StoreKey::Digest(digest) = store_key else {
                 return;
             };
-            let variant_path = format!(
-                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-                self.content_path
-            );
-            match fs::remove_file(&variant_path).await {
-                Ok(()) => debug!(
-                    ?variant_path,
-                    "Deleted executable variant for evicted digest"
-                ),
-                // Common case: no variant was ever materialized for this digest.
-                Err(err) if err.code == Code::NotFound => {}
-                Err(err) => warn!(
-                    ?variant_path,
-                    ?err,
-                    "Failed to delete executable variant for evicted digest"
-                ),
+            // A digest's variant is in one folder at most, and only macOS
+            // keeps main executables apart.
+            let folders: &[&str] = if cfg!(target_os = "macos") {
+                &[DIGEST_FOLDER_V2, MAIN_EXECUTABLE_FOLDER]
+            } else {
+                &[DIGEST_FOLDER_V2]
+            };
+            for folder in folders {
+                let variant_path = executable_variant_path(&self.content_path, folder, &digest);
+                match fs::remove_file(&variant_path).await {
+                    Ok(()) => {
+                        debug!(
+                            ?variant_path,
+                            "Deleted executable variant for evicted digest"
+                        );
+                        return;
+                    }
+                    // Common case: no variant was ever materialized for this digest.
+                    Err(err) if err.code == Code::NotFound => {}
+                    Err(err) => {
+                        warn!(
+                            ?variant_path,
+                            ?err,
+                            "Failed to delete executable variant for evicted digest"
+                        );
+                        return;
+                    }
+                }
             }
         })
     }
@@ -1410,8 +1471,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let migrate = temp_dirs_writable && content_dirs_writable;
 
         // Executable-variant directory: a sibling of `content_path` holding
-        // per-digest 0o555 copies used as hardlink sources for executable
-        // inputs (see `get_executable_hardlink_source`). Cleared on writable
+        // per-digest 0o555 copies used as link sources for executable
+        // inputs (see `get_executable_source`). Cleared on writable
         // startup — the variants are regenerable and we never want a stale one
         // to leak across runs. If a read-only filesystem prevents the wipe,
         // ordinary CAS reads remain enabled but executable variants do not.
@@ -1536,14 +1597,11 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             })
     }
 
-    /// Path of the read-only executable (0o555) variant for `digest`.
+    /// Path of the read-only executable (0o555) variant for `digest` in
+    /// `folder`.
     #[cfg(unix)]
-    fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
-        format!(
-            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-            self.shared_context.content_path
-        )
-        .into()
+    fn variant_path(&self, folder: &str, digest: &DigestInfo) -> OsString {
+        executable_variant_path(&self.shared_context.content_path, folder, digest)
     }
 
     /// Resolves the executable variant for many digests at once, batching the
@@ -1564,10 +1622,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// A variant whose blob is no longer indexed is reported `NotFound`, not
     /// handed out: the caller then fills the fast store again, which puts the
     /// blob back in the index so its next eviction deletes the variant too.
-    pub async fn get_executable_hardlink_sources(
+    pub async fn get_executable_sources(
         &self,
         digests: &[DigestInfo],
-    ) -> Vec<Result<OsString, Error>> {
+    ) -> Vec<Result<ExecutableSource, Error>> {
         let hits = self.materialized_variants(digests).await;
         let hit_keys: Vec<StoreKey<'static>> = digests
             .iter()
@@ -1592,8 +1650,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                         Code::NotFound,
                         "{digest} has an executable variant on disk but no indexed blob; fill the fast store again"
                     )),
-                    Some(path) => Ok(path),
-                    None => self.get_executable_hardlink_source(&digest).await,
+                    Some(source) => Ok(source),
+                    None => self.get_executable_source(&digest).await,
                 }
             });
         }
@@ -1603,45 +1661,89 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
     }
 
-    /// Reports which digests already have an executable variant on disk, in one
-    /// batched existence check.
+    /// Reports which digests already have an executable variant on disk, and
+    /// where, in one batched existence check per folder: the shared folder for
+    /// every digest, then, on macOS, the main-executable folder for the few
+    /// that missed.
     #[cfg(unix)]
-    async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<OsString>> {
-        let paths: Vec<OsString> = digests
-            .iter()
-            .map(|digest| self.executable_variant_path(digest))
-            .collect();
-
+    async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<ExecutableSource>> {
+        let mut found = vec![None; digests.len()];
         // Variants disabled and a failed batch are the same situation: nothing
         // is known to exist, so every digest takes the per-digest path, which
         // reports real errors per file.
-        let exists = if self.executable_variants_enabled {
-            fs::exists_many(paths.iter().map(Into::into).collect())
-                .await
-                .ok()
-        } else {
-            None
+        if !self.executable_variants_enabled {
+            return found;
         }
-        .unwrap_or_else(|| vec![false; paths.len()]);
+        self.find_variants(
+            digests,
+            &mut found,
+            DIGEST_FOLDER_V2,
+            ExecutableSource::Shared,
+        )
+        .await;
+        if cfg!(target_os = "macos") {
+            self.find_variants(
+                digests,
+                &mut found,
+                MAIN_EXECUTABLE_FOLDER,
+                ExecutableSource::Private,
+            )
+            .await;
+        }
+        found
+    }
 
-        paths
-            .into_iter()
-            .zip(exists)
-            .map(|(path, hit)| hit.then_some(path))
-            .collect()
+    /// Fills in each digest `found` has no variant for whose variant is in
+    /// `folder`. A failed batch finds nothing.
+    #[cfg(unix)]
+    async fn find_variants(
+        &self,
+        digests: &[DigestInfo],
+        found: &mut [Option<ExecutableSource>],
+        folder: &str,
+        source: fn(OsString) -> ExecutableSource,
+    ) {
+        let candidates: Vec<(usize, OsString)> = found
+            .iter()
+            .zip(digests)
+            .enumerate()
+            .filter(|(_, (hit, _))| hit.is_none())
+            .map(|(index, (_, digest))| (index, self.variant_path(folder, digest)))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let exists = fs::exists_many(candidates.iter().map(|(_, path)| path.into()).collect())
+            .await
+            .unwrap_or_default();
+        for ((index, path), hit) in candidates.into_iter().zip(exists) {
+            if hit {
+                found[index] = Some(source(path));
+            }
+        }
     }
 
     /// Non-unix never builds executable variants, so there is never one on disk
     /// to find and nothing to batch.
     #[cfg(not(unix))]
-    async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<OsString>> {
+    async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<ExecutableSource>> {
         vec![None; digests.len()]
+    }
+
+    /// The executable variant for `digest` already on disk, if there is one.
+    #[cfg(unix)]
+    async fn materialized_variant(&self, digest: &DigestInfo) -> Option<ExecutableSource> {
+        self.materialized_variants(core::slice::from_ref(digest))
+            .await
+            .pop()
+            .flatten()
     }
 
     /// Returns the path to a private, read-only **executable** (0o555) copy of
     /// the blob for `digest`, creating it at most once. Callers **hardlink**
     /// the returned path into action input trees instead of copying the
-    /// executable per action.
+    /// executable per action, or, for a Mach-O main executable on macOS, clone
+    /// it (see [`ExecutableSource::Private`]).
     ///
     /// Why this exists: a CAS blob is stored read-only **0o444** and shared
     /// across actions by hardlink, so it cannot carry the executable bit and
@@ -1653,24 +1755,24 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// with `ETXTBSY` ("Text file busy", os error 26). Creating the 0o555 inode
     /// **once** — writer fd fsync'd and closed, then atomically renamed into
     /// place before the inode is ever hardlinked or executed — and hardlinking
-    /// it thereafter keeps the per-action path hardlink-only.
+    /// it thereafter keeps the per-action path hardlink-only. A clone opens no
+    /// file descriptor either.
     #[cfg(unix)]
-    pub async fn get_executable_hardlink_source(
+    pub async fn get_executable_source(
         &self,
         digest: &DigestInfo,
-    ) -> Result<OsString, Error> {
+    ) -> Result<ExecutableSource, Error> {
         if !self.executable_variants_enabled {
             return Err(make_err!(
                 Code::FailedPrecondition,
                 "Executable hardlink sources are disabled because the startup wipe could not safely clear the read-only executable directory"
             ));
         }
-        let variant_path = self.executable_variant_path(digest);
 
-        // Fast path: the variant already exists, so the caller can hardlink it
+        // Fast path: the variant already exists, so the caller can link it
         // with no writable fd anywhere in sight.
-        if fs::metadata(&variant_path).await.is_ok() {
-            return Ok(variant_path);
+        if let Some(source) = self.materialized_variant(digest).await {
+            return Ok(source);
         }
 
         // Single-flight: exactly one task ever opens a writable fd for this
@@ -1690,12 +1792,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let _guard = lock.lock().await;
 
         // Re-check: another task may have constructed it while we waited.
-        if fs::metadata(&variant_path).await.is_ok() {
+        if let Some(source) = self.materialized_variant(digest).await {
             self.forget_executable_lock(digest);
-            return Ok(variant_path);
+            return Ok(source);
         }
 
-        let result = self.create_executable_variant(digest, &variant_path).await;
+        let result = self.create_executable_variant(digest).await;
 
         // The digest may have been evicted mid-copy: its eviction callback ran
         // before the rename published the variant, so nothing owns the file
@@ -1705,10 +1807,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // materialization) that it's a self-limiting leak, not a systemic one
         // — cheaper to log and let this action succeed with the still-valid
         // file than to fail an otherwise-successful action over it.
-        if result.is_ok() && self.evicting_map.get(&digest.into()).await.is_none() {
+        if let Ok(source) = &result
+            && self.evicting_map.get(&digest.into()).await.is_none()
+        {
             warn!(
                 %digest,
-                ?variant_path,
+                variant_path = ?source.path(),
                 "Digest evicted while materializing its executable variant; \
                  variant is now untracked by eviction accounting"
             );
@@ -1717,19 +1821,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
         self.forget_executable_lock(digest);
-        result.map(|()| variant_path)
+        result
     }
 
     /// Non-unix has no executable bit and no `ETXTBSY`, so just hardlink the
     /// CAS blob directly.
     #[cfg(not(unix))]
-    pub async fn get_executable_hardlink_source(
+    pub async fn get_executable_source(
         &self,
         digest: &DigestInfo,
-    ) -> Result<OsString, Error> {
+    ) -> Result<ExecutableSource, Error> {
         let file_entry = self.get_file_entry_for_digest(digest).await?;
         file_entry
-            .get_file_path_locked(|p| async move { Ok(p) })
+            .get_file_path_locked(|p| async move { Ok(ExecutableSource::Shared(p)) })
             .await
     }
 
@@ -1741,14 +1845,14 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .remove(digest);
     }
 
-    /// Materializes the 0o555 executable variant for `digest`. Must be called
-    /// under the per-digest single-flight guard.
+    /// Materializes the 0o555 executable variant for `digest`, in the folder
+    /// that says how callers materialize it. Must be called under the
+    /// per-digest single-flight guard.
     #[cfg(unix)]
     async fn create_executable_variant(
         &self,
         digest: &DigestInfo,
-        variant_path: &OsStr,
-    ) -> Result<(), Error> {
+    ) -> Result<ExecutableSource, Error> {
         // Resolve the on-disk CAS blob (0o444) to copy from. Must be present in
         // this tier; callers populate the fast store first.
         let file_entry = self
@@ -1759,8 +1863,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .get_file_path_locked(|p| async move { Ok(p) })
             .await?;
 
-        let variant_owned = variant_path.to_os_string();
-        let mut temp_owned = variant_path.to_os_string();
+        let shared_path = self.variant_path(DIGEST_FOLDER_V2, digest);
+        let private_path = self.variant_path(MAIN_EXECUTABLE_FOLDER, digest);
+        let mut temp_owned = shared_path.clone();
         temp_owned.push(".tmp");
         let rename_fn = self.rename_fn;
 
@@ -1770,7 +1875,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // an open writer.
         spawn_blocking!(
             "filesystem_store_executable_variant",
-            move || -> Result<(), Error> {
+            move || -> Result<ExecutableSource, Error> {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::copy(&src_path, &temp_owned).map_err(|e| {
                     make_err!(Code::Internal, "executable-variant copy failed: {e:?}")
@@ -1793,6 +1898,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 // power loss.
                 let f = std::fs::File::open(&temp_owned)
                     .map_err(|e| make_err!(Code::Internal, "executable-variant reopen: {e:?}"))?;
+                // Decided before the variant is published, so it is only ever
+                // found in the folder that says how to materialize it.
+                let main_executable = cfg!(target_os = "macos")
+                    && mach_o::is_main_executable(&mut &f).map_err(|e| {
+                        make_err!(Code::Internal, "executable-variant header read: {e:?}")
+                    })?;
                 #[cfg(target_os = "macos")]
                 let flush_result = {
                     use std::os::fd::AsRawFd;
@@ -1811,10 +1922,15 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 flush_result
                     .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
                 drop(f);
-                rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
+                let source = if main_executable {
+                    ExecutableSource::Private(private_path)
+                } else {
+                    ExecutableSource::Shared(shared_path)
+                };
+                rename_fn(temp_owned.as_os_str(), source.path()).map_err(|e| {
                     make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
                 })?;
-                Ok(())
+                Ok(source)
             }
         )
         .await

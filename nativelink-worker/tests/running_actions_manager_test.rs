@@ -1286,6 +1286,578 @@ mod tests {
         Ok(())
     }
 
+    /// The start of a thin 64-bit Mach-O file of `filetype`.
+    #[cfg(target_os = "macos")]
+    fn mach_o(filetype: u32) -> Bytes {
+        let mut file: Vec<u8> = [0xfeed_facf_u32, 0x0100_000c, 0, filetype]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        file.resize(64, 0);
+        file.into()
+    }
+
+    #[cfg(target_os = "macos")]
+    const MH_EXECUTE: u32 = 0x2;
+    #[cfg(target_os = "macos")]
+    const MH_DYLIB: u32 = 0x6;
+
+    /// dyld resolves `@executable_path` through whichever name the kernel last
+    /// gave the main executable's inode, so two actions sharing that inode can
+    /// load each other's libraries, or none. Each action gets the main
+    /// executable as an inode of its own, while a library, and a header that
+    /// clang must see as one file through every path to it, stay shared; all
+    /// three arrive marked executable, as Bazel marks every input.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_gives_main_executables_a_private_inode()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const HEADER: &str = "#import <Foundation/Foundation.h>\n";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let mut files = Vec::new();
+        for (index, (name, content)) in [
+            ("tool", mach_o(MH_EXECUTE)),
+            ("libtool.dylib", mach_o(MH_DYLIB)),
+            ("tool.h", Bytes::from(HEADER)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let digest = DigestInfo::new([36 + u8::try_from(index)?; 32], content.len() as u64);
+            slow_store.as_ref().update_oneshot(digest, content).await?;
+            files.push(FileNode {
+                name: name.to_string(),
+                digest: Some(digest.into()),
+                is_executable: true,
+                ..Default::default()
+            });
+        }
+
+        let first = stage_tree(&slow_store, &cas_store, &fast_store, files.clone()).await?;
+        let second = stage_tree(&slow_store, &cas_store, &fast_store, files).await?;
+
+        let (tool1, tool2) = (
+            std::fs::metadata(format!("{first}/tool"))?,
+            std::fs::metadata(format!("{second}/tool"))?,
+        );
+        assert_ne!(tool1.ino(), tool2.ino(), "each action has its own tool");
+        assert_eq!(tool1.nlink(), 1, "the tool must be no other file's link");
+        assert_eq!(tool2.nlink(), 1, "the tool must be no other file's link");
+        assert_eq!(tool1.mode() & 0o777, 0o555);
+        assert_eq!(std::fs::read(format!("{second}/tool"))?, mach_o(MH_EXECUTE));
+        for name in ["libtool.dylib", "tool.h"] {
+            assert_eq!(
+                std::fs::metadata(format!("{first}/{name}"))?.ino(),
+                std::fs::metadata(format!("{second}/{name}"))?.ino(),
+                "{name} must stay shared"
+            );
+        }
+        Ok(())
+    }
+
+    /// A main executable whose variant is deleted before the batch reaches it
+    /// is cloned again from a fresh fetch, never hardlinked: the private copy
+    /// fetched after it evicts it from a store that holds one blob.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_clones_a_relinked_main_executable()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const STAMPED_CONTENT: &str = "stamped";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let tool_digest = DigestInfo::new([39u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(tool_digest, mach_o(MH_EXECUTE))
+            .await?;
+        let stamped_digest = DigestInfo::new([40u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(tool_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    node_properties: Some(NodeProperties {
+                        unix_mode: Some(0o640),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        assert_eq!(std::fs::read(&tool_path)?, mach_o(MH_EXECUTE));
+        let tool = std::fs::metadata(&tool_path)?;
+        assert_eq!(
+            tool.nlink(),
+            1,
+            "a relinked tool must still be its own inode"
+        );
+        assert_eq!(tool.mode() & 0o777, 0o555);
+        Ok(())
+    }
+
+    /// Uploads a one-level input tree and stages it into a fresh directory,
+    /// giving the libraries named in `libraries` an inode of their own.
+    async fn stage_tree_with_libraries(
+        slow_store: &Arc<MemoryStore>,
+        cas_store: &Arc<FastSlowStore>,
+        fast_store: &Arc<FilesystemStore>,
+        files: Vec<FileNode>,
+        libraries: &[String],
+    ) -> Result<String, Error> {
+        let root_digest = serialize_and_upload_message(
+            &Directory {
+                files,
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        let downloads = Semaphore::new(Semaphore::MAX_PERMITS);
+        download_to_directory_bounded(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+            &downloads,
+            libraries,
+        )
+        .await?;
+        Ok(download_dir)
+    }
+
+    /// One blob under two names, `libjvm.dylib` and `libjava.dylib`, so that
+    /// the name alone tells which of them a worker clones.
+    fn library_nodes(digest: DigestInfo, is_executable: bool) -> Vec<FileNode> {
+        ["libjvm.dylib", "libjava.dylib"]
+            .into_iter()
+            .map(|name| FileNode {
+                name: name.to_string(),
+                digest: Some(digest.into()),
+                is_executable,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// `dladdr` answers with the name the kernel last gave a library's inode,
+    /// as `dyld` does for `@executable_path`, so a library that acts on the
+    /// answer, as the JVM does with `libjvm.dylib`, needs an inode of its own.
+    /// Only the library the worker is told to clone gets one: the same blob
+    /// under another name stays shared. Both arrive marked executable, as
+    /// Bazel marks every input.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_gives_listed_libraries_a_private_inode()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let digest = DigestInfo::new([41u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(digest, mach_o(MH_DYLIB))
+            .await?;
+        let libraries = vec!["libjvm.dylib".to_string()];
+        let files = library_nodes(digest, true);
+
+        let first = stage_tree_with_libraries(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            files.clone(),
+            &libraries,
+        )
+        .await?;
+        let second =
+            stage_tree_with_libraries(&slow_store, &cas_store, &fast_store, files, &libraries)
+                .await?;
+
+        let (jvm1, jvm2) = (
+            std::fs::metadata(format!("{first}/libjvm.dylib"))?,
+            std::fs::metadata(format!("{second}/libjvm.dylib"))?,
+        );
+        assert_ne!(jvm1.ino(), jvm2.ino(), "each action has its own libjvm");
+        assert_eq!(jvm1.nlink(), 1, "libjvm must be no other file's link");
+        assert_eq!(jvm2.nlink(), 1, "libjvm must be no other file's link");
+        assert_eq!(jvm1.mode() & 0o777, 0o555);
+        assert_eq!(
+            std::fs::read(format!("{second}/libjvm.dylib"))?,
+            mach_o(MH_DYLIB)
+        );
+        assert_eq!(
+            std::fs::metadata(format!("{first}/libjava.dylib"))?.ino(),
+            std::fs::metadata(format!("{second}/libjava.dylib"))?.ino(),
+            "a library the list does not name must stay shared"
+        );
+        Ok(())
+    }
+
+    /// A client that does not mark its inputs executable has the library
+    /// staged from the CAS blob itself, and it still gets an inode of its own.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_gives_an_unmarked_listed_library_a_private_inode()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let digest = DigestInfo::new([42u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(digest, mach_o(MH_DYLIB))
+            .await?;
+        let libraries = vec!["libjvm.dylib".to_string()];
+        let files = library_nodes(digest, false);
+
+        let first = stage_tree_with_libraries(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            files.clone(),
+            &libraries,
+        )
+        .await?;
+        let second =
+            stage_tree_with_libraries(&slow_store, &cas_store, &fast_store, files, &libraries)
+                .await?;
+
+        let (jvm1, jvm2) = (
+            std::fs::metadata(format!("{first}/libjvm.dylib"))?,
+            std::fs::metadata(format!("{second}/libjvm.dylib"))?,
+        );
+        assert_ne!(jvm1.ino(), jvm2.ino(), "each action has its own libjvm");
+        assert_eq!(jvm1.nlink(), 1, "libjvm must be no other file's link");
+        assert_eq!(jvm2.nlink(), 1, "libjvm must be no other file's link");
+        assert_eq!(
+            std::fs::read(format!("{first}/libjvm.dylib"))?,
+            mach_o(MH_DYLIB)
+        );
+        assert_eq!(
+            std::fs::metadata(format!("{first}/libjava.dylib"))?.ino(),
+            std::fs::metadata(format!("{second}/libjava.dylib"))?.ino(),
+            "a library the list does not name must stay shared"
+        );
+        Ok(())
+    }
+
+    /// A listed library whose variant is deleted before the batch reaches it
+    /// is cloned again from a fresh fetch, never hardlinked: the private copy
+    /// fetched after it evicts it from a store that holds one blob.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_clones_a_relinked_listed_library()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const STAMPED_CONTENT: &str = "stamped";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let library_digest = DigestInfo::new([44u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(library_digest, mach_o(MH_DYLIB))
+            .await?;
+        let stamped_digest = DigestInfo::new([45u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree_with_libraries(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "libjvm.dylib".to_string(),
+                    digest: Some(library_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    node_properties: Some(NodeProperties {
+                        unix_mode: Some(0o640),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+            &["libjvm.dylib".to_string()],
+        )
+        .await?;
+
+        let library_path = format!("{download_dir}/libjvm.dylib");
+        assert_eq!(std::fs::read(&library_path)?, mach_o(MH_DYLIB));
+        let library = std::fs::metadata(&library_path)?;
+        assert_eq!(
+            library.nlink(),
+            1,
+            "a relinked library must still be its own inode"
+        );
+        assert_eq!(library.mode() & 0o777, 0o555);
+        Ok(())
+    }
+
+    /// The same when the library is not marked executable: its blob is
+    /// evicted while the tree is staged, and the link made again from a fresh
+    /// fetch is a clone.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_clones_a_relinked_unmarked_listed_library()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const EXEC_CONTENT: &str = "#!/bin/sh\nexit 0\n";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let library_digest = DigestInfo::new([46u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(library_digest, mach_o(MH_DYLIB))
+            .await?;
+        let exec_digest = DigestInfo::new([47u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree_with_libraries(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "libjvm.dylib".to_string(),
+                    digest: Some(library_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+            ],
+            &["libjvm.dylib".to_string()],
+        )
+        .await?;
+
+        let library_path = format!("{download_dir}/libjvm.dylib");
+        assert_eq!(std::fs::read(&library_path)?, mach_o(MH_DYLIB));
+        assert_eq!(
+            std::fs::metadata(&library_path)?.nlink(),
+            1,
+            "a relinked library must still be its own inode"
+        );
+        assert_eq!(
+            from_utf8(&std::fs::read(format!("{download_dir}/tool"))?)?,
+            EXEC_CONTENT
+        );
+        Ok(())
+    }
+
+    /// The libraries `private_inode_libraries` names reach the staging of an
+    /// action's inputs through the manager, not only through the helper that
+    /// the tests above call.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn prepared_action_stages_the_configured_libraries_as_private_inodes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let library_digest = DigestInfo::new([49u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(library_digest, mach_o(MH_DYLIB))
+            .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: library_nodes(library_digest, true),
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration {
+                    private_inode_libraries: vec!["libjvm.dylib".to_string()],
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+            })?);
+
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .prepare_action()
+            .await?;
+
+        let work_directory = action.get_work_directory();
+        let jvm = std::fs::metadata(format!("{work_directory}/libjvm.dylib"))?;
+        let java = std::fs::metadata(format!("{work_directory}/libjava.dylib"))?;
+        assert_eq!(jvm.nlink(), 1, "the named library must be its own inode");
+        assert!(
+            java.nlink() > 1,
+            "a library the list does not name must stay a link"
+        );
+        action.cleanup().await?;
+        Ok(())
+    }
+
+    /// Only dyld reads the names of an inode, so off macOS a listed library is
+    /// linked like any other input.
+    #[cfg(all(target_family = "unix", not(target_os = "macos")))]
+    #[nativelink_test]
+    async fn download_to_directory_links_listed_libraries_off_macos()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const LIBRARY_CONTENT: &str = "library";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let digest = DigestInfo::new([48u8; 32], LIBRARY_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(digest, LIBRARY_CONTENT.into())
+            .await?;
+        let libraries = vec!["libjvm.dylib".to_string()];
+        let files = library_nodes(digest, true);
+
+        let first = stage_tree_with_libraries(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            files.clone(),
+            &libraries,
+        )
+        .await?;
+        let second =
+            stage_tree_with_libraries(&slow_store, &cas_store, &fast_store, files, &libraries)
+                .await?;
+
+        assert_eq!(
+            std::fs::metadata(format!("{first}/libjvm.dylib"))?.ino(),
+            std::fs::metadata(format!("{second}/libjvm.dylib"))?.ino(),
+            "a listed library is a hardlink off macOS"
+        );
+        Ok(())
+    }
+
+    /// `private_inode_libraries` names files. An entry that is a path, or
+    /// empty, could never match one, so the worker refuses to start with it.
+    #[nativelink_test]
+    async fn running_actions_manager_refuses_a_path_in_private_inode_libraries()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_fast_store, _slow_store, cas_store, ac_store) = setup_stores().await?;
+        for entry in ["jdk/lib/server/libjvm.dylib", ""] {
+            let error = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: make_temp_path("root"),
+                execution_configuration: ExecutionConfiguration {
+                    private_inode_libraries: vec![entry.to_string()],
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig::default(),
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })
+            .unwrap_err();
+            assert_eq!(error.code, Code::InvalidArgument);
+            assert!(
+                error.to_string().contains("file names, not paths"),
+                "{error}"
+            );
+        }
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn download_to_directory_zero_digest_empty_file_test()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -3294,6 +3866,7 @@ exit 0
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_concurrent_input_downloads: 0,
+                    private_inode_libraries: Vec::new(),
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -3469,6 +4042,7 @@ exit 0
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_concurrent_input_downloads: 0,
+                    private_inode_libraries: Vec::new(),
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -4401,6 +4975,7 @@ exit 0
             &root_digest,
             &download_dir,
             &downloads,
+            &[],
         )
         .await?;
 
@@ -4438,6 +5013,7 @@ exit 0
                 &root_a,
                 &dir_a,
                 &downloads,
+                &[],
             ),
             download_to_directory_bounded(
                 cas_store.as_ref(),
@@ -4445,6 +5021,7 @@ exit 0
                 &root_b,
                 &dir_b,
                 &downloads,
+                &[],
             ),
         )?;
 
@@ -7203,6 +7780,7 @@ exit 1
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_concurrent_input_downloads: 0,
+                    private_inode_libraries: Vec::new(),
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -9818,6 +10396,7 @@ done
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_concurrent_input_downloads: 0,
+                    private_inode_libraries: Vec::new(),
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -9975,6 +10554,7 @@ done
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_concurrent_input_downloads: 0,
+                    private_inode_libraries: Vec::new(),
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
