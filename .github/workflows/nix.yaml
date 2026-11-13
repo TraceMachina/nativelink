@@ -38,6 +38,16 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # Job-level rather than step-level: the runner echoes a step's env block
+    # into the log header, and these cluster coordinates do not belong in
+    # console output.
+    env:
+      NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
+      NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
+      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
+      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+      NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
+      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
     outputs:
       matrix: ${{ steps.manifest.outputs.matrix }}
     steps:
@@ -58,13 +68,6 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Build and export once on the retained client
-        env:
-          NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
-          NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
-          NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-          NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
-          NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-          NL_GKE_POD: ${{ vars.NL_GKE_POD }}
         run: |
           export BENCHMARK_STARTED="$(date +%s)"
           python3 .github/scripts/cluster_ci.py --task nix \

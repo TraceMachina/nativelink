@@ -19,7 +19,12 @@ on:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -92,7 +97,8 @@ jobs:
           # The staging remote cache can drop a blob between its existence
           # check and the consuming action ("lost inputs"). Let Bazel retry
           # the invocation and re-execute the producers instead of failing.
-          ./tools/bazel-retry.sh test //... \
+          # Bazel records the client environment; keep the job token out.
+          env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \

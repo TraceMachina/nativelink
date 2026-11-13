@@ -194,8 +194,9 @@ docker exec -it $(docker-compose -f docker-compose-multi-worker.yml ps -q worker
 
 ```
 Object 7fd25e01d12373a2d1712e446881c9246a9698da4e7eafecdaeeaaff62195a82-148
-not found in either fast or slow store. If using multiple workers, ensure
-all workers share the same CAS storage path.
+not found in either fast or slow store, or the slow store considers it
+expired (consider_expired_after_s). If using multiple workers, ensure all
+workers share the same CAS storage path.
 ```
 
 **Cause:** Workers are using different CAS paths
