@@ -382,7 +382,9 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
-    let running_action = Arc::new(MockRunningAction::new());
+    // The running action reports `do_not_cache`, as one created from an
+    // Action with `do_not_cache` set would.
+    let running_action = Arc::new(MockRunningAction::with_do_not_cache(true));
 
     // Send and wait for response from create_and_add_action to RunningActionsManager.
     test_context
@@ -397,11 +399,15 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (_stored_digest, _stored_result, digest_hasher) = test_context
+    let (_stored_digest, _stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot
+    // be cached". The running action's flag must reach `cache_action_result`,
+    // which decides whether to write the Action Cache.
+    assert!(do_not_cache);
 
     Ok(())
 }
@@ -566,13 +572,14 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (stored_digest, stored_result, digest_hasher) = test_context
+    let (stored_digest, stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(stored_digest, action_digest);
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+    assert!(!do_not_cache);
     assert_eq!(
         test_context.client.going_away_count.load(Ordering::Relaxed),
         0
