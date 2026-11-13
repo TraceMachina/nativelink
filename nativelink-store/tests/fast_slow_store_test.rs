@@ -1010,6 +1010,46 @@ async fn lazy_slow_read_announces_the_slow_store_limit_to_the_fast_store() -> Re
     Ok(())
 }
 
+// A fast_slow store whose slow tier is a lazy fast_slow store announces the
+// innermost slow store's limit too, not `u64::MAX`.
+#[nativelink_test]
+async fn nested_lazy_slow_read_announces_the_slow_store_limit() -> Result<(), Error> {
+    let (inner, _inner_fast, inner_slow) =
+        make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())));
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let outer = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })),
+        inner,
+    ));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    assert_eq!(
+        outer.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        original_data.as_slice()
+    );
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
+    );
+    Ok(())
+}
+
 #[derive(MetricsComponent)]
 struct InstrumentedSlowStore {
     digest: DigestInfo,
