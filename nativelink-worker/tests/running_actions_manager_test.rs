@@ -92,6 +92,7 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
+    use nativelink_worker::persistent_worker::PoolConfig;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
@@ -9465,6 +9466,481 @@ done
         // the pooled process is single-threaded, so a request charged more
         // than its own wall time carries another request's work.
         for usage in [&first_usage, &second_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    #[cfg(target_family = "unix")]
+    async fn persistent_worker_isolates_actions_by_instance_name_when_enabled()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const WORKER_SCRIPT_NAME: &str = "worker.sh";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        async fn create_action(
+            cas_store: &Arc<FastSlowStore>,
+            worker_script_digest: DigestInfo,
+        ) -> Result<(Action, DigestInfo), Error> {
+            let command = Command {
+                arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                // The worker process gets the action's environment and no
+                // more, as Bazel sends it; the script needs PATH for sed.
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap_or_default(),
+                }],
+                output_paths: vec!["count.txt".to_string()],
+                platform: Some(Platform {
+                    properties: vec![
+                        Property {
+                            name: "supports-workers".to_string(),
+                            value: "1".to_string(),
+                        },
+                        Property {
+                            name: "requires-worker-protocol".to_string(),
+                            value: "json".to_string(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let args_digest = DigestInfo::new([9u8; 32], 0);
+            cas_store.update_oneshot(args_digest, Bytes::new()).await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    files: vec![
+                        FileNode {
+                            name: WORKER_SCRIPT_NAME.to_string(),
+                            digest: Some(worker_script_digest.into()),
+                            is_executable: true,
+                            node_properties: None,
+                        },
+                        FileNode {
+                            name: "args.txt".to_string(),
+                            digest: Some(args_digest.into()),
+                            is_executable: false,
+                            node_properties: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                platform: command.platform.clone(),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            Ok((action, action_digest))
+        }
+
+        async fn run_persistent_action(
+            running_actions_manager: &Arc<RunningActionsManagerImpl>,
+            slow_store: &Arc<MemoryStore>,
+            action: &Action,
+            action_digest: DigestInfo,
+            operation_id: &str,
+            instance_name: &str,
+        ) -> Result<(String, ActionResourceUsage), Error> {
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        request_metadata: None,
+                        execute_request: Some(ExecuteRequest {
+                            instance_name: instance_name.to_string(),
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: operation_id.to_string(),
+                        queued_timestamp: None,
+                        platform: action.platform.clone(),
+                        worker_id: WORKER_ID.to_string(),
+                    },
+                )
+                .await?;
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
+                .as_ref()
+                .get_part_unchunked(action_result.output_files[0].digest, 0, None)
+                .await
+                .and_then(|content| {
+                    String::from_utf8(content.to_vec()).map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Decoding persistent worker count.txt")
+                    })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings {
+                        enabled: true,
+                        pool: PoolConfig {
+                            isolate_by_instance_name: true,
+                            ..PoolConfig::default()
+                        },
+                    },
+                    ..ExecutionConfiguration::default()
+                },                
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_secs(30),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let worker_script = r#"#!/bin/sh
+count=0
+while IFS= read -r request; do
+  if ! pwd -P >/dev/null 2>&1; then
+    printf '{"exitCode":1,"output":"worker cwd was removed"}\n'
+    continue
+  fi
+  count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
+  sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
+  printf '%s' "$count" > "$sandbox_dir/count.txt"
+  printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
+done
+"#;
+        let worker_script_bytes = Bytes::from(worker_script);
+        let worker_script_digest =
+            compute_buf_digest(&worker_script_bytes, &mut DigestHasherFunc::Sha256.hasher());
+        cas_store
+            .update_oneshot(worker_script_digest, worker_script_bytes)
+            .await?;
+        let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
+
+        let (first, first_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_first",
+            "tenant_instance_a",
+        )
+        .await?;
+        let (second, second_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_second",
+            "tenant_instance_b",
+        )
+        .await?;
+
+        let (third, third_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_third",
+            "tenant_instance_a",
+        )
+        .await?;
+
+        assert_eq!(first, "1");
+        assert_eq!(
+            second, "1",
+            "The second action with different instance_name should not inherit the state of the already-running persistent worker"
+        );
+        assert_eq!(
+            third, "2",
+            "The third action shares an instance_name with first action and should inherit the state of the already-running persistent worker"
+        );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage, &third_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    #[cfg(target_family = "unix")]
+    async fn persistent_worker_does_not_isolate_actions_by_instance_name_by_default()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const WORKER_SCRIPT_NAME: &str = "worker.sh";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        async fn create_action(
+            cas_store: &Arc<FastSlowStore>,
+            worker_script_digest: DigestInfo,
+        ) -> Result<(Action, DigestInfo), Error> {
+            let command = Command {
+                arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                // The worker process gets the action's environment and no
+                // more, as Bazel sends it; the script needs PATH for sed.
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap_or_default(),
+                }],
+                output_paths: vec!["count.txt".to_string()],
+                platform: Some(Platform {
+                    properties: vec![
+                        Property {
+                            name: "supports-workers".to_string(),
+                            value: "1".to_string(),
+                        },
+                        Property {
+                            name: "requires-worker-protocol".to_string(),
+                            value: "json".to_string(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            };
+            let command_digest = serialize_and_upload_message(
+                &command,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let args_digest = DigestInfo::new([9u8; 32], 0);
+            cas_store.update_oneshot(args_digest, Bytes::new()).await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory {
+                    files: vec![
+                        FileNode {
+                            name: WORKER_SCRIPT_NAME.to_string(),
+                            digest: Some(worker_script_digest.into()),
+                            is_executable: true,
+                            node_properties: None,
+                        },
+                        FileNode {
+                            name: "args.txt".to_string(),
+                            digest: Some(args_digest.into()),
+                            is_executable: false,
+                            node_properties: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                platform: command.platform.clone(),
+                ..Default::default()
+            };
+            let action_digest = serialize_and_upload_message(
+                &action,
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            Ok((action, action_digest))
+        }
+
+        async fn run_persistent_action(
+            running_actions_manager: &Arc<RunningActionsManagerImpl>,
+            slow_store: &Arc<MemoryStore>,
+            action: &Action,
+            action_digest: DigestInfo,
+            operation_id: &str,
+            instance_name: &str,
+        ) -> Result<(String, ActionResourceUsage), Error> {
+            let running_action_impl = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    StartExecute {
+                        request_metadata: None,
+                        execute_request: Some(ExecuteRequest {
+                            instance_name: instance_name.to_string(),
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: operation_id.to_string(),
+                        queued_timestamp: None,
+                        platform: action.platform.clone(),
+                        worker_id: WORKER_ID.to_string(),
+                    },
+                )
+                .await?;
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
+                .as_ref()
+                .get_part_unchunked(action_result.output_files[0].digest, 0, None)
+                .await
+                .and_then(|content| {
+                    String::from_utf8(content.to_vec()).map_err(|err| {
+                        Error::from_std_err(Code::Internal, &err)
+                            .append("Decoding persistent worker count.txt")
+                    })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
+        }
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_secs(30),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let worker_script = r#"#!/bin/sh
+count=0
+while IFS= read -r request; do
+  if ! pwd -P >/dev/null 2>&1; then
+    printf '{"exitCode":1,"output":"worker cwd was removed"}\n'
+    continue
+  fi
+  count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
+  sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
+  printf '%s' "$count" > "$sandbox_dir/count.txt"
+  printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
+done
+"#;
+        let worker_script_bytes = Bytes::from(worker_script);
+        let worker_script_digest =
+            compute_buf_digest(&worker_script_bytes, &mut DigestHasherFunc::Sha256.hasher());
+        cas_store
+            .update_oneshot(worker_script_digest, worker_script_bytes)
+            .await?;
+        let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
+
+        let (first, first_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_first",
+            "tenant_instance_a",
+        )
+        .await?;
+        let (second, second_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_second",
+            "tenant_instance_b",
+        )
+        .await?;
+
+        let (third, third_usage) = run_persistent_action(
+            &running_actions_manager,
+            &slow_store,
+            &action,
+            action_digest,
+            "persistent_worker_third",
+            "tenant_instance_a",
+        )
+        .await?;
+
+        assert_eq!(first, "1");
+        assert_eq!(
+            second, "2",
+            "Action with different instance_name should inherit the state of the already-running persistent worker when isolate_by_instance_name is false"
+        );
+        assert_eq!(
+            third, "3",
+            "The third action should inherit the state of the already-running persistent worker"
+        );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage, &third_usage] {
             assert!(usage.cpu_time_ms > 0, "{usage:?}");
             assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
         }

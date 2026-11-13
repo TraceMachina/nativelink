@@ -1138,6 +1138,10 @@ const fn default_true() -> bool {
     true
 }
 
+const fn default_false() -> bool {
+    false
+}
+
 fn default_disk_property_name() -> String {
     "disk_kb".to_string()
 }
@@ -1340,6 +1344,12 @@ pub struct PersistentWorkersConfig {
     /// Default: 30
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub acquire_timeout_s: u64,
+
+    /// Isolate workers by the bazel Action instance group name which is
+    /// extracted from the ActionUniqueKey used to distinguish Actions.
+    /// Default: false
+    #[serde(default = "default_false")]
+    pub isolate_by_instance_name: bool,
 }
 
 /// The same as an absent block: the pool on, every size at its default.
@@ -1352,6 +1362,7 @@ impl Default for PersistentWorkersConfig {
             max_requests_per_worker: 0,
             shutdown_grace_ms: 0,
             acquire_timeout_s: 0,
+            isolate_by_instance_name: false,
         }
     }
 }

@@ -774,6 +774,26 @@ mod convert_optional_numeric_with_shellexpand_tests {
     }
 }
 
+mod persistent_worker_tests {
+    use nativelink_config::cas_server::PersistentWorkersConfig;
+
+    #[test]
+    fn isolate_by_instance_name_defaults_to_false() {
+        let config: PersistentWorkersConfig = serde_json5::from_str("{}").unwrap();
+        assert!(!config.isolate_by_instance_name); // default behavior: don't isolation by instance name
+    }
+
+    #[test]
+    fn isolate_by_instance_name_deserializes_correctly_when_set() {
+        let on_config: PersistentWorkersConfig =
+            serde_json5::from_str(r#"{isolate_by_instance_name: true}"#).unwrap();
+        assert!(on_config.isolate_by_instance_name); // true when set true
+        let off_config: PersistentWorkersConfig =
+            serde_json5::from_str(r#"{isolate_by_instance_name: false}"#).unwrap();
+        assert!(!off_config.isolate_by_instance_name); // false when set false
+    }
+}
+
 #[test]
 fn http_listener_tcp_nodelay_defaults_and_overrides() {
     use nativelink_config::cas_server::HttpListener;

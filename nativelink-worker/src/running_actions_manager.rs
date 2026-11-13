@@ -3604,7 +3604,8 @@ impl RunningActionImpl {
                     // action directory.
                     let env = self.action_environment(&command_proto, requested_timeout, None);
                     let key = WorkerKey::from_argv(&command_argv, wire_format)?
-                        .with_env(env.into_iter().collect());
+                        .with_env(env.into_iter().collect())
+                        .with_instance_name(self.action_info.instance_name().to_string());
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
