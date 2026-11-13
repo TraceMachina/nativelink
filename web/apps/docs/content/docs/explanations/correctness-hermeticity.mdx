@@ -186,7 +186,9 @@ that encounters it.
     byte for byte; anything that differs is reading something undeclared.
     At cluster scale the symptom is subtler: cache misses where you expected
     hits, because a leaked input changed and moved the action digest with it.
-    A rising miss rate on unchanged code is the signal.
+    A rising miss rate on unchanged code is the signal, and
+    [Debug a cache miss](/how-to/debug-a-cache-miss) is the procedure for
+    tracing one miss back to the input that moved.
   </Accordion>
   <Accordion title="Someone poisoned a cache entry. What now?" id="poisoned-cache-entry">
     You cannot selectively invalidate by content, because the key is the

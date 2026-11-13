@@ -166,6 +166,10 @@ bazel build //... --remote_cache=grpc://127.0.0.1:50051 --remote_grpc_log=/tmp/g
 An empty log means Bazel never opened a connection, which points at the flag
 rather than at the server.
 
+When the question is about one action rather than the whole build,
+[Debug a cache miss](/how-to/debug-a-cache-miss) walks the digest comparison
+through to the server side.
+
 ## Other build tools [#other-build-tools]
 
 The measurement is the same everywhere: build, clean, rebuild, and read the
@@ -237,4 +241,9 @@ completeness-checking store prevents, and
 <NextStep href="/remote-execution" kind="aside" title="Remote execution">
   A cache serving hits is the prerequisite for running the actions themselves
   somewhere else.
+</NextStep>
+
+<NextStep href="/how-to/debug-a-cache-miss" kind="aside" title="Debug a cache miss">
+  When the number is fine but one action keeps re-running, this is the page
+  that finds out why.
 </NextStep>
