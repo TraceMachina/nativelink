@@ -18,6 +18,10 @@ use std::env;
 use std::sync::{Arc, OnceLock};
 
 use base64::Engine;
+use base64::alphabet;
+use base64::engine::DecodePaddingMode;
+use base64::engine::GeneralPurpose;
+use base64::engine::GeneralPurposeConfig;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
@@ -472,6 +476,20 @@ fn with_transport<B: WithTonicConfig>(
 /// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
 const BAZEL_REQUESTMETADATA_HEADER: &str = "build.bazel.remote.execution.v2.requestmetadata-bin";
 
+/// Standard base64 that decodes with or without `=` padding. The gRPC wire
+/// spec (PROTOCOL-HTTP2.md) says implementations "MUST accept padded and
+/// un-padded values" for binary (`-bin`) headers, while `BASE64_STANDARD`
+/// requires padding and `BASE64_STANDARD_NO_PAD` rejects it.
+const BINARY_HEADER_ENGINE: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
+
+/// Decodes a gRPC binary (`-bin`) header value, padded or not.
+fn decode_binary_header(value: &[u8]) -> Result<Vec<u8>, base64::DecodeError> {
+    BINARY_HEADER_ENGINE.decode(value)
+}
+
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
 use url::Url;
@@ -575,7 +593,7 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
         let mut cx = parent_cx.with_span(span);
 
         if let Some(bazel_header) = req.headers().get(BAZEL_REQUESTMETADATA_HEADER)
-            && let Ok(decoded) = BASE64_STANDARD_NO_PAD.decode(bazel_header.as_bytes())
+            && let Ok(decoded) = decode_binary_header(bazel_header.as_bytes())
             && let Ok(metadata) = RequestMetadata::decode(decoded.as_slice())
         {
             let metadata_str = format!("{metadata:?}");
@@ -672,7 +690,7 @@ pub fn forward_client_headers<T>(request: &mut tonic::Request<T>, names: &[Strin
                 tonic::metadata::MetadataKey::<tonic::metadata::Binary>::from_bytes(
                     name.as_bytes(),
                 ),
-                BASE64_STANDARD_NO_PAD.decode(value.trim_end_matches('=')),
+                decode_binary_header(value.as_bytes()),
             ) {
                 request
                     .metadata_mut()
@@ -1181,6 +1199,29 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(baggage.contains("enduser.id=alice"), "{baggage}");
+    }
+
+    // gRPC PROTOCOL-HTTP2.md: for `-bin` headers, "Implementations MUST
+    // accept padded and un-padded values". A padded request-metadata header
+    // used to fail the inbound decode and be silently dropped.
+    #[test]
+    fn binary_header_decodes_padded_and_unpadded() {
+        for (encoded, expected) in [
+            ("aGk", "hi"),
+            ("aGk=", "hi"),
+            ("aGVsbG8", "hello"),
+            ("aGVsbG8=", "hello"),
+            ("aA", "h"),
+            ("aA==", "h"),
+            ("", ""),
+        ] {
+            assert_eq!(
+                decode_binary_header(encoded.as_bytes()).as_deref(),
+                Ok(expected.as_bytes()),
+                "{encoded:?}"
+            );
+        }
+        assert!(decode_binary_header(b"not base64!").is_err());
     }
 
     #[test]
