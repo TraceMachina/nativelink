@@ -480,8 +480,8 @@ where
         }
 
         let upload_parts = move || async move {
-            // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
-            // bytes in memory at any given time waiting to be uploaded.
+            // Bound both queued parts and in-flight requests so a fast source
+            // cannot buffer an entire object behind a slow backend.
             let (tx, mut rx) = mpsc::channel(self.multipart_max_concurrent_uploads);
 
             let read_stream_fut = async move {
@@ -563,7 +563,7 @@ where
                         total_uploaded = result?;
                     }, // Return error or wait for other futures.
                     Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
-                    Some(fut) = rx.recv() => upload_futures.push(fut),
+                    Some(fut) = rx.recv(), if upload_futures.len() < self.multipart_max_concurrent_uploads => upload_futures.push(fut),
                 }
             }
 
@@ -633,7 +633,7 @@ where
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(key.borrow()) || length == Some(0) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -642,7 +642,7 @@ where
 
         let s3_path = &self.make_s3_path(&key);
         let end_read_byte = length
-            .map_or(Some(None), |length| Some(offset.checked_add(length)))
+            .map_or(Some(None), |length| Some(offset.checked_add(length - 1)))
             .err_tip(|| "Integer overflow protection triggered")?;
 
         self.retrier

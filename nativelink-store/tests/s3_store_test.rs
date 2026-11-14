@@ -326,7 +326,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH))
+                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -564,7 +564,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{CAS_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE))
+                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -882,7 +882,7 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2026_01_12())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();

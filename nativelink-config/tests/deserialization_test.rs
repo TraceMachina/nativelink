@@ -796,3 +796,68 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
         assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
     }
 }
+
+#[test]
+fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
+    use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
+    let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
+    assert!(matches!(
+        parsed,
+        StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Oss(_))
+    ));
+    for field in [
+        "consider_expired_after_s",
+        "max_retry_buffer_per_request",
+        "max_concurrent_uploads",
+        "upload_queue_timeout_s",
+    ] {
+        let config = format!(
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET","{field}":1}}"#
+        );
+        assert!(
+            serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
+            "unexpected OSS field accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn oss_credentials_are_required_and_redacted_from_debug() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+    let missing = r#"{"region":"cn-hangzhou","bucket":"test-bucket"}"#;
+    assert!(serde_json5::from_str::<ExperimentalOssSpec>(missing).is_err());
+    let spec = ExperimentalOssSpec {
+        access_key_id: "PRIVATE_OSS_KEY_ID".into(),
+        secret_access_key: "PRIVATE_OSS_SECRET".into(),
+        session_token: Some("PRIVATE_OSS_TOKEN".into()),
+        ..Default::default()
+    };
+    let debug = format!("{spec:?}");
+    for credential in [
+        "PRIVATE_OSS_KEY_ID",
+        "PRIVATE_OSS_SECRET",
+        "PRIVATE_OSS_TOKEN",
+    ] {
+        assert!(!debug.contains(credential));
+    }
+}
+
+#[test]
+fn oss_cname_defaults_to_false_and_round_trips() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+
+    let config = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
+    let mut spec: ExperimentalOssSpec = serde_json5::from_str(config).unwrap();
+    assert!(!spec.cname);
+    spec.cname = true;
+    spec.endpoint = Some("https://cache.example.com".into());
+    let round_trip: ExperimentalOssSpec =
+        serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
+    assert!(round_trip.cname);
+    assert_eq!(round_trip.endpoint, spec.endpoint);
+    for invalid in ["null", "1", "\"true\""] {
+        let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
+        assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
+    }
+}
