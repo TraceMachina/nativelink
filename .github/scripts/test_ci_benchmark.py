@@ -36,8 +36,8 @@ class BenchmarkTest(unittest.TestCase):
         self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
         self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
-        self.assertNotIn('flock -n', cluster_ci.BOOTSTRAP)
-        self.assertIn("spawnSync('timeout'", cluster_ci.BOOTSTRAP)
+        self.assertEqual(cluster_ci.SUPERVISOR, '/opt/ci/ci_supervisor.py')
+        self.assertFalse(hasattr(cluster_ci, 'BOOTSTRAP'))
         self.assertNotIn('  nix-bazel:', Path('.github/workflows/nix.yaml').read_text())
         pinned_version = Path('.bazelversion').read_text().strip()
         self.assertNotIn(f'bazel_version: {pinned_version}',

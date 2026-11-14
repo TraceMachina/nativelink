@@ -2,45 +2,134 @@
 """Dispatch trusted CI to one retained client using narrowly scoped pod exec."""
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
-# The input travels over the encrypted exec stream, never through argv or a
-# credential file. Only the selected build environment is sent to the pod.
-BOOTSTRAP = r"""
-import {spawnSync} from 'node:child_process';
-let input = ''; for await (const chunk of process.stdin) input += chunk;
-let payload;
-try { payload = JSON.parse(input); }
-catch { process.stderr.write('Invalid dispatch payload\n'); process.exit(1); }
-const script = `
-set -euo pipefail
-exec 9>/workspace/ci.lock
-flock 9
-cd /workspace/nativelink
-git -c safe.directory=/workspace/nativelink diff --quiet HEAD --
-git -c safe.directory=/workspace/nativelink fetch --depth=1 https://github.com/TraceMachina/nativelink.git "$GITHUB_SHA"
-git -c safe.directory=/workspace/nativelink checkout --detach "$GITHUB_SHA"
-mkdir -p "$NL_SUMMARY_DIRECTORY"
-case "$NL_TASK" in
-  bazel) exec python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY" ;;
-  nix) exec python3 .github/scripts/nix_ci.py build --directory "$NL_SUMMARY_DIRECTORY" ;;
-  *) exit 2 ;;
-esac
-`;
-const env = {...process.env, ...payload};
-// The deadline includes waiting for the retained checkout's lock.
-const result = spawnSync('timeout', ['--signal=TERM', '--kill-after=60', '9000', 'bash', '-euc', script],
-                         {env, stdio: ['ignore','inherit','inherit']});
-process.exit(result.status ?? 1);
-"""
+SUPERVISOR = '/opt/ci/ci_supervisor.py'
+REASONS = {'completed', 'cancelled', 'lease_expired', 'deadline_exceeded',
+           'transport_lost', 'busy', 'duplicate_run', 'invalid_request',
+           'pod_stopping', 'recovery_failed', 'supervisor_unavailable'}
+
+
+def exchange(command, request, environ):
+    # Keys and the ownership token travel only through encrypted stdin.
+    response = subprocess.run(command, input=json.dumps(request) + '\n', text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=environ, timeout=15)
+    if response.returncode:
+        raise ConnectionError('Supervisor transport unavailable')
+    result = json.loads(response.stdout)
+    if result.get('protocol') != 2:
+        raise ValueError('Supervisor polling protocol is unavailable')
+    return result
+
+
+def dispatch(command, build, environ, poll_seconds=5, deadline=9600, exchange_fn=exchange):
+    """Poll the same owned attempt after connection loss; never resubmit new work."""
+    request = {'protocol': 2, 'operation': 'poll', 'build': build,
+               'token': secrets.token_hex(32), 'cursor': 0}
+    started = time.monotonic()
+    cancelled = False
+    last_state = None
+    failures = 0
+    previous_signals = {}
+
+    def cancel(signum, frame):
+        nonlocal cancelled
+        cancelled = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous_signals[sig] = signal.signal(sig, cancel)
+    try:
+        while time.monotonic() - started < deadline:
+            if cancelled:
+                request['operation'] = 'cancel'
+            try:
+                response = exchange_fn(command, request, environ)
+                failures = 0
+            except (OSError, subprocess.TimeoutExpired):
+                failures += 1
+                if failures >= 3:
+                    return {'exit_code': 74, 'reason': 'transport_lost'}
+                print('Retained CI: reconnecting to the same attempt', flush=True)
+                time.sleep(poll_seconds)
+                continue
+            except (ValueError, TypeError):
+                return {'exit_code': 69, 'reason': 'supervisor_unavailable'}
+            if response.get('truncated'):
+                print('Retained CI: earlier console output exceeded the replay buffer', flush=True)
+            for event in response.get('events', []):
+                if 'log' in event:
+                    text = event['log']
+                    if build.get('NL_API_KEY'):
+                        text = text.replace(build['NL_API_KEY'], '[REDACTED]')
+                    print(text, end='', flush=True)
+                if event.get('state') in ('queued', 'running') and event['state'] != last_state:
+                    last_state = event['state']
+                    print('Retained CI: ' + last_state, flush=True)
+            cursor = response.get('cursor')
+            if type(cursor) is not int or cursor < request['cursor']:
+                return {'exit_code': 74, 'reason': 'transport_lost'}
+            request['cursor'] = cursor
+            result = response.get('result')
+            if result is not None:
+                if (result.get('reason') not in REASONS or type(result.get('exit_code')) is not int
+                        or result.get('revision', build['GITHUB_SHA']) != build['GITHUB_SHA']
+                        or result.get('task', build['NL_TASK']) != build['NL_TASK']):
+                    return {'exit_code': 74, 'reason': 'transport_lost'}
+                return {'exit_code': result['exit_code'], 'reason': result['reason']}
+            time.sleep(poll_seconds)
+        request['operation'] = 'cancel'
+        with contextlib.suppress(OSError, ValueError, subprocess.TimeoutExpired):
+            exchange_fn(command, request, environ)
+        return {'exit_code': 124, 'reason': 'deadline_exceeded'}
+    finally:
+        for sig, handler in previous_signals.items():
+            signal.signal(sig, handler)
+
+
+def download_archive(base, remote_path, archive, report, environ, chunk_bytes=32 * 1024 * 1024):
+    """Retry bounded reads at the same offset, then verify the complete closure."""
+    script = ('import sys; f=open(sys.argv[1], "rb"); f.seek(int(sys.argv[2])); '
+              'sys.stdout.buffer.write(f.read(int(sys.argv[3])))')
+    with archive.open('wb') as destination:
+        for offset in range(0, report['bytes'], chunk_bytes):
+            count = min(chunk_bytes, report['bytes'] - offset)
+            for attempt in range(3):
+                try:
+                    part = subprocess.run([*base, '--', 'python3', '-c', script,
+                                           remote_path, str(offset), str(count)],
+                                          capture_output=True, env=environ, timeout=60)
+                    if part.returncode == 0 and len(part.stdout) == count:
+                        destination.write(part.stdout)
+                        break
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            else:
+                raise ConnectionError('Could not transfer the verified Nix closure')
+    with archive.open('rb') as stream:
+        checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if archive.stat().st_size != report['bytes'] or checksum != report['sha256']:
+        archive.unlink()
+        raise ValueError('The transferred Nix closure failed checksum verification')
+
+
+def failure_report(build, result, started):
+    return {'schema': 1, 'lane': 'cluster', 'revision': build['GITHUB_SHA'],
+            'workload': 'bazel test //...', 'setup_seconds': None,
+            'build_test_seconds': None, 'total_seconds': time.monotonic() - started,
+            'runs': [], **result}
 
 
 def kubeconfig(environ):
@@ -89,17 +178,35 @@ def main(args):
         # in memory by the plugin for each command and are never written here.
         config.write_text(json.dumps(kubeconfig(environ)))
         environ["KUBECONFIG"] = str(config)
-        base = ["kubectl", "--request-timeout=0", "-n", environ["NL_GKE_NAMESPACE"],
+        base = ["kubectl", "--request-timeout=15s", "-n", environ["NL_GKE_NAMESPACE"],
                 "exec", environ["NL_GKE_POD"]]
-        result = subprocess.run([*base, "-i", "--", "node", "--input-type=module", "-e", BOOTSTRAP],
-                                input=json.dumps(build), text=True, env=environ)
-        if args.task == 'nix' and result.returncode:
-            return result.returncode
+        started = time.monotonic()
+        args.output.mkdir(parents=True, exist_ok=True)
+        result = {'exit_code': 74, 'reason': 'transport_lost'}
         filename = 'nix.json' if args.task == 'nix' else 'cluster.json'
-        summary = subprocess.run([*base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + '/' + filename],
-                                 text=True, capture_output=True, env=environ)
-        if summary.returncode:
-            sys.exit("The retained client did not produce benchmark evidence")
+        def record_outcome():
+            (args.output / 'dispatch.json').write_text(json.dumps({
+                'revision': build['GITHUB_SHA'], 'task': args.task, **result}, indent=2) + '\n')
+            if args.task == 'bazel':
+                (args.output / filename).write_text(json.dumps(
+                    failure_report(build, result, started), indent=2) + '\n')
+        record_outcome()
+        result = dispatch([*base, '-i', '--', 'python3', SUPERVISOR, 'request'], build, environ)
+        record_outcome()
+        print('Retained CI outcome: ' + result['reason'], flush=True)
+        if result['reason'] != 'completed' or (args.task == 'nix' and result['exit_code']):
+            return result['exit_code']
+        summary = None
+        for attempt in range(3):
+            try:
+                summary = subprocess.run([*base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + '/' + filename],
+                                         text=True, capture_output=True, env=environ, timeout=20)
+                if not summary.returncode:
+                    break
+            except subprocess.TimeoutExpired:
+                pass
+        if summary is None or summary.returncode:
+            return result['exit_code'] or 74
         report = json.loads(summary.stdout)
         if args.task == 'nix':
             import nix_ci
@@ -109,16 +216,10 @@ def main(args):
         args.output.mkdir(parents=True, exist_ok=True)
         if args.task == 'nix':
             archive = args.output / 'closure.nar.gz'
-            with archive.open('wb') as destination:
-                subprocess.run([*base, '--', 'cat', build['NL_SUMMARY_DIRECTORY'] + '/closure.nar.gz'],
-                               stdout=destination, env=environ, check=True)
-            with archive.open('rb') as stream:
-                checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
-            if archive.stat().st_size != report['bytes'] or checksum != report['sha256']:
-                archive.unlink()
-                raise ValueError('The transferred Nix closure failed checksum verification')
+            download_archive(base, build['NL_SUMMARY_DIRECTORY'] + '/closure.nar.gz',
+                             archive, report, environ)
         (args.output / filename).write_text(json.dumps(report, indent=2) + "\n")
-        return result.returncode or report["exit_code"]
+        return result["exit_code"] or report["exit_code"]
 
 
 if __name__ == "__main__":

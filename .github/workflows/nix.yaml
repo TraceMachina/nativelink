@@ -27,6 +27,10 @@ jobs:
   # Credentialed work uses reviewed repository branches, like the Bazel lane.
   # Promote reviewed external commits to a repository branch before running it.
   nix-build:
+    concurrency:
+      group: retained-ci-nix
+      cancel-in-progress: false
+      queue: max
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
       startsWith(github.ref, 'refs/heads/') &&
@@ -47,7 +51,7 @@ jobs:
       NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
       NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
+      NL_GKE_POD: ${{ vars.NL_GKE_NIX_POD }}
     outputs:
       matrix: ${{ steps.manifest.outputs.matrix }}
     steps:
