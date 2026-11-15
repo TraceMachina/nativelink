@@ -1243,7 +1243,7 @@ impl DirectoryCache {
                         ?digest,
                         ?file_path,
                         error = ?e,
-                        "CAS blob not clonable, copying instead"
+                        "CAS blob not cloneable, copying instead"
                     ),
                 }
             }
@@ -1334,7 +1334,7 @@ impl DirectoryCache {
     /// The clone keeps the blob's mtime, as the hardlink of a
     /// non-executable file does.
     ///
-    /// Any error means "not clonable" and leaves nothing at `file_path`;
+    /// Any error means "not cloneable" and leaves nothing at `file_path`;
     /// callers fall back to `copy_file_to`.
     #[cfg(target_os = "macos")]
     async fn clone_cas_blob_executable(
