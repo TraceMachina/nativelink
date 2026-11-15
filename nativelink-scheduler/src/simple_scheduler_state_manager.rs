@@ -46,8 +46,8 @@ use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PeerScheduler,
-    SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    PeerScheduler, SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
@@ -508,6 +508,19 @@ impl From<usize> for RetryLimits {
     }
 }
 
+/// The shortest gap between two judgements of elapsed time taken as a clock
+/// step. The matching pass judges every few seconds, so a longer gap is a
+/// step or a stalled process; shorter ones are left to the timeouts.
+const CLOCK_STEP_MIN: Duration = Duration::from_mins(10);
+
+/// The last time client keepalives were judged, and the end of a hold set by
+/// a forward clock step.
+#[derive(Debug)]
+struct ClientJudgement {
+    last: Option<SystemTime>,
+    held_until: Option<SystemTime>,
+}
+
 /// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
@@ -568,6 +581,10 @@ where
     // on this service.
     timeout_operation_mux: Mutex<()>,
 
+    /// When elapsed time was last judged, and until when a forward clock
+    /// step holds the judgement back (see `may_judge_elapsed`).
+    client_judgement: parking_lot::Mutex<ClientJudgement>,
+
     /// Weak reference to self.
     // We use a weak reference to reduce the risk of a memory leak from
     // future changes. If this becomes some kind of performance issue,
@@ -614,6 +631,11 @@ where
             client_action_timeout,
             max_executing_timeout,
             timeout_operation_mux: Mutex::new(()),
+            // Seeded here: a step before the first judgement is a step too.
+            client_judgement: parking_lot::Mutex::new(ClientJudgement {
+                last: Some((now_fn)().now()),
+                held_until: None,
+            }),
             weak_self: weak_self.clone(),
             now_fn,
             worker_registry,
@@ -800,8 +822,35 @@ where
         Ok(report)
     }
 
+    /// Whether time measured on the clock may be judged at `now`: a client
+    /// keepalive older than `client_action_timeout`, or an executing action
+    /// past its `Action.timeout`. A forward step of the clock larger than
+    /// that timeout since the last judgement makes every keepalive and
+    /// every running action look old at once, while an attached client
+    /// refreshes only every `CLIENT_KEEPALIVE_DURATION`. After such a step
+    /// the judgement waits two of those, so attached clients refresh first
+    /// and only absent ones are retired, and no action fails for time it
+    /// never ran (F2).
+    fn may_judge_elapsed(&self, now: SystemTime) -> bool {
+        let mut judgement = self.client_judgement.lock();
+        let stepped = judgement
+            .last
+            .and_then(|last| now.duration_since(last).ok())
+            .is_some_and(|step| step > self.client_action_timeout.max(CLOCK_STEP_MIN));
+        judgement.last = Some(now);
+        if stepped {
+            judgement.held_until = Some(now + CLIENT_KEEPALIVE_DURATION * 2);
+            warn!(
+                timeout_secs = self.client_action_timeout.as_secs_f32(),
+                "The clock moved forward past the client timeout; holding timeouts until clients refresh"
+            );
+        }
+        judgement.held_until.is_none_or(|until| now >= until)
+    }
+
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
         let now = (self.now_fn)().now();
+        let may_judge_elapsed = self.may_judge_elapsed(now);
         let stream = self
             .action_db
             .get_range_of_actions(
@@ -844,7 +893,9 @@ where
             if !matches!(awaited_action.state().stage, ActionStage::Queued) {
                 continue;
             }
-            if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout >= now
+            if !may_judge_elapsed
+                || awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
+                    >= now
             {
                 continue;
             }
@@ -1001,6 +1052,7 @@ where
                 .max(awaited_action.last_worker_updated_timestamp());
             if let Ok(elapsed) = now.duration_since(anchor)
                 && elapsed > action_timeout.saturating_add(self.no_event_action_timeout)
+                && self.may_judge_elapsed(now)
             {
                 return Some(TimeoutCause::ActionTimeout {
                     timeout: action_timeout,
@@ -1109,7 +1161,9 @@ where
         let now = (self.now_fn)().now();
 
         // Check if client has timed out
-        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now
+            && self.may_judge_elapsed(now)
+        {
             // This may change if the version is out of date.
             let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
