@@ -72,8 +72,7 @@ pub struct WorkerKey {
 
 /// The key is logged on every spawn and completion and quoted in errors the
 /// client sees, so the environment shows as its variable names only: an
-/// action's environment can carry a token.
-/// Name of instance group included because it's not a secret.
+/// action's environment can carry a token. The instance group name is also logged.
 impl fmt::Debug for WorkerKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkerKey")
@@ -154,7 +153,7 @@ pub struct PoolConfig {
     /// `/tmp`: the process outlives any one action, so neither can apply
     /// to it.
     pub namespaced: bool,
-    /// If false, the Action instance_name will be not be included in WorkerKeys
+    /// If false, the Action instance_name will not be included in WorkerKeys
     /// and Actions having separate instance_names may share the same worker (legacy behavior).
     /// If true, worker processes will be separated according to Action instance_name.
     pub isolate_by_instance_name: bool,
@@ -603,7 +602,7 @@ mod tests {
     #[test]
     fn worker_key_rejects_empty_argv() {
         let argv: Vec<String> = Vec::new();
-        assert!(WorkerKey::from_argv(&argv, WireFormat::Proto,).is_err());
+        assert!(WorkerKey::from_argv(&argv, WireFormat::Proto).is_err());
     }
 
     #[test]
@@ -794,8 +793,8 @@ mod tests {
         lease_1.release(true).await;
         assert_eq!(pool.live_workers(), 1);
 
-        // Different instance_name used but isolate_by_instance_name is false
-        // So the same worker should be reused
+        // Different instance_name used and isolate_by_instance_name is true
+        // so a fresh worker should be used
         let mut lease_2 = pool
             .acquire(
                 key.clone().with_instance_name("instance_b".to_string()),

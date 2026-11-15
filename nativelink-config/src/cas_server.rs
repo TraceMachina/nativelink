@@ -1138,10 +1138,6 @@ const fn default_true() -> bool {
     true
 }
 
-const fn default_false() -> bool {
-    false
-}
-
 fn default_disk_property_name() -> String {
     "disk_kb".to_string()
 }
@@ -1348,7 +1344,7 @@ pub struct PersistentWorkersConfig {
     /// Isolate workers by the bazel Action instance group name which is
     /// extracted from the ActionUniqueKey used to distinguish Actions.
     /// Default: false
-    #[serde(default = "default_false")]
+    #[serde(default)]
     pub isolate_by_instance_name: bool,
 }
 

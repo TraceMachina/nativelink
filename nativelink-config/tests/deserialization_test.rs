@@ -780,7 +780,7 @@ mod persistent_worker_tests {
     #[test]
     fn isolate_by_instance_name_defaults_to_false() {
         let config: PersistentWorkersConfig = serde_json5::from_str("{}").unwrap();
-        assert!(!config.isolate_by_instance_name); // default behavior: don't isolation by instance name
+        assert!(!config.isolate_by_instance_name); // default behavior: don't isolate by instance name
     }
 
     #[test]
