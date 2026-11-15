@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ impl VerifyStore {
 
     async fn inner_check_update<D: DigestHasher>(
         &self,
-        mut tx: DropCloserWriteHalf,
+        tx: &mut DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         maybe_expected_digest_size: Option<u64>,
         original_hash: &PackedHash,
@@ -246,19 +246,32 @@ impl StoreDriver for VerifyStore {
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.inner_store.update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(
-            tx,
-            reader,
-            maybe_digest_size,
-            digest.packed_hash(),
-            digest_function,
-            hasher.as_mut(),
-        );
+        let check_fut = async move {
+            let mut tx = tx;
+            let result = self
+                .inner_check_update(
+                    &mut tx,
+                    reader,
+                    maybe_digest_size,
+                    digest.packed_hash(),
+                    digest_function,
+                    hasher.as_mut(),
+                )
+                .await;
+            // Inspect the channel before dropping it. Keep it in this future so
+            // a validation failure also wakes the inner store's reader.
+            (result, tx.is_pipe_broken())
+        };
 
-        let (update_res, check_res) = tokio::join!(update_fut, check_fut);
+        let (update_res, (check_res, forwarding_failed)) = tokio::join!(update_fut, check_fut);
 
         match (update_res, check_res) {
-            // Prioritize the check future's error, as it's more specific.
+            // A failed send is a consequence of the inner store's failure, not
+            // a validation error. Preserve its code and both error messages.
+            (Err(update_err), Err(check_err)) if forwarding_failed => {
+                Err(update_err.merge(check_err))
+            }
+            // Size/hash or input-stream failures remain the checker's verdict.
             (_, Err(e)) | (Err(e), Ok(_)) => Err(e),
             (Ok(size), Ok(_)) => Ok(size),
         }
@@ -310,15 +323,36 @@ impl StoreDriver for VerifyStore {
         if let Err(err) = &result
             && err.code == Code::DataLoss
         {
-            // The copy that served this read is bad; drop it from every
-            // cache below so the next read repopulates from the durable
-            // tier, or fails with NotFound and the client re-uploads.
-            match self
-                .inner_store
-                .as_store_driver_pin()
-                .remove(key.borrow())
-                .await
-            {
+            // Keep the durable copy unless it is the wrong size too: a bad
+            // cache copy must not cost the only good one. Read it back
+            // rather than trust `has`, which for a filesystem store is the
+            // size indexed at write time, not the file's.
+            let inner = self.inner_store.as_store_driver_pin();
+            let removed = async {
+                let cached = inner.remove_cached(key.borrow()).await?;
+                let durable_is_bad = match &key {
+                    StoreKey::Digest(digest) => {
+                        let (mut tx, mut rx) = make_buf_channel_pair();
+                        let read_key = key.borrow().into_owned();
+                        let read_fut = async move {
+                            self.inner_store.get_part(read_key, &mut tx, 0, None).await
+                        };
+                        let (read_res, drained) = tokio::join!(read_fut, rx.drain());
+                        match read_res.and(drained) {
+                            Ok(size) => size != digest.size_bytes(),
+                            // Other errors mean unchecked, not bad.
+                            Err(err) => err.code == Code::DataLoss,
+                        }
+                    }
+                    StoreKey::Str(_) => false,
+                };
+                if durable_is_bad {
+                    return Ok(inner.remove(key.borrow()).await? || cached);
+                }
+                Ok::<_, Error>(cached)
+            }
+            .await;
+            match removed {
                 Ok(removed) => warn!(
                     ?key,
                     removed, "Dropped a copy that failed size verification"
@@ -335,6 +369,13 @@ impl StoreDriver for VerifyStore {
 
     async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         self.inner_store.as_store_driver_pin().remove(key).await
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {

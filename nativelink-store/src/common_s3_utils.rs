@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -113,7 +113,8 @@ impl TlsClient {
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 common.retry.make_jitter_fn(),
                 common.retry.clone(),
-            ),
+            )
+            .with_client("s3_http"),
         }
     }
 }

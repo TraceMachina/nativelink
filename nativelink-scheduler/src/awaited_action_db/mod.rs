@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -198,17 +198,17 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     fn set_worker_registry(&mut self, _worker_registry: SharedWorkerRegistry) {}
 
     /// Tells other schedulers on the same state what the workers connected
-    /// here can run, and returns what the workers connected to those
-    /// schedulers can run. `local` holds the properties each distinct kind
-    /// of worker registered with, and stays visible to peers for `ttl`.
-    /// Only shared-state implementations need it; the default shares
+    /// here can run, and returns, per peer scheduler, what the workers
+    /// connected to it can run. `local` holds the properties each distinct
+    /// kind of worker registered with, and stays visible to peers for
+    /// `ttl`. Only shared-state implementations need it; the default shares
     /// nothing and sees nothing.
     fn exchange_fleet_capabilities(
         &self,
         _scheduler_id: &str,
         _local: Vec<PlatformProperties>,
         _ttl: Duration,
-    ) -> impl Future<Output = Result<Vec<PlatformProperties>, Error>> + Send {
+    ) -> impl Future<Output = Result<Vec<PeerScheduler>, Error>> + Send {
         async { Ok(Vec::new()) }
     }
 
@@ -217,4 +217,14 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     fn shares_state(&self) -> bool {
         false
     }
+}
+
+/// What one peer scheduler's workers can run, as it published them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerScheduler {
+    /// The id the peer publishes under, unique to its process.
+    pub scheduler_id: String,
+    /// The properties each distinct kind of worker connected to the peer
+    /// registered with.
+    pub workers: Vec<PlatformProperties>,
 }

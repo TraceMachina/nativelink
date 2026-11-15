@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -87,6 +87,35 @@ pub struct PendingActionInfoData {
     /// The last resource usage the worker reported for this operation; it
     /// arrives just before the result and says whether the result is a kill.
     pub last_usage: Option<ActionResourceUsage>,
+    /// Keepalive reports in a row that left this operation out. Counted only
+    /// once the worker acknowledged the dispatch; a report that names the
+    /// operation resets it.
+    #[metric(help = "Consecutive keepalive reports that left this operation out.")]
+    pub missed_reports: u32,
+    /// The most memory the worker's keepalives have reported for this
+    /// operation, in KiB; 0 until one does. Read when the worker is lost,
+    /// to tell which of its actions grew past its reservation (RFC-0018).
+    #[metric(help = "The highest memory the worker reported for this operation, in KiB.")]
+    pub reported_peak_memory_kb: u64,
+}
+
+/// How many keepalive reports in a row may leave an acknowledged operation
+/// out before the worker is taken to have dropped it. One miss is a report
+/// sent while the dispatch was still landing; two is a worker that ran the
+/// action and whose result never arrived.
+pub const LOST_AFTER_MISSED_REPORTS: u32 = 2;
+
+/// What the outcome tripwire has done with a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TripwireState {
+    /// Nothing, or an operator lifted its drain since.
+    #[default]
+    Clear,
+    /// It would have drained the worker, but as many workers were already
+    /// drained as it may drain at once; logged once.
+    Held,
+    /// It drained the worker.
+    Tripped,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -142,6 +171,15 @@ pub struct Worker {
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
+
+    /// How the worker's recent attempts ended, oldest first, `true` for a
+    /// failure (a command or input fetch timeout, a worker error); a result
+    /// of any exit code is a success. Bounded by the outcome tripwire's
+    /// window; empty when there is no tripwire.
+    pub recent_outcomes: VecDeque<bool>,
+
+    /// What the outcome tripwire has done with this worker.
+    pub tripwire: TripwireState,
 
     /// Maximum inflight tasks for this worker (or 0 for unlimited)
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
@@ -232,6 +270,8 @@ impl Worker {
             admits_when_idle: false,
             idle_declined_kb: None,
             is_draining: false,
+            recent_outcomes: VecDeque::new(),
+            tripwire: TripwireState::Clear,
             max_inflight_tasks,
             last_load: None,
             metrics: Arc::new(Metrics {
@@ -365,6 +405,30 @@ impl Worker {
         }
     }
 
+    /// Takes a keepalive's report of what the worker is running and returns
+    /// the acknowledged operations it has left out of
+    /// [`LOST_AFTER_MISSED_REPORTS`] reports in a row. An operation the
+    /// worker was told to kill is on its way off and not counted; one it has
+    /// not acknowledged may still be in transit, which the acknowledgement
+    /// sweep covers.
+    pub fn unreported_operations(&mut self, reported: &HashSet<OperationId>) -> Vec<OperationId> {
+        let mut lost = Vec::new();
+        for (operation_id, pending) in &mut self.running_action_infos {
+            if reported.contains(operation_id) {
+                pending.missed_reports = 0;
+                continue;
+            }
+            if !pending.accepted || pending.kill_requested_at.is_some() {
+                continue;
+            }
+            pending.missed_reports += 1;
+            if pending.missed_reports >= LOST_AFTER_MISSED_REPORTS {
+                lost.push(operation_id.clone());
+            }
+        }
+        lost
+    }
+
     /// Operations dispatched at or before `cutoff` that the worker never
     /// acknowledged.
     pub fn unacknowledged(&self, cutoff: WorkerTimestamp) -> Vec<OperationId> {
@@ -410,9 +474,11 @@ impl Worker {
                     PendingActionInfoData {
                         action_info,
                         kill_requested_at: None,
+                        missed_reports: 0,
                         dispatched_at,
                         accepted: false,
                         last_usage: None,
+                        reported_peak_memory_kb: 0,
                     },
                 );
                 Ok(())

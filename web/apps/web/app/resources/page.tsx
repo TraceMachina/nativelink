@@ -6,7 +6,8 @@ export const metadata = { title: "Resources" };
 
 const featuredPost = {
   tag: "Case study",
-  title: "How LLVM cut clang compile time from 17 minutes to 4 with NativeLink + recc.",
+  title:
+    "How LLVM cut clang compile time from 17 minutes to 4 with NativeLink + recc.",
   excerpt:
     "LLVM contributors needed faster iteration without rewriting their CMake setup. They pointed recc at a NativeLink cluster and saw 4× speedups on first try.",
   date: "March 14, 2026",
@@ -35,7 +36,8 @@ export default function ResourcesPage() {
     (p) => p.tags.includes("announcements") && !p.tags.includes("case-studies"),
   );
   const others = posts.filter(
-    (p) => !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
+    (p) =>
+      !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
   );
 
   return (
@@ -47,7 +49,7 @@ export default function ResourcesPage() {
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
               <Eyebrow className="mb-5">Resources</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 Deep-tech writing for engineers who{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   build the builds
@@ -55,8 +57,9 @@ export default function ResourcesPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Case studies, conference talks, and write-ups from the team building NativeLink —
-                plus highlights from the broader community.
+                Case studies, conference talks, and write-ups from the team
+                building NativeLink — plus highlights from the broader
+                community.
               </p>
             </div>
           </Reveal>
@@ -117,12 +120,69 @@ export default function ResourcesPage() {
                         <div className="bg-gradient-to-br from-brand to-brand-strong bg-clip-text font-mono text-5xl font-semibold text-transparent md:text-6xl">
                           4m
                         </div>
-                        <div className="mt-1 text-xs text-brand">With NativeLink</div>
+                        <div className="mt-1 text-xs text-brand">
+                          With NativeLink
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
+            </div>
+          </a>
+        </Reveal>
+      </Section>
+
+      {/* BOOKS */}
+      <Section
+        width="default"
+        className="border-t border-border/60 pb-20 pt-16"
+      >
+        <Reveal>
+          <div className="mb-8">
+            <Eyebrow className="mb-3">Books and publications</Eyebrow>
+            <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
+              Free reading from the team
+            </h2>
+          </div>
+          <a
+            href="/resources/oreilly-bazel-book"
+            className="group flex flex-col items-center gap-8 overflow-hidden rounded-3xl border border-border bg-surface p-8 no-underline transition-all hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[0_30px_80px_-30px_rgb(var(--nl-color-brand)/0.35)] md:flex-row md:p-10"
+          >
+            <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl bg-brand-soft text-brand">
+              <svg
+                width="40"
+                height="40"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z"
+                />
+              </svg>
+            </div>
+            <div className="flex flex-1 flex-col gap-3 text-center md:text-left">
+              <h3 className="text-2xl font-semibold tracking-tight text-foreground">
+                Extending Bazel to Its Full Potential
+              </h3>
+              <p className="max-w-[52ch] text-[15px] leading-relaxed text-muted-foreground">
+                Free O'Reilly e-book on cloud builds, parallelization, remote
+                execution, and NativeLink — by Brian Moakley and Marcus Eagan.
+              </p>
+              <span className="inline-flex items-center justify-center gap-1.5 font-mono text-sm text-brand md:justify-start">
+                Download free{" "}
+                <span
+                  aria-hidden="true"
+                  className="transition-transform group-hover:translate-x-1"
+                >
+                  →
+                </span>
+              </span>
             </div>
           </a>
         </Reveal>

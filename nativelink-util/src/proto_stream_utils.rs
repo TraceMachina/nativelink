@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -88,6 +88,12 @@ where
     /// This indicates a single-shot upload where all data is in one message.
     pub fn is_first_msg_complete(&self) -> bool {
         self.first_msg.as_ref().is_some_and(|msg| msg.finish_write)
+    }
+
+    /// Returns the `write_offset` of the first message, if it has not been
+    /// consumed yet. A non-zero offset means the client is resuming an upload.
+    pub fn first_msg_write_offset(&self) -> Option<i64> {
+        self.first_msg.as_ref().map(|msg| msg.write_offset)
     }
 
     fn enforce_wire_size_matches_digest_size(&self) -> bool {

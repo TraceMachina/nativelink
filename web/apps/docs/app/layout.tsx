@@ -14,7 +14,8 @@ export const metadata: Metadata = {
     default: "NativeLink Docs",
     template: "%s | NativeLink Docs",
   },
-  description: "Documentation for NativeLink, a high-performance remote build cache and execution service.",
+  description:
+    "Documentation for NativeLink, a high-performance remote build cache and execution service.",
   metadataBase: new URL("https://docs.nativelink.com"),
 };
 

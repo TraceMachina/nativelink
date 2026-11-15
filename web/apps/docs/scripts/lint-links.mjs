@@ -35,7 +35,7 @@
 // owns the generator.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs lint:links
+//   pnpm run --filter @nativelink/docs lint:links
 // or directly:
 //   node scripts/lint-links.mjs
 //
@@ -114,7 +114,9 @@ const processor = unified()
 // assembled from upstream release notes and contains `<!-- -->` comments and
 // bare `<` characters that are a syntax error under remarkMdx. They are still
 // real pages that real links point at, so they get parsed, just not as MDX.
-const mdProcessor = unified().use(remarkParse).use(remarkHeading, { generateToc: false });
+const mdProcessor = unified()
+  .use(remarkParse)
+  .use(remarkHeading, { generateToc: false });
 
 /**
  * Anchors a page offers, and internal links a page makes.
@@ -176,7 +178,8 @@ function inspect(source, { mdx = true } = {}) {
  */
 function redirectTable(configSource) {
   const start = configSource.indexOf("async redirects()");
-  if (start === -1) throw new Error("no `async redirects()` in next.config.mjs");
+  if (start === -1)
+    throw new Error("no `async redirects()` in next.config.mjs");
   const open = configSource.indexOf("{", start);
   let depth = 0;
   let end = -1;
@@ -189,7 +192,9 @@ function redirectTable(configSource) {
   }
   if (end === -1) throw new Error("unbalanced braces in redirects()");
   // Repo-local file, and the body is data: no imports, no closures.
-  const list = new Function(`"use strict";${configSource.slice(open + 1, end)}`)();
+  const list = new Function(
+    `"use strict";${configSource.slice(open + 1, end)}`,
+  )();
   if (!Array.isArray(list) || list.length === 0) {
     throw new Error("redirects() did not evaluate to a non-empty array");
   }
@@ -209,7 +214,9 @@ async function loadRedirects() {
   const exact = new Set();
   const prefixes = [];
   try {
-    const list = redirectTable(readFileSync(join(docsRoot, "next.config.mjs"), "utf8"));
+    const list = redirectTable(
+      readFileSync(join(docsRoot, "next.config.mjs"), "utf8"),
+    );
     for (const { source } of list) {
       if (typeof source !== "string") continue;
       const param = source.indexOf("/:");
@@ -217,8 +224,12 @@ async function loadRedirects() {
       else prefixes.push(source.slice(0, param));
     }
   } catch (error) {
-    console.warn(`  note: could not read next.config.mjs redirects (${error.message})`);
-    console.warn("  every link to a page that moved will report as unresolved.");
+    console.warn(
+      `  note: could not read next.config.mjs redirects (${error.message})`,
+    );
+    console.warn(
+      "  every link to a page that moved will report as unresolved.",
+    );
   }
   return { exact, prefixes };
 }
@@ -235,7 +246,9 @@ async function main() {
     try {
       report = inspect(source, { mdx: file.endsWith(".mdx") });
     } catch (error) {
-      console.error(`${relative(docsRoot, file)}:1  could not parse: ${error.message}`);
+      console.error(
+        `${relative(docsRoot, file)}:1  could not parse: ${error.message}`,
+      );
       process.exit(1);
     }
     pages.set(routeFor(file), {
@@ -252,7 +265,9 @@ async function main() {
 
   const isRedirected = (route) =>
     redirects.exact.has(route) ||
-    redirects.prefixes.some((p) => route === p.replace(/\/$/, "") || route.startsWith(p));
+    redirects.prefixes.some(
+      (p) => route === p.replace(/\/$/, "") || route.startsWith(p),
+    );
 
   for (const [, page] of pages) {
     const rel = relative(docsRoot, page.file);
@@ -273,7 +288,11 @@ async function main() {
       // A bare `#anchor` is a link within this page.
       if (path === "") {
         if (anchor && !page.anchors.has(anchor)) {
-          report.push({ rel, line, message: `no anchor \`#${anchor}\` on this page` });
+          report.push({
+            rel,
+            line,
+            message: `no anchor \`#${anchor}\` on this page`,
+          });
         }
         continue;
       }
@@ -293,7 +312,9 @@ async function main() {
       if (!targetPage) {
         if (EXTRA_ROUTES.has(target) || isRedirected(target)) continue;
         // The most common shape of this failure is worth naming outright.
-        const near = [...pages.keys()].find((r) => r.endsWith(target) || target.endsWith(r));
+        const near = [...pages.keys()].find(
+          (r) => r.endsWith(target) || target.endsWith(r),
+        );
         report.push({
           rel,
           line,
@@ -314,11 +335,16 @@ async function main() {
     }
   }
 
+  if (problems.length === 0 && warnings.length === 0) {
+    console.log(
+      `lint:links: ${checked} internal links across ${pages.size} pages resolve.`,
+    );
+    return;
+  }
+
   if (warnings.length > 0) {
-    console.warn(`lint:links: ${warnings.length} unresolved link(s) on generated pages.`);
     console.warn(
-      "These do not fail the build: the fix belongs in the generator, not in\n" +
-        "the page, and not in whichever PR happened to run this next.\n",
+      `lint:links: ${warnings.length} unresolved link(s) on generated pages.`,
     );
     for (const { rel, line, message } of warnings) {
       console.warn(`  ${rel}:${line}  ${message}`);
@@ -326,14 +352,13 @@ async function main() {
     console.warn("");
   }
 
-  if (problems.length === 0) {
-    console.log(`lint:links: ${checked} internal links across ${pages.size} pages resolve.`);
-    return;
-  }
-
-  console.error(`lint:links: ${problems.length} unresolved of ${checked} internal links:\n`);
-  for (const { rel, line, message } of problems) {
-    console.error(`  ${rel}:${line}  ${message}`);
+  if (problems.length > 0) {
+    console.error(
+      `lint:links: ${problems.length} unresolved of ${checked} internal links:\n`,
+    );
+    for (const { rel, line, message } of problems) {
+      console.error(`  ${rel}:${line}  ${message}`);
+    }
   }
   console.error(
     "\nEvery internal link must resolve to a page that exists, at an anchor that\n" +

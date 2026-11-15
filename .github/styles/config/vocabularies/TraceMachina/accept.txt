@@ -45,6 +45,8 @@ Makefile
 [Mm]onorepo
 Nvidia
 Omniverse
+O'Reilly
+Oreilly
 NVMe
 hello@nativelink.com
 [Nn]ative[Ll]ink
@@ -317,6 +319,7 @@ deserialization
 Dockerised
 Merkle
 subtree
+subtrees
 hardlink
 multiplicatively
 SELinux
@@ -492,3 +495,7 @@ Flybody
 MuJoCo
 connectome
 simulatable
+[Dd]ownloader
+URIs
+[Aa]bliterated
+[Uu]npatched

@@ -22,3 +22,6 @@ build:llvm --extra_toolchains=@llvm_toolchain//:cc-toolchain-x86_64-linux
 # Java runtime to ensure hermeticity on the remote.
 build:java --java_runtime_version=remotejdk_21
 build:java --tool_java_runtime_version=remotejdk_21
+
+# Share the enclosing repository job metadata with this example workspace.
+try-import %workspace%/../ci-metadata.bazelrc

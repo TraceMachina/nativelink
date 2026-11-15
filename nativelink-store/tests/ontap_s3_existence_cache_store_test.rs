@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -71,6 +71,7 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
             multipart_max_concurrent_uploads: None,
             insecure_allow_http: false,
             disable_http2: false,
+            ..Default::default()
         },
     };
 

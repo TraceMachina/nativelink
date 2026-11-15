@@ -13,28 +13,32 @@
 #
 # The site serves the same bytes from web/apps/web/public/, which its build
 # regenerates on every deploy; nothing on a page load reads these files.
-name: Regenerate llms files
+name: Docs / Regenerate llms
 
 on:
   push:
     branches: [main]
     paths:
-      - 'web/apps/web/lib/llms.ts'
-      - 'web/apps/web/lib/posts.ts'
-      - 'web/apps/web/scripts/gen-llms.ts'
-      - 'web/apps/web/content/posts/**'
-      - 'web/apps/docs/content/**'
-      - 'web/apps/docs/scripts/gen-llms.mjs'
-      - 'web/apps/docs/scripts/gen-changelog.mjs'
-      - 'CHANGELOG.md'
-      - '.github/workflows/llms.yaml'
+      - "web/apps/web/lib/llms.ts"
+      - "web/apps/web/lib/posts.ts"
+      - "web/apps/web/scripts/gen-llms.ts"
+      - "web/apps/web/content/posts/**"
+      - "web/apps/docs/content/**"
+      - "web/apps/docs/scripts/gen-llms.mjs"
+      - "web/apps/docs/scripts/gen-changelog.mjs"
+      - "CHANGELOG.md"
+      - ".github/workflows/llms.yaml"
   # Weekly, to catch a source this list does not name. Monday 04:41,
   # arbitrary, spread away from the other scheduled jobs.
   schedule:
     - cron: 41 4 * * MON
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}
@@ -65,7 +69,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun --filter @nativelink/web gen:llms
+            pnpm install && pnpm run --filter @nativelink/web gen:llms
           "
 
       - name: Open auto-merge PR

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -100,6 +100,29 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         timestamp: WorkerTimestamp,
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
+
+    /// A keepalive said which operations the worker is running. An
+    /// acknowledged operation the worker leaves out of two reports in a row
+    /// finished without its result reaching the scheduler; it is released
+    /// and requeued. Ignored unless the scheduler tracks what it dispatched.
+    async fn worker_running_operations_reported(
+        &self,
+        _worker_id: &WorkerId,
+        _operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// A keepalive said how much memory the worker has sampled so far for
+    /// each running operation, as `(operation, peak KiB)`. Kept against the
+    /// dispatch so a lost worker's actions can be judged by it (RFC-0018).
+    async fn worker_operation_memory_reported(
+        &self,
+        _worker_id: &WorkerId,
+        _peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Any other message from the worker (an acknowledgement, a decline, an
     /// execute result) proves it is alive. Unlike a keepalive it lifts no

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,27 +14,31 @@
 
 use core::ops::Bound;
 use core::time::Duration;
+use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
-    OperationId, WorkerId,
+    LOST_RESULT_ERROR_TIP, OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
-    record_awaited_action_orphan, record_queue_retired,
+    AgeBuckets, EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult,
+    ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts, Escalation,
+    MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
+    UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -42,9 +46,35 @@ use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PeerScheduler,
+    SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
+
+/// An attempt the executing sweep ended, for the scheduler to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweptAttempt {
+    pub operation_id: OperationId,
+    pub worker_id: WorkerId,
+    pub reason: AttemptEndReason,
+    pub detail: String,
+}
+
+/// What one executing sweep did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExecutingSweepReport {
+    /// Retired as overdue, through `timeout_operation_id`.
+    pub retired: u64,
+    /// Sent back to the queue because their worker no longer ran them.
+    pub requeued: u64,
+    /// Could not be moved this sweep; they are tried again on the next.
+    pub failed: u64,
+    /// How long each executing action the sweep read had been executing,
+    /// counted before any was retired or requeued.
+    pub ages: AgeBuckets,
+    /// The attempts it retired or requeued.
+    pub ended: Vec<SweptAttempt>,
+}
 
 /// Why the scheduler times out an executing action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +108,22 @@ impl core::fmt::Display for TimeoutCause {
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
 
+/// Requeues the same action asking for more: the next dispatch carries the
+/// raised reservation and the worker holds it to that. The last step also
+/// asks for the worker's whole CPU, so it runs alone.
+fn raise_reservation(awaited_action: &mut AwaitedAction, escalation: &Escalation) {
+    let mut action_info = (**awaited_action.action_info()).clone();
+    action_info
+        .platform_properties
+        .insert(escalation.property.clone(), escalation.value.to_string());
+    if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+        action_info
+            .platform_properties
+            .insert(cpu_property.clone(), cpu_value.to_string());
+    }
+    awaited_action.set_action_info(Arc::new(action_info));
+}
+
 /// Base delay for exponential backoff on version conflicts (in ms).
 const BASE_RETRY_DELAY_MS: u64 = 10;
 
@@ -86,6 +132,23 @@ const MAX_RETRY_JITTER_MS: u64 = 20;
 
 /// How long to wait before the `retry_count`th attempt at an update that
 /// lost a version conflict: exponential in the attempt, plus jitter.
+/// The store errors an operation update retries within its budget: the
+/// record moved (`Aborted`), or the store did not take the write for a
+/// reason that passes (unreachable, slow, out of room, or a server reply the
+/// client could not classify, which is what a Redis `-ERR` arrives as).
+/// Everything else, `Internal` included, is final at once: an internal
+/// error is the scheduler's own, not the store's weather.
+const fn is_transient_store_error(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Aborted
+            | Code::Unavailable
+            | Code::DeadlineExceeded
+            | Code::ResourceExhausted
+            | Code::Unknown
+    )
+}
+
 fn version_conflict_backoff(retry_count: usize) -> Duration {
     let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
     let jitter = SystemTime::now()
@@ -308,6 +371,19 @@ where
         Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
+    async fn dispatch_facts(&self) -> Result<DispatchFacts, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::dispatch_facts")?;
+        Ok(DispatchFacts {
+            avoid_worker_ids: awaited_action.avoid_worker_ids().to_vec(),
+            avoid_node_names: awaited_action.avoid_node_names().to_vec(),
+            queued_since: Some(awaited_action.state().last_transition_timestamp),
+        })
+    }
+
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut timeout_attempts = 0;
         loop {
@@ -402,11 +478,20 @@ pub struct RetryLimits {
     pub max_worker_loss_retries: usize,
     /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
     pub max_escalations: usize,
+    /// The worker loss from which a lost worker escalates the action's
+    /// memory (RFC-0018); 0 never does.
+    pub escalate_after_worker_losses: usize,
+    /// Command timeouts queued again for another worker; 0 keeps the
+    /// first timeout final.
+    pub max_timeout_retries: usize,
 }
 
 impl RetryLimits {
     /// Lost workers allowed by default; the action did nothing wrong.
     pub const DEFAULT_WORKER_LOSS_RETRIES: usize = 10;
+    /// Command timeouts tried again elsewhere by default: one second
+    /// opinion, since a worker gone slow times out whatever it is given.
+    pub const DEFAULT_TIMEOUT_RETRIES: usize = 1;
 }
 
 /// Only the job budget stated: the other two take their defaults, which is
@@ -417,6 +502,8 @@ impl From<usize> for RetryLimits {
             max_job_retries,
             max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
             max_escalations: 0,
+            escalate_after_worker_losses: 0,
+            max_timeout_retries: Self::DEFAULT_TIMEOUT_RETRIES,
         }
     }
 }
@@ -450,6 +537,16 @@ where
         help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
     )]
     max_escalations: usize,
+
+    #[metric(
+        help = "Worker losses before a requeue also raises the memory reservation; 0 never does"
+    )]
+    escalate_after_worker_losses: usize,
+
+    #[metric(
+        help = "Maximum number of times a job is queued again for another worker after its command timed out"
+    )]
+    max_timeout_retries: usize,
 
     /// Duration after which an action is considered to be timed out if
     /// no event is received.
@@ -503,12 +600,16 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
+            max_timeout_retries,
         } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
             action_db,
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
+            max_timeout_retries,
             no_event_action_timeout,
             client_action_timeout,
             max_executing_timeout,
@@ -535,6 +636,170 @@ where
     /// clients eventually report a remote execution failure.
     ///
     /// Returns how many were retired.
+    /// Retires executing actions that nothing else will reach.
+    ///
+    /// The timeout check in `MatchingEngineActionStateResult::changed` runs
+    /// only while a client is waiting on the action, once per
+    /// `no_event_action_timeout`. An action whose client has gone, or whose
+    /// result the worker sent but the store did not take, stays `Executing`
+    /// with its slot's worth of fleet capacity accounted to it until
+    /// something lists it. This does, on the scheduler's own clock:
+    ///
+    /// - an action `timeout_cause` says is overdue is retired through
+    ///   `timeout_operation_id`, which re-checks under its lock;
+    /// - an action whose worker `running_on_worker` knows and reports as no
+    ///   longer running it has lost its result. It goes back to the queue
+    ///   untried once that has been so for `lost_grace`, which covers the
+    ///   moment between the store write of an assignment and the dispatch
+    ///   that follows it. `lost_since` carries the first sighting between
+    ///   sweeps and is pruned of actions no longer in that state.
+    ///
+    /// `running_on_worker` answers `None` for a worker this scheduler is not
+    /// connected to: a peer's worker, or one already gone, which the
+    /// timeout path handles. A record the listing names but cannot read is
+    /// skipped, so one bad entry does not stop the sweep.
+    pub async fn sweep_executing_actions(
+        &self,
+        running_on_worker: &(
+             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<bool>> + Send + Sync
+         ),
+        lost_since: &mut HashMap<OperationId, SystemTime>,
+        lost_grace: Duration,
+    ) -> Result<ExecutingSweepReport, Error> {
+        let now = (self.now_fn)().now();
+        let stream = self
+            .action_db
+            .get_range_of_actions(
+                SortedAwaitedActionState::Executing,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                true,
+            )
+            .await
+            .err_tip(|| "In sweep_executing_actions")?;
+        tokio::pin!(stream);
+
+        let mut report = ExecutingSweepReport::default();
+        let mut still_lost = HashMap::new();
+        while let Some(subscriber) = stream.next().await {
+            let awaited_action = match subscriber {
+                Ok(subscriber) => subscriber.borrow().await,
+                Err(err) => Err(err),
+            };
+            let awaited_action = match awaited_action {
+                Ok(awaited_action) => awaited_action,
+                Err(err) => {
+                    if !is_lost_record(&err) {
+                        return Err(err).err_tip(|| "In sweep_executing_actions");
+                    }
+                    warn!(
+                        ?err,
+                        "Executing operation listed but its record cannot be read; skipping"
+                    );
+                    record_awaited_action_orphan("executing_sweep");
+                    continue;
+                }
+            };
+            if !matches!(awaited_action.state().stage, ActionStage::Executing) {
+                continue;
+            }
+            report
+                .ages
+                .observe_since(awaited_action.state().last_transition_timestamp, now);
+            let operation_id = awaited_action.operation_id().clone();
+
+            if let Some(cause) = self.timeout_cause(&awaited_action).await {
+                match self.timeout_operation_id(&operation_id).await {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        report.retired += 1;
+                        if let Some(worker_id) = awaited_action.worker_id() {
+                            report.ended.push(SweptAttempt {
+                                operation_id: operation_id.clone(),
+                                worker_id: worker_id.clone(),
+                                reason: AttemptEndReason::Timeout,
+                                detail: format!("Operation {cause}"),
+                            });
+                        }
+                    }
+                    // A conflicting write means someone else moved it, which
+                    // is what we wanted; anything else is logged and the
+                    // sweep goes on to the rest.
+                    Err(err) if err.code == Code::Aborted => {}
+                    Err(err) => {
+                        warn!(%operation_id, ?err, "Could not time out an executing operation");
+                        report.failed += 1;
+                    }
+                }
+                continue;
+            }
+
+            let Some(worker_id) = awaited_action.worker_id() else {
+                continue;
+            };
+            // Freshly assigned: the dispatch that puts it on the worker may
+            // not have happened yet.
+            if now
+                .duration_since(awaited_action.state().last_transition_timestamp)
+                .is_ok_and(|since| since < lost_grace)
+            {
+                continue;
+            }
+            if running_on_worker(worker_id.clone(), operation_id.clone()).await == Some(false) {
+                let first_seen = *lost_since.get(&operation_id).unwrap_or(&now);
+                if now
+                    .duration_since(first_seen)
+                    .is_ok_and(|lost| lost >= lost_grace)
+                {
+                    warn!(
+                        %operation_id,
+                        ?worker_id,
+                        lost_for_s = lost_grace.as_secs(),
+                        "Executing operation is not running on its worker; its result was lost, requeuing"
+                    );
+                    // Through the error path, so the loss spends one of the
+                    // action's `max_job_retries` and a result the store keeps
+                    // refusing ends in a failure the client sees, not a loop.
+                    // This is a lost execution result, not a worker-reported
+                    // Unavailable store read that uses the store-loss budget.
+                    match self
+                        .inner_update_operation(
+                            &operation_id,
+                            Some(worker_id),
+                            None,
+                            UpdateOperationType::UpdateWithError(make_err!(
+                                Code::Internal,
+                                "{LOST_RESULT_ERROR_TIP}"
+                            )),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            record_dispatch_requeue("lost_result");
+                            report.requeued += 1;
+                            report.ended.push(SweptAttempt {
+                                operation_id: operation_id.clone(),
+                                worker_id: worker_id.clone(),
+                                reason: AttemptEndReason::LostResult,
+                                detail: String::new(),
+                            });
+                        }
+                        Err(err) if err.code == Code::Aborted => {}
+                        Err(err) => {
+                            warn!(%operation_id, ?err, "Could not requeue an operation whose result was lost");
+                            report.failed += 1;
+                            still_lost.insert(operation_id.clone(), first_seen);
+                        }
+                    }
+                } else {
+                    still_lost.insert(operation_id.clone(), first_seen);
+                }
+            }
+        }
+        *lost_since = still_lost;
+        Ok(report)
+    }
+
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
         let now = (self.now_fn)().now();
         let stream = self
@@ -630,7 +895,7 @@ where
         scheduler_id: &str,
         local: Vec<PlatformProperties>,
         ttl: Duration,
-    ) -> Result<Vec<PlatformProperties>, Error> {
+    ) -> Result<Vec<PeerScheduler>, Error> {
         self.action_db
             .exchange_fleet_capabilities(scheduler_id, local, ttl)
             .await
@@ -943,7 +1208,9 @@ where
 
     /// Let the scheduler know that an operation has timed out from
     /// the client side (ie: worker has not updated in a while).
-    async fn timeout_operation_id(&self, operation_id: &OperationId) -> Result<(), Error> {
+    /// Returns whether the operation was timed out; false when the check
+    /// under the lock finds it no longer needs to be.
+    async fn timeout_operation_id(&self, operation_id: &OperationId) -> Result<bool, Error> {
         // Ensure that only one timeout operation is running at a time.
         // Failing to do this could result in the same operation being
         // timed out multiple times at the same time.
@@ -973,7 +1240,7 @@ where
                 worker_id = ?awaited_action.worker_id(),
                 "Operation no longer needs timing out, skipping"
             );
-            return Ok(());
+            return Ok(false);
         };
 
         warn!(
@@ -988,12 +1255,14 @@ where
             Err(make_err!(Code::DeadlineExceeded, "Operation {cause}")),
         )
         .await
+        .map(|()| true)
     }
 
     async fn inner_update_operation(
         &self,
         operation_id: &OperationId,
         maybe_worker_id: Option<&WorkerId>,
+        worker_node: Option<&str>,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
         let update_type_str = match &update {
@@ -1007,7 +1276,7 @@ where
                 ActionStage::Unknown => "Stage:Unknown",
             },
             UpdateOperationType::UpdateWithError(_) => "Error",
-            UpdateOperationType::UpdateWithDisconnect => "Disconnect",
+            UpdateOperationType::UpdateWithDisconnect(_) => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
             UpdateOperationType::UpdateWithDecline(_) => "Decline",
             UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
@@ -1033,7 +1302,7 @@ where
                     retry_count,
                     delay_ms = delay.as_millis(),
                     update_type = %update_type_str,
-                    "Retrying operation update due to version conflict (with backoff)"
+                    "Retrying operation update after a version conflict or a transient store error (with backoff)"
                 );
 
                 tokio::time::sleep(delay).await;
@@ -1088,7 +1357,8 @@ where
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
                 match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
+                    UpdateOperationType::UpdateWithDisconnect(_)
+                    | UpdateOperationType::KeepAlive => {
                         // No need to error a keep-alive when it's completed, it's just
                         // unnecessary log noise.
                         return Ok(());
@@ -1102,6 +1372,14 @@ where
                         ));
                     }
                 }
+            }
+
+            // A disconnect for an operation no worker holds any more (the
+            // executing sweep requeued it) must not spend a worker loss.
+            if matches!(update, UpdateOperationType::UpdateWithDisconnect(_))
+                && awaited_action.worker_id().is_none()
+            {
+                return Ok(());
             }
 
             let mut is_retry = false;
@@ -1128,16 +1406,79 @@ where
                         warn!(state = ?awaited_action.state(), "Action already assigned");
                         return Err(make_err!(Code::Aborted, "Action already assigned"));
                     }
-                    stage.clone()
+                    // A command that ran past its timeout on a worker comes
+                    // back as a result. Once, it is queued again for another
+                    // worker: a worker whose host has gone slow times out
+                    // everything it is given, and only a second worker tells
+                    // that from an action that is slow by itself. A timeout
+                    // there, or with no budget, is final as before.
+                    if let (ActionStage::Completed(result), Some(worker_id)) =
+                        (stage, maybe_worker_id)
+                        && result
+                            .error
+                            .as_ref()
+                            .is_some_and(|err| err.code == Code::DeadlineExceeded)
+                        && awaited_action.timeouts < self.max_timeout_retries
+                    {
+                        awaited_action.timeouts += 1;
+                        awaited_action.avoid_worker(worker_id.clone());
+                        if let Some(node) = worker_node {
+                            awaited_action.avoid_node(node);
+                        }
+                        warn!(
+                            %operation_id,
+                            %worker_id,
+                            timeouts = awaited_action.timeouts,
+                            max_timeout_retries = self.max_timeout_retries,
+                            "Command timed out on the worker; queued again for another worker"
+                        );
+                        is_retry = true;
+                        ActionStage::Queued
+                    } else {
+                        stage.clone()
+                    }
                 }
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
-                    if !due_to_backpressure {
+                    // Nor a store the worker could not reach once its retries
+                    // ran out: a CAS pod being replaced is not the action's
+                    // doing. The worker marks those; a bare Unavailable is
+                    // also what this scheduler raises for a lost result, which
+                    // must keep spending max_job_retries. A store that never
+                    // comes back is bounded like a lost worker.
+                    let store_unreachable =
+                        err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP);
+                    // A result that never reached the scheduler is not the
+                    // worker's doing either: it ran the action. The retry
+                    // spends max_job_retries, as before, but may go straight
+                    // back to that worker; avoiding it would make a lone
+                    // worker wait out the fallback for its own lost result.
+                    let lost_result = err.message_string().contains(LOST_RESULT_ERROR_TIP);
+                    if store_unreachable {
+                        awaited_action.store_losses += 1;
+                    } else if !due_to_backpressure {
                         awaited_action.attempts += 1;
                     }
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if store_unreachable
+                        && awaited_action.store_losses > self.max_worker_loss_retries
+                    {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::FailedPrecondition,
+                                "The worker running this action could not reach its store {} times, more than max_worker_loss_retries ({}); the store this action's inputs live on is down, not the action. {}",
+                                awaited_action.store_losses,
+                                self.max_worker_loss_retries,
+                                format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                            ).merge(err.clone())),
+                            ..ActionResult::default()
+                        })
+                    } else if awaited_action.attempts > self.max_job_retries {
                         // FailedPrecondition, not Internal: Bazel resubmits an
                         // Internal execute failure as a fresh operation with a
                         // fresh attempt counter, so the cap never reached the
@@ -1158,11 +1499,23 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        if let Some(worker_id) = maybe_worker_id
+                            && !store_unreachable
+                            && !due_to_backpressure
+                            && !lost_result
+                        {
+                            // The action failed on this worker; a retry
+                            // prefers another while one can take it.
+                            awaited_action.avoid_worker(worker_id.clone());
+                            if let Some(node) = worker_node {
+                                awaited_action.avoid_node(node);
+                            }
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => {
+                UpdateOperationType::UpdateWithDisconnect(loss) => {
                     // A lost worker (OOM-killed as a whole, pod evicted,
                     // network drop, timed out) is usually not this action's
                     // doing, so it has its own budget rather than spending
@@ -1190,6 +1543,32 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        // A loss that may have been this action's memory
+                        // (RFC-0018): escalate when the worker saw it over
+                        // its reservation, or when this is not the first
+                        // worker it took down, while the escalation budget
+                        // lasts. Past it, the loss budget ends the action.
+                        if let Some(loss) = loss
+                            && (loss.sampled_over
+                                || (self.escalate_after_worker_losses > 0
+                                    && awaited_action.worker_losses
+                                        >= self.escalate_after_worker_losses))
+                            && (self.max_escalations == 0
+                                || awaited_action.escalations < self.max_escalations)
+                        {
+                            awaited_action.escalations += 1;
+                            warn!(
+                                %operation_id,
+                                ?maybe_worker_id,
+                                worker_losses = awaited_action.worker_losses,
+                                sampled_over = loss.sampled_over,
+                                property = %loss.escalation.property,
+                                escalated = loss.escalation.value,
+                                "Worker lost under this action; requeuing with a larger reservation"
+                            );
+                            raise_reservation(&mut awaited_action, &loss.escalation);
+                            record_dispatch_requeue("loss_escalation");
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }
@@ -1228,16 +1607,7 @@ where
                         // dispatch carries the raised reservation and the
                         // worker holds it to that. The last step also asks
                         // for the worker's whole CPU, so it runs alone.
-                        let mut action_info = (**awaited_action.action_info()).clone();
-                        action_info
-                            .platform_properties
-                            .insert(escalation.property.clone(), escalation.value.to_string());
-                        if let Some((cpu_property, cpu_value)) = &escalation.cpu {
-                            action_info
-                                .platform_properties
-                                .insert(cpu_property.clone(), cpu_value.to_string());
-                        }
-                        awaited_action.set_action_info(Arc::new(action_info));
+                        raise_reservation(&mut awaited_action, escalation);
                         is_retry = true;
                         ActionStage::Queued
                     }
@@ -1282,15 +1652,22 @@ where
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::update_operation");
             if let Err(err) = update_action_result {
-                // We use Aborted to signal that the action was not
-                // updated due to the data being set was not the latest
-                // but can be retried.
-                if err.code == Code::Aborted {
+                // Aborted says the record moved under us: re-read and apply
+                // again. A store that is unreachable, slow, full or answering
+                // with a server error is transient in the same way, and the
+                // cost of not retrying is not symmetric: the worker has
+                // already reported this result and will not report it again,
+                // so a dropped write parks the action until the executing
+                // ceiling (found by the simulation harness, 2026-11-04). The
+                // same bounded budget and backoff cover both; a store that
+                // stays down fails the update as before.
+                if is_transient_store_error(err.code) {
                     debug!(
                         %operation_id,
                         retry_count,
                         update_type = %update_type_str,
-                        "Version conflict (Aborted), will retry"
+                        code = ?err.code,
+                        "Store write did not land (transient), will retry"
                     );
                     last_err = Some(err);
                     continue;
@@ -1583,7 +1960,18 @@ where
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
-        self.inner_update_operation(operation_id, Some(worker_id), update)
+        self.inner_update_operation(operation_id, Some(worker_id), None, update)
+            .await
+    }
+
+    async fn update_operation_on_node(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        worker_node: Option<&str>,
+        update: UpdateOperationType,
+    ) -> Result<(), Error> {
+        self.inner_update_operation(operation_id, Some(worker_id), worker_node, update)
             .await
     }
 
@@ -1651,7 +2039,7 @@ where
             ),
             Err(err) => (None, UpdateOperationType::UpdateWithError(err)),
         };
-        self.inner_update_operation(operation_id, maybe_worker_id, update)
+        self.inner_update_operation(operation_id, maybe_worker_id, None, update)
             .await
     }
 

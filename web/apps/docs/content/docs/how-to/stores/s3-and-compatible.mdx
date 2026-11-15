@@ -29,6 +29,12 @@ They differ mainly in how the endpoint and credentials are derived:
 [OCI Object Storage](/how-to/stores/oci-object-storage) use the same store type
 with their own `provider` values and have their own pages.
 
+In development builds, S3, R2, and ONTAP validate small uploads before issuing a PUT and multipart
+uploads before completion. A small upload is buffered through EOF before its
+request starts; multipart uploads continue to stream parts. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## Amazon S3 [#amazon-s3]
 
 ```json5

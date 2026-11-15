@@ -20,6 +20,12 @@ Azure Blob is one `provider` value of the same cloud object store used by
 [OCI Object Storage](/how-to/stores/oci-object-storage). The composition around
 it is identical; only the provider block changes.
 
+In development builds, Azure validates small uploads before issuing a PUT and multipart uploads
+before committing the block list. Failed streams cannot publish an incomplete
+object; previously staged blocks may remain uncommitted. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## The recipe [#the-recipe]
 
 ```json5

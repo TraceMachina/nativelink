@@ -13,15 +13,32 @@ export function ArchitectureDiagram() {
         role="img"
         aria-labelledby="architecture-diagram-title"
       >
-        <title id="architecture-diagram-title">NativeLink architecture diagram</title>
+        <title id="architecture-diagram-title">
+          NativeLink architecture diagram
+        </title>
         <defs>
           <linearGradient id="arc-grad" x1="0" y1="0" x2="800" y2="0">
-            <stop offset="0%" stopColor="rgb(var(--nl-color-brand))" stopOpacity="0.0" />
-            <stop offset="50%" stopColor="rgb(var(--nl-color-brand))" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="rgb(var(--nl-color-brand))" stopOpacity="0.0" />
+            <stop
+              offset="0%"
+              stopColor="rgb(var(--nl-color-brand))"
+              stopOpacity="0.0"
+            />
+            <stop
+              offset="50%"
+              stopColor="rgb(var(--nl-color-brand))"
+              stopOpacity="0.8"
+            />
+            <stop
+              offset="100%"
+              stopColor="rgb(var(--nl-color-brand))"
+              stopOpacity="0.0"
+            />
           </linearGradient>
           <linearGradient id="node-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgb(var(--nl-color-surface-elevated))" />
+            <stop
+              offset="0%"
+              stopColor="rgb(var(--nl-color-surface-elevated))"
+            />
             <stop offset="100%" stopColor="rgb(var(--nl-color-surface))" />
           </linearGradient>
         </defs>
@@ -54,7 +71,11 @@ export function ArchitectureDiagram() {
                 delay: i * 0.4,
               }}
             >
-              <animateMotion dur={`${2 + i * 0.2}s`} repeatCount="indefinite" path={path.d} />
+              <animateMotion
+                dur={`${2 + i * 0.2}s`}
+                repeatCount="indefinite"
+                path={path.d}
+              />
             </motion.circle>
           </g>
         ))}
@@ -106,8 +127,18 @@ export function ArchitectureDiagram() {
 
         {/* Middle layer — NativeLink (3 nodes) */}
         {[
-          { y: 40, label: "SCHEDULER", subA: "Action dispatch", subB: "Worker assign" },
-          { y: 140, label: "CAS", subA: "Content-addressed", subB: "Dedup & cache" },
+          {
+            y: 40,
+            label: "SCHEDULER",
+            subA: "Action dispatch",
+            subB: "Worker assign",
+          },
+          {
+            y: 140,
+            label: "CAS",
+            subA: "Content-addressed",
+            subB: "Dedup & cache",
+          },
           { y: 240, label: "AC", subA: "Action results", subB: "Provenance" },
         ].map((node) => (
           <g key={node.label}>

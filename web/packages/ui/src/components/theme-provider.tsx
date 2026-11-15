@@ -26,7 +26,8 @@ function readInitialTheme(): Theme {
     const stored = localStorage.getItem("nl-theme");
     if (stored === "light" || stored === "dark") return stored;
   } catch {}
-  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) return "dark";
+  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches)
+    return "dark";
   return "light";
 }
 
@@ -56,7 +57,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     [theme, setTheme, toggle, mounted],
   );
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  return (
+    <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+  );
 }
 
 export function useTheme(): ThemeContextValue {

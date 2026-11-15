@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{Error, ResultExt, error_if};
+use nativelink_error::{Code, Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -78,7 +78,9 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
         Box::pin(async move {
             let deleted_key = self.existence_cache.remove(&digest).await;
             if !deleted_key {
-                info!(?store_key, "Failed to delete key from cache on callback");
+                // The subscription delivers every key event on the server,
+                // most of them for keys this cache never held.
+                debug!(?store_key, "Key removed below the cache was not cached");
             }
         })
     }
@@ -234,23 +236,16 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut reader: DropCloserReadHalf,
+        reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let digest = key.into_digest();
-        let mut exists = [None];
-        self.inner_has_with_results(&[digest], &mut exists)
-            .await
-            .err_tip(|| "In ExistenceCacheStore::update")?;
-        if exists[0].is_some() {
-            // We need to drain the reader to avoid the writer complaining that we dropped
-            // the connection prematurely.
-            let size = reader
-                .drain()
-                .await
-                .err_tip(|| "In ExistenceCacheStore::update")?;
-            return Ok(size);
-        }
+        // Every upload reaches the inner store, whatever this cache believes.
+        // A client only uploads what it was told is missing, so the write is
+        // never wasted in the normal flow; and the one time the cache is
+        // wrong (the tier under it lost the blob and the remove callback did
+        // not arrive), discarding the upload is what turns a stale answer
+        // into a blob nothing holds. The entry is refreshed on success.
         {
             let mut locked_callbacks = self.pause_remove_callbacks.lock();
             if locked_callbacks.is_none() {
@@ -291,11 +286,27 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistenceItem(digest.size_bytes()))
+                    .await;
+            }
+            // The store below no longer holds a blob we may be vouching
+            // for (deleted from the object store, say, which sends no
+            // removal event). Stop vouching now rather than at the TTL:
+            // a client told the blob is present skips uploading it, and
+            // its retry would ask us again and be told the same.
+            Err(err) if err.code == Code::NotFound => {
+                if self.existence_cache.remove(&digest).await {
+                    debug!(
+                        ?digest,
+                        "Read found no blob; dropped it from the existence cache"
+                    );
+                }
+            }
+            Err(_) => {}
         }
         result
     }

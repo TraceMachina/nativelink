@@ -36,11 +36,20 @@ export default async function OpenGraphImage() {
           opacity: 0.15,
           backgroundImage: "radial-gradient(#9C7CFF 1px, transparent 1px)",
           backgroundSize: "32px 32px",
-          maskImage: "radial-gradient(ellipse at top, black 30%, transparent 70%)",
+          maskImage:
+            "radial-gradient(ellipse at top, black 30%, transparent 70%)",
         }}
       />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 16, position: "relative", zIndex: 1 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          position: "relative",
+          zIndex: 1,
+        }}
+      >
         <div
           style={{
             display: "flex",
@@ -53,14 +62,27 @@ export default async function OpenGraphImage() {
             boxShadow: "0 12px 32px -8px rgba(156,124,255,0.55)",
           }}
         >
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg
+            width="40"
+            height="40"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
             <path
               d="M5.6 6.5 H8.3 V13.8 L15.2 6.5 H18.4 V17.5 H15.7 V10.2 L8.8 17.5 H5.6 Z"
               fill="#0A090E"
             />
           </svg>
         </div>
-        <div style={{ fontSize: 32, fontWeight: 600, letterSpacing: "-0.02em", color: "#F5F4F8" }}>
+        <div
+          style={{
+            fontSize: 32,
+            fontWeight: 600,
+            letterSpacing: "-0.02em",
+            color: "#F5F4F8",
+          }}
+        >
           nativelink
         </div>
         <div
@@ -77,9 +99,20 @@ export default async function OpenGraphImage() {
         </div>
       </div>
 
-      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 24, position: "relative", zIndex: 1 }}>
+      <div
+        style={{
+          marginTop: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: 24,
+          position: "relative",
+          zIndex: 1,
+        }}
+      >
         <div
           style={{
+            display: "flex",
+            flexDirection: "column",
             fontSize: 78,
             fontWeight: 600,
             letterSpacing: "-0.04em",
@@ -87,7 +120,7 @@ export default async function OpenGraphImage() {
             maxWidth: 1000,
           }}
         >
-          Documentation for{" "}
+          <span>Documentation for</span>
           <span
             style={{
               background: "linear-gradient(90deg, #9C7CFF 0%, #BCA2FF 100%)",
@@ -100,7 +133,16 @@ export default async function OpenGraphImage() {
           </span>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 22, color: "#9496A2", letterSpacing: "0.02em" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            fontSize: 22,
+            color: "#9496A2",
+            letterSpacing: "0.02em",
+          }}
+        >
           <span>Setup · Configuration · Architecture · Reference</span>
         </div>
       </div>

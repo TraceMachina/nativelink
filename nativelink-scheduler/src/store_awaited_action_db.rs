@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ use tracing::{error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
-    SortedAwaitedAction, SortedAwaitedActionState,
+    PeerScheduler, SortedAwaitedAction, SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
@@ -1254,7 +1254,7 @@ where
         scheduler_id: &str,
         local: Vec<PlatformProperties>,
         ttl: Duration,
-    ) -> Result<Vec<PlatformProperties>, Error> {
+    ) -> Result<Vec<PeerScheduler>, Error> {
         self.store
             .update_data(
                 UpdateFleetCapabilities(FleetCapabilities {
@@ -1276,7 +1276,10 @@ where
         stream
             .try_filter(|record| futures::future::ready(record.scheduler_id != scheduler_id))
             .try_fold(Vec::new(), |mut peers, record| async move {
-                peers.extend(record.workers);
+                peers.push(PeerScheduler {
+                    scheduler_id: record.scheduler_id,
+                    workers: record.workers,
+                });
                 Ok(peers)
             })
             .await

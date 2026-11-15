@@ -2,7 +2,8 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "NativeLink — Remote build execution & caching, engineered for scale";
+export const alt =
+  "NativeLink — Remote build execution & caching, engineered for scale";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -39,7 +40,8 @@ export default async function OpenGraphImage() {
           opacity: 0.15,
           backgroundImage: "radial-gradient(#9C7CFF 1px, transparent 1px)",
           backgroundSize: "32px 32px",
-          maskImage: "radial-gradient(ellipse at top, black 30%, transparent 70%)",
+          maskImage:
+            "radial-gradient(ellipse at top, black 30%, transparent 70%)",
         }}
       />
 
@@ -65,7 +67,13 @@ export default async function OpenGraphImage() {
             boxShadow: "0 12px 32px -8px rgba(156,124,255,0.55)",
           }}
         >
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg
+            width="40"
+            height="40"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
             <path
               d="M5.6 6.5 H8.3 V13.8 L15.2 6.5 H18.4 V17.5 H15.7 V10.2 L8.8 17.5 H5.6 Z"
               fill="#0A090E"
@@ -97,6 +105,8 @@ export default async function OpenGraphImage() {
       >
         <div
           style={{
+            display: "flex",
+            flexDirection: "column",
             fontSize: 86,
             fontWeight: 600,
             letterSpacing: "-0.04em",
@@ -104,8 +114,7 @@ export default async function OpenGraphImage() {
             maxWidth: 1000,
           }}
         >
-          Builds that finish
-          <br />
+          <span>Builds that finish</span>
           <span
             style={{
               background: "linear-gradient(90deg, #9C7CFF 0%, #BCA2FF 100%)",
@@ -129,7 +138,14 @@ export default async function OpenGraphImage() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 8, height: 8, borderRadius: 999, background: "#58DCB2" }} />
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: "#58DCB2",
+              }}
+            />
             <span>10B+ build requests / month</span>
           </div>
           <span style={{ color: "#3C3A4E" }}>·</span>

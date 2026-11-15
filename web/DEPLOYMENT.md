@@ -18,7 +18,7 @@ rewrite. This page walks through the setup end-to-end.
 ```
 
 Both projects build from the same monorepo. Vercel auto-detects the
-Turborepo + Bun setup; the only project-level setting that matters is
+Turborepo + pnpm setup; the only project-level setting that matters is
 **Root Directory**.
 
 ## One-time setup
@@ -32,9 +32,9 @@ first.
 2. **Root Directory**: `web/apps/docs`.
 3. **Framework Preset**: Next.js (auto-detected).
 4. **Build Command**: leave as default. Vercel runs the project's `build`
-   script in the workspace root with `bun install` and `bun --filter
-   @nativelink/docs build` automatically.
-5. **Install Command**: `bun install` (auto-detected from `bun.lock`).
+   script in the workspace root with `pnpm install` and `pnpm run --filter
+@nativelink/docs build` automatically.
+5. **Install Command**: `pnpm install` (auto-detected from `pnpm-lock.yaml`).
 6. **Environment Variables**: none required.
 7. Deploy. Note the assigned URL — e.g. `nativelink-docs.vercel.app`.
 
@@ -73,7 +73,7 @@ docs server in dev:
 
 ```bash
 # from web/
-bun dev                          # both apps via Turbo
+pnpm dev                          # both apps via Turbo
 # → http://localhost:3000/docs  (proxied to localhost:3001/docs)
 ```
 
@@ -82,11 +82,13 @@ you run the docs server elsewhere.
 
 ## Environment variables
 
-| Var               | Where         | Required | Default                  | Notes                                              |
-| ----------------- | ------------- | :------: | ------------------------ | -------------------------------------------------- |
-| `DOCS_URL`        | apps/web prod | ✓        | —                        | Full URL of the docs deployment, no trailing slash |
-| `DOCS_DEV_URL`    | apps/web dev  |          | `http://localhost:3001`  | Override the local docs target                     |
-| `GITHUB_TOKEN`    | apps/web      |          | unauthenticated          | Lifts the GitHub API rate limit on `/community`    |
+| Var                 | Where         | Required | Default                 | Notes                                                                                                                                                                                                                                                       |
+| ------------------- | ------------- | :------: | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCS_URL`          | apps/web prod |    ✓     | —                       | Full URL of the docs deployment, no trailing slash                                                                                                                                                                                                          |
+| `DOCS_DEV_URL`      | apps/web dev  |          | `http://localhost:3001` | Override the local docs target                                                                                                                                                                                                                              |
+| `GITHUB_TOKEN`      | apps/web      |          | unauthenticated         | Lifts the GitHub API rate limit on `/community`                                                                                                                                                                                                             |
+| `RESEND_API_KEY`    | apps/web      | for book | —                       | Powers `/api/mail` on `/resources/oreilly-bazel-book`: stores the reader as a Resend contact and notifies hello@nativelink.com. Needs contacts and sending access, and `nativelink.io` verified as a sending domain (mail goes out as system@nativelink.io) |
+| `RESEND_SEGMENT_ID` | apps/web      |          | none                    | Files book-download contacts under this Resend segment                                                                                                                                                                                                      |
 
 ## Preview deployments
 

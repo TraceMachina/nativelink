@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ mod tests {
     use std::ffi::OsString;
     use std::io::{Cursor, Write};
     #[cfg(target_family = "unix")]
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,6 +46,8 @@ mod tests {
     use nativelink_config::stores::{
         EvictionPolicy, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
     };
+    #[cfg(target_family = "unix")]
+    use nativelink_error::make_err;
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
     #[cfg(target_family = "unix")]
@@ -60,7 +62,7 @@ mod tests {
         digest_function::Value as ProtoDigestFunction, platform::Property,
     };
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-        HistoricalExecuteResponse, ResourceOutcome, StartExecute,
+        ActionResourceUsage, HistoricalExecuteResponse, ResourceOutcome, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
     #[cfg(target_family = "unix")]
@@ -71,6 +73,8 @@ mod tests {
     use nativelink_store::memory_store::MemoryStore;
     #[cfg(target_family = "unix")]
     use nativelink_util::action_messages::DirectoryInfo;
+    #[cfg(target_family = "unix")]
+    use nativelink_util::action_messages::STORE_UNREACHABLE_ERROR_TIP;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
@@ -88,21 +92,23 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
+    #[cfg(target_family = "unix")]
+    use nativelink_worker::running_actions_manager::download_to_directory_bounded;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
         ResourceEnforcement, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, classify_outcome,
-        download_to_directory, log_excerpt, parse_kb_field,
+        download_to_directory, log_excerpt, parse_kb_field, with_input_fetch_stats, with_phases,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    use tokio::sync::oneshot;
     #[cfg(target_family = "unix")]
     use tokio::sync::watch;
+    use tokio::sync::{Semaphore, oneshot};
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -149,8 +155,24 @@ mod tests {
         ),
         Error,
     > {
+        setup_stores_at(make_temp_path("content_path"), eviction_policy).await
+    }
+
+    /// Same, with the fast store's content directory chosen by the test.
+    async fn setup_stores_at(
+        content_path: String,
+        eviction_policy: Option<EvictionPolicy>,
+    ) -> Result<
+        (
+            Arc<FilesystemStore>,
+            Arc<MemoryStore>,
+            Arc<FastSlowStore>,
+            Arc<MemoryStore>,
+        ),
+        Error,
+    > {
         let fast_config = FilesystemSpec {
-            content_path: make_temp_path("content_path"),
+            content_path,
             temp_path: make_temp_path("temp_path"),
             eviction_policy,
             ..Default::default()
@@ -166,6 +188,8 @@ mod tests {
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -185,6 +209,276 @@ mod tests {
                 result
             })
             .await
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn readonly_inputs_reuse_subtrees_and_fall_back_for_outputs() -> Result<(), Error> {
+        if !namespace_utils::namespaces_supported(true, true) {
+            assert!(
+                env::var_os("NATIVELINK_REQUIRE_MOUNT_TESTS").is_none(),
+                "mount namespaces required by NATIVELINK_REQUIRE_MOUNT_TESTS"
+            );
+            eprintln!("SKIP: mount namespaces unavailable");
+            return Ok(());
+        }
+        let (_fast, _slow, cas, _ac) = setup_stores().await?;
+        let root = make_temp_path("readonly_actions");
+        fs::create_dir_all(&root).await?;
+        let cache = Arc::new(
+            DirectoryCache::new(
+                DirectoryCacheConfig {
+                    cache_root: PathBuf::from(&root).join("cache"),
+                    ..Default::default()
+                },
+                cas.clone(),
+            )
+            .await?,
+        );
+        let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_action_directory: root.clone(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: cas.clone(),
+            ac_store: None,
+            historical_store: Store::new(cas.clone()),
+            upload_action_result_config: &UploadActionResultConfig {
+                upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::from_secs(30),
+            max_upload_timeout: Duration::from_secs(30),
+            max_download_timeout: Duration::from_secs(30),
+            max_cleanup_wait: Duration::from_secs(30),
+            max_cleanup_backoff: Duration::from_millis(10),
+            timeout_handled_externally: false,
+            active_input_leases: true,
+            readonly_input_mounts: vec!["sdk".into()],
+            directory_cache: Some(cache.clone()),
+            // The private /tmp is the default with a mount namespace; with
+            // the test root under /tmp it also hides the cache sources.
+            use_namespaces:
+                nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                    isolate_tmp: true,
+                },
+        })?);
+        let tool = Bytes::from_static(b"#!/bin/sh\nif [ $# -gt 0 ]; then printf sdk-content > \"$1\"; else printf sdk-content; fi");
+        let tool_digest = compute_buf_digest(&tool, &mut DigestHasherFunc::Sha256.hasher());
+        cas.as_ref().update_oneshot(tool_digest, tool).await?;
+        let sdk_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "tool".into(),
+                    digest: Some(tool_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                }],
+                symlinks: vec![
+                    SymlinkNode {
+                        name: "alias".into(),
+                        target: "tool".into(),
+                        ..Default::default()
+                    },
+                    SymlinkNode {
+                        name: "escape".into(),
+                        target: "/bin/sh".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let empty_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        for i in 0..8 {
+            let sdk_digest = if i == 7 {
+                // Force a new SDK entry to fail construction while CAS remains usable.
+                let directory = Directory {
+                    files: vec![FileNode {
+                        name: "tool".into(),
+                        digest: Some(tool_digest.into()),
+                        is_executable: true,
+                        ..Default::default()
+                    }],
+                    symlinks: vec![SymlinkNode {
+                        name: "alias".into(),
+                        target: "./tool".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                fs::remove_dir_all(PathBuf::from(&root).join("cache")).await?;
+                tokio::fs::write(PathBuf::from(&root).join("cache"), b"blocked").await?;
+                serialize_and_upload_message(
+                    &directory,
+                    cas.as_pin(),
+                    &mut DigestHasherFunc::Sha256.hasher(),
+                )
+                .await?
+            } else {
+                sdk_digest
+            };
+            // Change an unrelated input path, keeping the SDK digest stable.
+            let input_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![
+                        DirectoryNode {
+                            name: format!("other{i}"),
+                            digest: Some(empty_digest.into()),
+                        },
+                        DirectoryNode {
+                            name: "sdk".into(),
+                            digest: Some(sdk_digest.into()),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let output_path = if i == 2 { "sdk/result" } else { "result" };
+            let script = if i == 2 {
+                "./sdk/alias > sdk/result"
+            } else if i == 7 {
+                "./sdk/alias > result"
+            } else {
+                "./sdk/alias > result && ! touch sdk/forbidden"
+            };
+            let command_digest = serialize_and_upload_message(
+                &Command {
+                    arguments: if (4..=6).contains(&i) {
+                        // Execute the mounted tool directly, including from a nested cwd.
+                        let program = match i {
+                            5 => "../sdk/alias",
+                            6 => "./sdk/escape",
+                            _ => "./sdk/alias",
+                        };
+                        vec![program.into(), "result".into()]
+                    } else {
+                        vec!["/bin/sh".into(), "-c".into(), script.into()]
+                    },
+                    working_directory: if i == 5 {
+                        format!("other{i}")
+                    } else {
+                        String::new()
+                    },
+                    environment_variables: vec![EnvironmentVariable {
+                        name: "PATH".into(),
+                        value: env::var("PATH").unwrap(),
+                    }],
+                    output_paths: vec![output_path.into()],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action_digest = serialize_and_upload_message(
+                &Action {
+                    command_digest: Some(command_digest.into()),
+                    input_root_digest: Some(input_digest.into()),
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = manager
+                .create_and_add_action(
+                    "test-worker".into(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: OperationId::default().to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .prepare_action()
+                .await?;
+            if i == 7 {
+                assert!(
+                    PathBuf::from(action.get_work_directory())
+                        .join("sdk/tool")
+                        .is_file()
+                );
+                assert_eq!(cache.stats().await.in_use_entries, 0);
+            }
+            if i < 2 {
+                assert!(
+                    fs::read_dir(format!("{}/sdk", action.get_work_directory()))
+                        .await?
+                        .as_mut()
+                        .next_entry()
+                        .await?
+                        .is_none(),
+                    "parent workspace must contain only a mount point"
+                );
+                assert_eq!(
+                    cache.stats().await.entries,
+                    1,
+                    "changed roots must reuse the SDK entry"
+                );
+                assert_eq!(cache.stats().await.in_use_entries, 1);
+            }
+            if i == 3 {
+                // An abandoned prepared action must keep its source pinned
+                // until background cleanup removes the workspace, then release it.
+                let work_directory = action.get_work_directory().clone();
+                assert_eq!(cache.stats().await.in_use_entries, 1);
+                drop(action);
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while cache.stats().await.in_use_entries != 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await?;
+                assert!(!PathBuf::from(&work_directory).exists());
+                continue;
+            }
+            if i == 6 {
+                let error =
+                    action.clone().execute().await.expect_err(
+                        "an executable symlink escaping the mounted tree must be rejected",
+                    );
+                assert_eq!(error.code, Code::InvalidArgument);
+                action.cleanup().await?;
+                continue;
+            }
+            let result = action
+                .clone()
+                .execute()
+                .await?
+                .upload_results()
+                .await?
+                .get_finished_result()
+                .await?;
+            assert_eq!(result.exit_code, 0);
+            assert_eq!(result.output_files.len(), 1);
+            let output = cas
+                .as_ref()
+                .get_part_unchunked(result.output_files[0].digest, 0, None)
+                .await?;
+            assert_eq!(output.as_ref(), b"sdk-content");
+            action.cleanup().await?;
+            assert_eq!(
+                cache.stats().await.in_use_entries,
+                0,
+                "cleanup must release the tree pin"
+            );
+        }
+        fs::remove_dir_all(root).await?;
+        Ok(())
     }
 
     const NOW_TIME: u64 = 10000;
@@ -304,6 +598,94 @@ mod tests {
         Ok(())
     }
 
+    // The first fetch of a tree pulls every file from the CAS; a second one
+    // finds them all in the worker's local store. Executable files count too.
+    #[nativelink_test]
+    async fn download_to_directory_counts_fetched_and_cached_input_bytes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let plain = DigestInfo::new([12u8; 32], 10);
+        let exec = DigestInfo::new([13u8; 32], 7);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain, "0123456789".into())
+            .await?;
+        slow_store
+            .as_ref()
+            .update_oneshot(exec, "#!/bin/".into())
+            .await?;
+        let root = DigestInfo::new([11u8; 32], 32);
+        let directory = Directory {
+            files: vec![
+                FileNode {
+                    name: "plain.txt".to_string(),
+                    digest: Some(plain.into()),
+                    is_executable: false,
+                    node_properties: None,
+                },
+                FileNode {
+                    name: "tool.sh".to_string(),
+                    digest: Some(exec.into()),
+                    is_executable: true,
+                    node_properties: None,
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root, directory.encode_to_vec().into())
+            .await?;
+
+        for (round, expected_cached) in [(0, 0u64), (1, 17)] {
+            let dir = make_temp_path(&format!("stats_dir_{round}"));
+            fs::create_dir_all(&dir).await?;
+            let (result, stats) = with_input_fetch_stats(download_to_directory(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root,
+                &dir,
+            ))
+            .await;
+            result?;
+            assert_eq!(stats.bytes(), (17, expected_cached), "round {round}");
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn with_phases_reads_the_result_metadata() -> Result<(), Box<dyn core::error::Error>> {
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 + secs);
+        let result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Path("out".to_string()),
+                digest: DigestInfo::new([1u8; 32], 300),
+                is_executable: false,
+            }],
+            stdout_digest: DigestInfo::new([2u8; 32], 20),
+            stderr_digest: DigestInfo::new([3u8; 32], 5),
+            execution_metadata: ExecutionMetadata {
+                input_fetch_start_timestamp: at(0),
+                input_fetch_completed_timestamp: at(2),
+                output_upload_start_timestamp: at(10),
+                output_upload_completed_timestamp: at(13),
+                ..ActionResult::default().execution_metadata
+            },
+            ..ActionResult::default()
+        };
+        let mut usage = ActionResourceUsage::default();
+        with_phases(&mut usage, &result);
+        assert_eq!(usage.input_fetch_ms, 2_000);
+        assert_eq!(usage.output_upload_ms, 3_000);
+        assert_eq!(usage.output_bytes, 325);
+
+        // A phase that never started reads as zero, not as decades.
+        let mut unset = ActionResourceUsage::default();
+        with_phases(&mut unset, &ActionResult::default());
+        assert_eq!((unset.input_fetch_ms, unset.output_upload_ms), (0, 0));
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn active_action_input_lease_survives_fast_store_pressure()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -383,6 +765,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: true,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: Some(directory_cache),
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -544,6 +928,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: Some(directory_cache),
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -685,6 +1071,218 @@ mod tests {
                 .err_tip(|| "On folder2_metadata metadata")?;
             assert_eq!(folder2_metadata.is_dir(), true);
         }
+        Ok(())
+    }
+
+    /// Uploads a one-level input tree and stages it into a fresh directory.
+    async fn stage_tree(
+        slow_store: &Arc<MemoryStore>,
+        cas_store: &Arc<FastSlowStore>,
+        fast_store: &Arc<FilesystemStore>,
+        files: Vec<FileNode>,
+    ) -> Result<String, Error> {
+        let root_digest = serialize_and_upload_message(
+            &Directory {
+                files,
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+        )
+        .await?;
+        Ok(download_dir)
+    }
+
+    /// Every source of a tree is resolved before the batch links any of them,
+    /// and a fast store at its ceiling evicts between the two: here the
+    /// executable's fetch evicts the plain blob, whose resolved path is then
+    /// gone when the batch reaches it. The link is made again from a fresh
+    /// fetch instead of failing the action.
+    #[nativelink_test]
+    async fn download_to_directory_relinks_plain_input_evicted_during_staging()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const PLAIN_CONTENT: &str = "plain input";
+        const EXEC_CONTENT: &str = "#!/bin/sh\nexit 0\n";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let plain_digest = DigestInfo::new([31u8; 32], PLAIN_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain_digest, PLAIN_CONTENT.into())
+            .await?;
+        let exec_digest = DigestInfo::new([32u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "plain.txt".to_string(),
+                    digest: Some(plain_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let plain = fs::read(format!("{download_dir}/plain.txt")).await?;
+        assert_eq!(from_utf8(&plain)?, PLAIN_CONTENT);
+        let tool_path = format!("{download_dir}/tool");
+        let tool = fs::read(&tool_path).await?;
+        assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
+        assert_ne!(
+            fs::metadata(&tool_path).await?.mode() & 0o111,
+            0,
+            "the executable must keep its bit after staging"
+        );
+        Ok(())
+    }
+
+    /// An executable is resolved to its variant before the batch, and a file
+    /// that needs a private copy is fetched after it: in a store that holds one
+    /// blob that fetch evicts the executable, whose variant the eviction
+    /// deletes before the batch can link it. The variant is built again from a
+    /// fresh fetch and linked.
+    #[nativelink_test]
+    async fn download_to_directory_relinks_executable_input_evicted_during_staging()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const EXEC_CONTENT: &str = "#!/bin/sh\necho tool\n";
+        const STAMPED_CONTENT: &str = "stamped";
+        const STAMPED_MODE: u32 = 0o640;
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let exec_digest = DigestInfo::new([33u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        let stamped_digest = DigestInfo::new([34u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    node_properties: Some(NodeProperties {
+                        unix_mode: Some(STAMPED_MODE),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        let tool = fs::read(&tool_path).await?;
+        assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
+        assert_ne!(
+            fs::metadata(&tool_path).await?.mode() & 0o111,
+            0,
+            "the executable must keep its bit after staging"
+        );
+        let stamped_path = format!("{download_dir}/stamped.txt");
+        let stamped = fs::read(&stamped_path).await?;
+        assert_eq!(from_utf8(&stamped)?, STAMPED_CONTENT);
+        #[cfg(target_family = "unix")]
+        assert_eq!(
+            fs::metadata(&stamped_path).await?.mode() & 0o777,
+            STAMPED_MODE
+        );
+        Ok(())
+    }
+
+    /// An executable variant whose blob is gone from the index is a miss, so
+    /// staging fetches the blob again: the file is linked, and the blob is
+    /// indexed so its next eviction takes the variant with it.
+    #[nativelink_test]
+    async fn download_to_directory_reindexes_an_orphaned_executable_variant()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const EXEC_CONTENT: &str = "#!/bin/sh\necho orphan\n";
+
+        let content_path = make_temp_path("content_path");
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_at(content_path.clone(), None).await?;
+        let exec_digest = DigestInfo::new([35u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        // Its variant on disk with nothing in the fast store's index.
+        let variant_dir = format!("{content_path}.exec/d2");
+        fs::create_dir_all(&variant_dir).await?;
+        let variant_path = format!("{variant_dir}/{exec_digest}");
+        std::fs::write(&variant_path, EXEC_CONTENT)?;
+        #[cfg(target_family = "unix")]
+        std::fs::set_permissions(&variant_path, std::fs::Permissions::from_mode(0o555))?;
+        assert!(fast_store.has(exec_digest).await?.is_none());
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![FileNode {
+                name: "tool".to_string(),
+                digest: Some(exec_digest.into()),
+                is_executable: true,
+                ..Default::default()
+            }],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        assert_eq!(from_utf8(&fs::read(&tool_path).await?)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
+        assert_ne!(fs::metadata(&tool_path).await?.mode() & 0o111, 0);
+        assert!(
+            fast_store.has(exec_digest).await?.is_some(),
+            "the blob behind an orphaned variant must be indexed again"
+        );
         Ok(())
     }
 
@@ -1132,6 +1730,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1262,6 +1862,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1394,6 +1996,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1581,6 +2185,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1770,6 +2376,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2028,6 +2636,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2184,6 +2794,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2331,6 +2943,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2473,6 +3087,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2677,6 +3293,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -2700,6 +3317,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2849,6 +3468,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -2889,6 +3509,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3002,6 +3624,8 @@ exit 0
             memory_property_name: "memory_kb".to_string(),
             memory_headroom_percent: 20,
             disk_headroom_percent: 20,
+            memory_pressure_kill_percent: 0,
+            memory_pressure_kill_after_s: 30,
         };
         assert!(
             ResourceEnforcement::from_config(&config(
@@ -3066,6 +3690,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3152,6 +3778,7 @@ exit 0
                     disk_property_name: Some("disk_kb".to_string()),
                     disk_soft: false,
                     disk_headroom_percent: 20,
+                    pressure_kill: None,
                 }),
                 ..Default::default()
             },
@@ -3246,6 +3873,7 @@ exit 0
                 disk_property_name: Some("disk_kb".to_string()),
                 disk_soft: false,
                 disk_headroom_percent: 20,
+                pressure_kill: None,
             }),
             None,
         ] {
@@ -3299,6 +3927,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -3316,6 +3945,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3385,6 +4016,47 @@ exit 0
     }
 
     #[cfg(target_os = "linux")]
+    fn process_has_terminated(pid: u32) -> Result<bool, std::io::Error> {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => Ok(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(err) => Err(err),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn process_termination_does_not_require_reaping()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()?;
+        let pid = child.id().expect("just spawned");
+        let _owned = nativelink_worker::reaper::OwnedChild::new(Some(pid));
+        assert!(
+            !process_has_terminated(pid)?,
+            "a live child is not terminated"
+        );
+
+        child.start_kill()?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !process_has_terminated(pid)? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await??;
+        // Keep the child's exit status owned by this handle: it must still be
+        // present as a zombie, which a signal-0 existence check would reject.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+        assert!(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some());
+        child.wait().await?;
+        assert!(process_has_terminated(pid)?, "a reaped child is terminated");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     #[nativelink_test]
     async fn timed_out_action_takes_its_children_with_it() -> Result<(), Box<dyn core::error::Error>>
     {
@@ -3413,6 +4085,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // Host pids and a host-visible pid file: the point is what the kill
                 // reaches, not the namespaces.
@@ -3485,17 +4159,340 @@ exit 0
             .expect("a timed-out action must carry an error");
         assert_eq!(err.code, Code::DeadlineExceeded, "{err}");
 
-        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)?
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_file)?
             .lines()
             .filter_map(|line| line.trim().parse().ok())
             .collect();
         assert_eq!(pids.len(), 2, "both children should have written their pid");
-        // A moment for the kernel to reap; then neither pid may exist.
+        // Check termination, not reaping: a dead orphan can retain its pid
+        // until its parent's next reaper sweep.
         tokio::time::sleep(Duration::from_millis(200)).await;
         for pid in pids {
-            // SAFETY: signal 0 checks for existence and sends nothing.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
-            assert!(!alive, "child {pid} outlived the timed-out action");
+            assert!(
+                process_has_terminated(pid)?,
+                "child {pid} outlived the timed-out action"
+            );
+        }
+        Ok(())
+    }
+
+    /// A memory store that counts the reads in flight against it, standing
+    /// in for the CAS or the object store a worker fetches inputs from.
+    /// Unix only, with the one test that drives it.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct MeteredSlowStore {
+        inner: Arc<MemoryStore>,
+        in_flight: AtomicU64,
+        max_in_flight: AtomicU64,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MeteredSlowStore {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryStore::new(&MemorySpec::default()),
+                in_flight: AtomicU64::new(0),
+                max_in_flight: AtomicU64::new(0),
+            })
+        }
+
+        fn max_in_flight(&self) -> u64 {
+            self.max_in_flight.load(Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for MeteredSlowStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for MeteredSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight
+                .fetch_max(now_in_flight, Ordering::SeqCst);
+            // Let every other read that is ready start before this one
+            // answers, so an unbounded caller shows as one.
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+            let result = self
+                .inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(MeteredSlowStore);
+
+    /// A fast filesystem tier over a metered slow store, as a worker's CAS
+    /// is laid out.
+    #[cfg(target_family = "unix")]
+    async fn metered_cas() -> Result<
+        (
+            Arc<FilesystemStore>,
+            Arc<MeteredSlowStore>,
+            Arc<FastSlowStore>,
+        ),
+        Error,
+    > {
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store = FilesystemStore::new(&fast_config).await?;
+        let slow_store = MeteredSlowStore::new();
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
+            },
+            Store::new(fast_store.clone()),
+            Store::new(slow_store.clone()),
+        );
+        Ok((fast_store, slow_store, cas_store))
+    }
+
+    #[cfg(target_family = "unix")]
+    const fn digest_bytes(tree: u8, index: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0] = tree;
+        bytes[1] = index;
+        bytes
+    }
+
+    /// A flat tree of `files` cold files `f0..` in the slow store, every
+    /// digest distinct per `tree`, so two trees never share a blob.
+    #[cfg(target_family = "unix")]
+    async fn seed_tree(
+        slow_store: &MeteredSlowStore,
+        tree: u8,
+        files: u8,
+    ) -> Result<DigestInfo, Error> {
+        let mut nodes = Vec::new();
+        for i in 0..files {
+            let content = format!("{tree}:{i:030}");
+            let digest = DigestInfo::new(digest_bytes(tree, i + 1), content.len() as u64);
+            slow_store
+                .inner
+                .as_ref()
+                .update_oneshot(digest, content.into())
+                .await?;
+            nodes.push(FileNode {
+                name: format!("f{i}"),
+                digest: Some(digest.into()),
+                is_executable: false,
+                node_properties: None,
+            });
+        }
+        let root_digest = DigestInfo::new(digest_bytes(tree, 0xEE), 32);
+        let root = Directory {
+            files: nodes,
+            ..Default::default()
+        };
+        slow_store
+            .inner
+            .as_ref()
+            .update_oneshot(root_digest, root.encode_to_vec().into())
+            .await?;
+        Ok(root_digest)
+    }
+
+    #[cfg(target_family = "unix")]
+    async fn assert_tree_downloaded(dir: &str, tree: u8, files: u8) -> Result<(), Error> {
+        for i in 0..files {
+            let data = tokio::fs::read(format!("{dir}/f{i}")).await?;
+            assert_eq!(data, format!("{tree}:{i:030}").into_bytes());
+        }
+        Ok(())
+    }
+
+    /// Every blob fetched into the store takes a permit from the one pool,
+    /// so a tree of many cold files never has more reads open against the
+    /// slow store than the pool holds.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn download_to_directory_bounds_fetches_by_the_pool()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILES: u8 = 40;
+        const PERMITS: usize = 3;
+
+        let (fast_store, slow_store, cas_store) = metered_cas().await?;
+        let root_digest = seed_tree(&slow_store, 1, FILES).await?;
+
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        let downloads = Semaphore::new(PERMITS);
+        download_to_directory_bounded(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+            &downloads,
+        )
+        .await?;
+
+        let peak = slow_store.max_in_flight();
+        assert!(
+            peak >= 1 && peak <= PERMITS as u64,
+            "{peak} reads in flight against a pool of {PERMITS}"
+        );
+        assert_tree_downloaded(&download_dir, 1, FILES).await?;
+        Ok(())
+    }
+
+    /// The pool is the worker's, not the call's: two actions staging cold
+    /// trees at the same time share its permits, so together they never
+    /// have more reads open against the slow store than it holds.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn concurrent_downloads_share_one_pool() -> Result<(), Box<dyn core::error::Error>> {
+        const FILES: u8 = 40;
+        const PERMITS: usize = 3;
+
+        let (fast_store, slow_store, cas_store) = metered_cas().await?;
+        let root_a = seed_tree(&slow_store, 1, FILES).await?;
+        let root_b = seed_tree(&slow_store, 2, FILES).await?;
+        let dir_a = make_temp_path("download_dir_a");
+        let dir_b = make_temp_path("download_dir_b");
+        fs::create_dir_all(&dir_a).await?;
+        fs::create_dir_all(&dir_b).await?;
+
+        let downloads = Semaphore::new(PERMITS);
+        tokio::try_join!(
+            download_to_directory_bounded(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root_a,
+                &dir_a,
+                &downloads,
+            ),
+            download_to_directory_bounded(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root_b,
+                &dir_b,
+                &downloads,
+            ),
+        )?;
+
+        let peak = slow_store.max_in_flight();
+        assert!(
+            peak >= 1 && peak <= PERMITS as u64,
+            "{peak} reads in flight across two downloads sharing a pool of {PERMITS}"
+        );
+        assert_tree_downloaded(&dir_a, 1, FILES).await?;
+        assert_tree_downloaded(&dir_b, 2, FILES).await?;
+        Ok(())
+    }
+
+    /// `max_concurrent_input_downloads` of 0, the default, shares no pool:
+    /// each action fetches on its own, as before the setting existed. Any
+    /// other value is the size of the pool every action shares.
+    #[nativelink_test]
+    async fn input_download_pool_is_unbounded_unless_configured()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _) = setup_stores().await?;
+        for (configured, expected) in [(0, Semaphore::MAX_PERMITS), (7, 7)] {
+            let manager = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: make_temp_path("root_action_directory"),
+                execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: configured,
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?;
+            assert_eq!(manager.free_input_downloads(), expected);
         }
         Ok(())
     }
@@ -3724,6 +4721,128 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(HangingStore);
 
+    /// A store that refuses the first `failures` reads of one digest with a
+    /// chosen code and serves it after that: a slow tier whose own retrier
+    /// gave up, as the worker sees it.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct FlakyStore {
+        inner: Store,
+        fail_on: Mutex<DigestInfo>,
+        failures: u64,
+        code: Code,
+        reads: AtomicU64,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl FlakyStore {
+        fn new(
+            inner: Arc<MemoryStore>,
+            fail_on: DigestInfo,
+            failures: u64,
+            code: Code,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                fail_on: Mutex::new(fail_on),
+                failures,
+                code,
+                reads: AtomicU64::new(0),
+            })
+        }
+
+        /// Reads of the flaky digest so far, refused or served.
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::SeqCst)
+        }
+
+        /// Makes another digest the flaky one: the Action itself, whose
+        /// digest the setup only knows once it has uploaded it.
+        fn retarget(&self, digest: DigestInfo) {
+            *self.fail_on.lock().unwrap() = digest;
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for FlakyStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for FlakyStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if key == StoreKey::Digest(*self.fail_on.lock().unwrap()) {
+                let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+                if read <= self.failures {
+                    return Err(make_err!(self.code, "flaky store refused read {read}"));
+                }
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(FlakyStore);
+
+    /// The one input file of the actions `fetch_setup` builds.
+    #[cfg(target_family = "unix")]
+    const FETCH_SETUP_FILE_CONTENT: &[u8] = b"never arrives";
+
     /// A manager whose CAS never finishes reading one input of the action it
     /// returns the digest of; the store comes back too, so a test can lift
     /// that or make writes hang instead.
@@ -3738,14 +4857,56 @@ exit 0
         ),
         Box<dyn core::error::Error>,
     > {
-        const FILE_CONTENT: &[u8] = b"never arrives";
+        fetch_setup(max_download_timeout, HangingStore::new).await
+    }
+
+    /// A manager whose CAS reads one input of the action it returns the
+    /// digest of through the store `make_slow` wraps around the memory store
+    /// holding everything; the wrapper comes back too.
+    #[cfg(target_family = "unix")]
+    async fn fetch_setup<S: StoreDriver>(
+        max_download_timeout: Duration,
+        make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
+    {
+        fetch_setup_tree(
+            max_download_timeout,
+            None,
+            false,
+            ExecutionConfiguration::default(),
+            make_slow,
+        )
+        .await
+    }
+
+    /// The second file of a nested `fetch_setup_tree`, at the root.
+    #[cfg(target_family = "unix")]
+    const FETCH_SETUP_OTHER_CONTENT: &[u8] = b"other input\n";
+
+    /// `fetch_setup` with the action's own timeout set and, when `nested`,
+    /// the flaky file under a subdirectory beside a second file at the
+    /// root, so that a failed attempt leaves a partly built tree behind.
+    #[cfg(target_family = "unix")]
+    async fn fetch_setup_tree<S: StoreDriver>(
+        max_download_timeout: Duration,
+        action_timeout: Option<Duration>,
+        nested: bool,
+        execution_configuration: ExecutionConfiguration,
+        make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
+    {
         let inner = MemoryStore::new(&MemorySpec::default());
-        let file_digest = DigestInfo::new([9u8; 32], FILE_CONTENT.len() as u64);
+        let file_digest = DigestInfo::new([9u8; 32], FETCH_SETUP_FILE_CONTENT.len() as u64);
         inner
             .as_ref()
-            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .update_oneshot(file_digest, FETCH_SETUP_FILE_CONTENT.into())
             .await?;
-        let slow_store = HangingStore::new(inner.clone(), file_digest);
+        let other_digest = DigestInfo::new([8u8; 32], FETCH_SETUP_OTHER_CONTENT.len() as u64);
+        inner
+            .as_ref()
+            .update_oneshot(other_digest, FETCH_SETUP_OTHER_CONTENT.into())
+            .await?;
+        let slow_store = make_slow(inner.clone(), file_digest);
         let fast_config = FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
@@ -3760,19 +4921,47 @@ exit 0
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
             },
             Store::new(fast_store),
             Store::new(slow_store.clone()),
         );
-        let input_root_digest = serialize_and_upload_message(
-            &Directory {
+        let flaky_file = FileNode {
+            name: "input.txt".to_string(),
+            digest: Some(file_digest.into()),
+            ..Default::default()
+        };
+        let root = if nested {
+            let sub_digest = serialize_and_upload_message(
+                &Directory {
+                    files: vec![flaky_file],
+                    ..Default::default()
+                },
+                inner.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            Directory {
                 files: vec![FileNode {
-                    name: "input.txt".to_string(),
-                    digest: Some(file_digest.into()),
+                    name: "other.txt".to_string(),
+                    digest: Some(other_digest.into()),
                     ..Default::default()
                 }],
+                directories: vec![DirectoryNode {
+                    name: "sub".to_string(),
+                    digest: Some(sub_digest.into()),
+                }],
                 ..Default::default()
-            },
+            }
+        } else {
+            Directory {
+                files: vec![flaky_file],
+                ..Default::default()
+            }
+        };
+        let input_root_digest = serialize_and_upload_message(
+            &root,
             inner.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
@@ -3790,6 +4979,10 @@ exit 0
             &Action {
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
+                timeout: action_timeout.map(|timeout| prost_types::Duration {
+                    seconds: i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
+                    nanos: 0,
+                }),
                 ..Default::default()
             },
             inner.as_pin(),
@@ -3801,7 +4994,7 @@ exit 0
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory,
-                execution_configuration: ExecutionConfiguration::default(),
+                execution_configuration,
                 cas_store: cas_store.clone(),
                 ac_store: None,
                 historical_store: Store::new(cas_store.clone()),
@@ -3816,6 +5009,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3863,6 +5058,8 @@ exit 0
             "took {:?}",
             started.elapsed()
         );
+        // A stall is a sign of an overloaded store too.
+        assert!(logs_contain(INPUT_POOL_HINT));
         action.cleanup().await?;
         assert!(
             !Path::new(&action_directory).exists(),
@@ -3919,6 +5116,485 @@ exit 0
             !Path::new(&action_directory).exists(),
             "the work directory is gone after cleanup"
         );
+        Ok(())
+    }
+
+    /// An input read that fails with a transient code is fetched again from
+    /// this worker, after 1 s then 2 s, and the action goes on once the
+    /// store answers; the retries are the worker's own, the scheduler sees
+    /// one action executing within its ceilings.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_retries_a_transient_fetch_failure()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let action = action.prepare_action().await?;
+        let elapsed = started.elapsed();
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        // Two backoffs of 1 s and 2 s, each shortened by up to a quarter.
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let staged = std::fs::read(format!("{}/input.txt", action.get_work_directory()))?;
+        assert_eq!(staged, FETCH_SETUP_FILE_CONTENT);
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// The Action is read with the same retries as the inputs: a store that
+    /// refuses it twice with `Unavailable` (a CAS pod being replaced) delays
+    /// the start by 1 s then 2 s, and the action is created rather than
+    /// failed on the spot.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_retries_a_transient_action_read()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            store.reads(),
+            3,
+            "two refused reads of the Action, then the one served"
+        );
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let action = action.prepare_action().await?;
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// An Action read that never recovers stops at `max_download_timeout`
+    /// and fails with the store's code, so a dead store still ends the action
+    /// and the scheduler sees why.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_stops_retrying_the_action_read_at_the_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let err = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await
+            .expect_err("a store that never answers must fail the action");
+        // The fast-slow store reports a slow tier that dropped mid-read as
+        // `Internal`; the refusal itself is in the chain.
+        assert!(
+            matches!(err.code, Code::Internal | Code::Unavailable),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("flaky store refused read"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the next retry would start after max_download_timeout"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "the scheduler is told the store was down: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            store.reads() >= 2,
+            "retried at least once: {}",
+            store.reads()
+        );
+        Ok(())
+    }
+
+    /// The advice `max_concurrent_input_downloads` logs, in part.
+    #[cfg(target_family = "unix")]
+    const INPUT_POOL_HINT: &str = "Consider setting max_concurrent_input_downloads to 64";
+
+    /// How many log lines carry the advice.
+    #[cfg(target_family = "unix")]
+    fn input_pool_hints(lines: &[&str]) -> usize {
+        lines
+            .iter()
+            .filter(|line| line.contains(INPUT_POOL_HINT))
+            .count()
+    }
+
+    /// A worker without a shared input pool whose fetches fail the way an
+    /// overloaded store fails them suggests `max_concurrent_input_downloads`,
+    /// once for the two failures rather than once per failure.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_suggests_a_shared_input_pool_once()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            1 => Ok(()),
+            n => Err(format!("{n} pool suggestions for two failed fetches")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A read that fails with `DataLoss` is retried like any transient
+    /// failure, but it means a bad stored copy rather than an overloaded
+    /// store, so a worker without a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_data_loss_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::DataLoss)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two corrupt reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions for corrupt reads")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A worker that already shares a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_a_shared_input_pool_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            false,
+            ExecutionConfiguration {
+                max_concurrent_input_downloads: 64,
+                ..Default::default()
+            },
+            |inner, digest| FlakyStore::new(inner, digest, 2, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions with a pool configured")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A first attempt that fails after part of the tree is built (the
+    /// subdirectory exists, the file in it does not) is cleared before the
+    /// next, which stages the whole tree.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_restages_a_partly_built_tree() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            true,
+            ExecutionConfiguration::default(),
+            |inner, digest| FlakyStore::new(inner, digest, 1, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 2, "one refused read, then the one served");
+        let work_directory = action.get_work_directory();
+        assert_eq!(
+            std::fs::read(format!("{work_directory}/sub/input.txt"))?,
+            FETCH_SETUP_FILE_CONTENT
+        );
+        assert_eq!(
+            std::fs::read(format!("{work_directory}/other.txt"))?,
+            FETCH_SETUP_OTHER_CONTENT
+        );
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A kill that lands during the pause before the next attempt ends the
+    /// prepare at once with `Aborted`, not at the end of the pause.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn a_kill_during_the_retry_pause_stops_prepare() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = tokio::time::Instant::now();
+        // Attempts at 0 s and ~1 s; the 2 s pause after the second runs
+        // until ~3 s, and the kill lands in the middle of it.
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, prepare_res) = tokio::join!(killer, action.clone().prepare_action());
+        kill_res?;
+        let err = prepare_res.expect_err("a killed fetch must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert_eq!(store.reads(), 2, "{err:?}");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(2500),
+            "the kill ended the pause early: {elapsed:?}"
+        );
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        Ok(())
+    }
+
+    /// A missing input is not a store hiccup: it fails prepare at once, and
+    /// the store is asked exactly once.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_does_not_retry_a_missing_input()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::NotFound)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("a missing input must fail prepare");
+        assert_eq!(err.code, Code::NotFound, "{err:?}");
+        assert_eq!(store.reads(), 1, "no retry of a missing input");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A store that never recovers is retried only while the download
+    /// deadline leaves room for another attempt; then the last error comes
+    /// back, naming the attempts, before the deadline itself fires.
+    #[cfg(target_family = "unix")]
+    async fn check_prepare_stops_retrying_at_the_download_deadline(
+        code: Code,
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, code)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("the store never recovers, prepare must fail");
+        let elapsed = started.elapsed();
+        // Attempts at 0 s, ~1 s and ~3 s; the 4 s pause after the third
+        // would end past the 5 s deadline.
+        assert_eq!(store.reads(), 3, "{err:?}");
+        assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
+        assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "{err:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::Unavailable).await
+    }
+
+    // Characterize the current policy: the same input returning DataLoss
+    // consumes the preparation retry window just like an unavailable store.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_unchanged_data_loss_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::DataLoss).await
+    }
+
+    /// An action with its own timeout is not retried past it: the scheduler
+    /// ends the action soon after that passes, so a window of ten minutes
+    /// shrinks to the four seconds the action may take.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_action_timeout()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            Some(Duration::from_secs(4)),
+            false,
+            ExecutionConfiguration::default(),
+            |inner, digest| FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("the store never recovers, prepare must fail");
+        let elapsed = started.elapsed();
+        // Attempts at 0 s, under 1 s and under 3 s (each pause is shortened
+        // by up to a quarter); the pause after the third is at least 3 s
+        // and would end past the 4 s the action is allowed.
+        assert_eq!(store.reads(), 3, "{err:?}");
+        assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
         Ok(())
     }
 
@@ -4002,6 +5678,8 @@ exit 0
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
             },
             Store::new(fast_store),
             Store::new(gated.clone()),
@@ -4026,6 +5704,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4148,6 +5828,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: true,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -4165,6 +5846,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4346,6 +6029,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // The namespaced stub turns SIGTERM into SIGKILL for its child,
                 // so the grace period is only observable without it.
@@ -4490,6 +6175,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4600,6 +6287,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4758,6 +6447,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4880,6 +6571,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4951,6 +6644,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5115,6 +6810,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5166,6 +6863,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5196,7 +6895,113 @@ exit 0
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    /// An action that grows after its first sample and ends well inside the
+    /// sampler's two second refresh still reports what it grew to: growth
+    /// alone makes a sample read the exact figure.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn a_short_action_reports_the_memory_it_grew_to()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // Small at the first sample, then a shell holding 100 MB in a
+        // variable for a moment, all over in under two seconds.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "sleep 0.5; s=$(head -c 100000000 /dev/zero | tr '\\0' a); sleep 0.6; echo ${#s}"
+                    .to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(result.exit_code, 0, "{result:?}");
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert!(
+            usage.peak_memory_kb >= 50_000,
+            "the 100 MB the shell held must show in its peak: {usage:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -5217,6 +7022,7 @@ exit 0
                         disk_property_name: None,
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -5234,6 +7040,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5394,6 +7202,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -5420,6 +7229,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5514,6 +7325,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5594,6 +7407,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5681,6 +7496,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5789,6 +7606,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5841,6 +7660,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5914,6 +7735,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6038,6 +7861,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -6132,6 +7957,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -6226,6 +8053,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -6321,6 +8150,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6483,6 +8314,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6660,6 +8493,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6774,6 +8609,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6890,6 +8727,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
                 // path regardless of what the host kernel supports.
@@ -7010,6 +8849,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 use_namespaces:
                     nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
@@ -7137,6 +8978,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7302,6 +9145,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
@@ -7501,7 +9346,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             action: &Action,
             action_digest: DigestInfo,
             operation_id: &str,
-        ) -> Result<String, Error> {
+        ) -> Result<(String, ActionResourceUsage), Error> {
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
                     WORKER_ID.to_string(),
@@ -7519,8 +9364,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                     },
                 )
                 .await?;
-            let action_result = run_action(running_action_impl).await?;
-            slow_store
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
                 .as_ref()
                 .get_part_unchunked(action_result.output_files[0].digest, 0, None)
                 .await
@@ -7529,7 +9374,11 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                         Error::from_std_err(Code::Internal, &err)
                             .append("Decoding persistent worker count.txt")
                     })
-                })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
@@ -7554,6 +9403,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7572,6 +9423,8 @@ while IFS= read -r request; do
     continue
   fi
   count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
   printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
@@ -7585,7 +9438,7 @@ done
             .await?;
         let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
 
-        let first = run_persistent_action(
+        let (first, first_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -7593,7 +9446,7 @@ done
             "persistent_worker_first",
         )
         .await?;
-        let second = run_persistent_action(
+        let (second, second_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -7607,6 +9460,14 @@ done
             second, "2",
             "second action must reuse the already-running persistent worker"
         );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
         Ok(())
     }
 
@@ -7655,6 +9516,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7842,6 +9705,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7952,6 +9817,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -7975,6 +9841,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8106,6 +9974,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -8129,6 +9998,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8245,6 +10116,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8391,6 +10264,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8568,6 +10443,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8729,6 +10606,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8835,6 +10714,553 @@ done
             "expected one output directory"
         );
         assert_eq!(action_result.output_folders[0].path, "out");
+        Ok(())
+    }
+
+    /// The members of an action are reached by two links, each needed
+    /// where the other fails: process group, which survives an intermediate
+    /// shell exiting and reparenting the work to the worker, and parent
+    /// pid, which reaches a Bazel test that `set -m` put in a group of its
+    /// own. Nothing in the worker's own group is ever counted.
+    #[test]
+    fn action_member_pids_follow_parent_and_group_links() {
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_member_pids};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),       // the worker, pid 1 in its pod
+            entry(100, 1, 100),   // the action: test-setup.sh, group leader
+            entry(102, 1, 100),   // a helper the shell forked and lost; kept its group
+            entry(200, 100, 200), // the test binary, in its own group under set -m
+            entry(201, 200, 200), // the test's child
+            entry(202, 1, 200),   // the test's grandchild, reparented, still in its group
+            entry(300, 1, 300),   // another action
+            entry(301, 300, 300), // that action's child
+            entry(400, 100, 1),   // impossible, but a member's child in the worker's group
+        ];
+        let members = action_member_pids(100, worker_pgid, &table);
+        let mut got: Vec<u32> = members.into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![100, 102, 200, 201, 202]);
+        // Nothing left of the action: an empty set, not the worker.
+        assert!(action_member_pids(100, worker_pgid, &table[..1]).is_empty());
+    }
+
+    /// Once the wrapper is gone, a `set -m` test has no parent or group
+    /// link to the action; the group an earlier sample found still reaches
+    /// it. A remembered group with nothing left in it is dropped, so a
+    /// reused group id is never signalled, and the worker's group is never
+    /// a seed.
+    #[test]
+    fn action_membership_keeps_a_remembered_group() {
+        use std::collections::HashSet;
+
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_membership};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),     // the worker
+            entry(200, 1, 200), // the test, reparented after its wrapper exited
+            entry(201, 200, 200),
+            entry(300, 1, 300), // another action
+        ];
+        assert!(
+            action_membership(&[100], worker_pgid, &table)
+                .pids
+                .is_empty()
+        );
+        let members = action_membership(&[100, 200, 250, worker_pgid], worker_pgid, &table);
+        assert_eq!(members.pids, HashSet::from([200, 201]));
+        assert_eq!(members.groups, HashSet::from([200]));
+    }
+
+    /// Live version of the above: a shell under `set -m` puts its
+    /// background job in a new process group, as Bazel's test-setup.sh
+    /// does with the test binary, and the sampler's membership still
+    /// reaches it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn action_member_pids_live_reach_a_job_control_child() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+
+        use nativelink_worker::running_actions_manager::{
+            action_membership_live, parse_pgid_from_stat,
+        };
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", "set -m; sleep 30 & echo $!; wait"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("bash spawns");
+        let shell_pid = child.id();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut line)
+            .expect("the shell prints the job's pid");
+        let sleep_pid: u32 = line.trim().parse().expect("a pid");
+        let sleep_stat =
+            std::fs::read_to_string(format!("/proc/{sleep_pid}/stat")).expect("the job is alive");
+        let sleep_pgrp = parse_pgid_from_stat(&sleep_stat).expect("a stat line");
+        let members = action_membership_live(&[shell_pid]).pids;
+        // SAFETY: killing the two processes this test started.
+        unsafe {
+            libc::kill(sleep_pid.cast_signed(), libc::SIGKILL);
+            libc::kill(shell_pid.cast_signed(), libc::SIGKILL);
+        }
+        drop(child.wait());
+        assert_ne!(
+            sleep_pgrp, shell_pid,
+            "set -m must have moved the job to its own process group for this test to mean anything"
+        );
+        assert!(members.contains(&shell_pid), "{members:?}");
+        assert!(
+            members.contains(&sleep_pid),
+            "the job in its own process group must be a member: {members:?}"
+        );
+    }
+
+    /// A kill needs the pressure to hold for the whole window; a dip starts
+    /// over, and so does a kill, so the next one waits a full window.
+    #[test]
+    fn pressure_window_kills_only_after_sustained_pressure() {
+        use nativelink_worker::running_actions_manager::PressureWindow;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut window = PressureWindow::new(40, Duration::from_secs(30));
+        assert!(!window.observe(55.0, at(0)));
+        assert!(!window.observe(55.0, at(29)));
+        assert!(
+            window.observe(40.0, at(30)),
+            "at the threshold, for the window: kill"
+        );
+        assert!(
+            !window.observe(55.0, at(31)),
+            "a kill starts the window over"
+        );
+        assert!(!window.observe(55.0, at(60)));
+        assert!(!window.observe(10.0, at(61)), "a dip starts over");
+        assert!(!window.observe(55.0, at(62)));
+        assert!(!window.observe(55.0, at(91)));
+        assert!(window.observe(55.0, at(92)));
+    }
+
+    /// A sample reuses the last exact memory figure, never above its RSS,
+    /// only while the RSS stays under 90% of the ceiling, within 10% of
+    /// where it was, and for under two seconds; a sample before any exact
+    /// figure must read one.
+    #[test]
+    fn exact_memory_is_reread_near_the_ceiling_on_drift_and_with_age() {
+        use nativelink_worker::running_actions_manager::ExactMemoryGate;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |millis| t0 + Duration::from_millis(millis);
+
+        let mut gate = ExactMemoryGate::new(Some(10_000));
+        assert_eq!(gate.reuse(1_000, at(0)), None, "nothing read yet");
+        gate.record(5_000, 2_000, at(0));
+        assert_eq!(gate.reuse(5_000, at(250)), Some(2_000));
+        assert_eq!(gate.reuse(5_500, at(250)), Some(2_000), "10% up");
+        assert_eq!(gate.reuse(4_500, at(250)), Some(2_000), "10% down");
+        assert_eq!(gate.reuse(5_501, at(250)), None, "over 10% up");
+        assert_eq!(gate.reuse(4_499, at(250)), None, "over 10% down");
+        assert_eq!(gate.reuse(5_000, at(1_999)), Some(2_000));
+        assert_eq!(gate.reuse(5_000, at(2_000)), None, "two seconds old");
+
+        gate.record(8_900, 8_900, at(0));
+        assert_eq!(gate.reuse(8_999, at(250)), Some(8_900), "under 90%");
+        assert_eq!(gate.reuse(9_000, at(250)), None, "at 90% of the ceiling");
+        assert_eq!(
+            gate.reuse(8_100, at(250)),
+            Some(8_100),
+            "never above the RSS"
+        );
+
+        let mut unlimited = ExactMemoryGate::new(None);
+        unlimited.record(50_000, 40_000, at(0));
+        assert_eq!(unlimited.reuse(50_000, at(250)), Some(40_000));
+    }
+
+    /// RFC-0018: the peak the keepalive reports only rises; the last figure
+    /// follows every sample.
+    #[test]
+    fn memory_watch_peak_is_monotonic() {
+        use nativelink_worker::running_actions_manager::ActionMemoryWatch;
+        let watch = ActionMemoryWatch::default();
+        assert_eq!(watch.peak_memory_kb(), 0, "nothing sampled yet");
+        for (sample, peak) in [(100, 100), (400, 400), (250, 400), (0, 400), (401, 401)] {
+            watch.observe(sample);
+            assert_eq!(watch.last_memory_kb(), sample);
+            assert_eq!(watch.peak_memory_kb(), peak, "after sampling {sample}");
+        }
+    }
+
+    /// The kill lands on the action furthest over its reservation, or the
+    /// largest when none is over, never on one without a sample, one
+    /// already asked to die, or one that reserves the whole worker;
+    /// nothing qualifying means no kill.
+    #[test]
+    fn pressure_victim_is_the_furthest_over_its_reservation() {
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let c = |item, last_kb, reserved_kb, kill_requested| PressureCandidate {
+            item,
+            last_kb,
+            reserved_kb,
+            kill_requested,
+        };
+        // A uses more but is within its reservation; B is 4 GiB over.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 15 * GIB, 16 * GIB, false),
+                    c("b", 6 * GIB, 2 * GIB, false)
+                ],
+                None
+            ),
+            Some("b")
+        );
+        // Nobody over: the largest.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 500, 1_000, false),
+                    c("c", 7_000, 8_000, false),
+                    c("d", 0, 0, false)
+                ],
+                None
+            ),
+            Some("c")
+        );
+        // Already asked, or unsampled: never.
+        assert_eq!(
+            pick_pressure_victim([c("a", 0, 0, false), c("b", 9_000, 0, true)], None),
+            None
+        );
+        // Reserving the whole worker: never, even when furthest over.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 40 * GIB, 32 * GIB, false),
+                    c("b", 3 * GIB, 2 * GIB, false)
+                ],
+                Some(32 * GIB)
+            ),
+            Some("b")
+        );
+        assert_eq!(
+            pick_pressure_victim([c("a", 40 * GIB, 32 * GIB, false)], Some(32 * GIB)),
+            None
+        );
+        assert_eq!(
+            pick_pressure_victim(Vec::<PressureCandidate<&str>>::new(), None),
+            None
+        );
+    }
+
+    /// With 20% headroom a 52 GiB pod advertises 40 GiB, so the largest
+    /// reservation it is ever given is 40 GiB, well under its cgroup limit.
+    /// An action holding that whole figure is still never the victim.
+    #[test]
+    fn pressure_victim_skips_an_action_reserving_the_advertised_memory() {
+        use nativelink_config::cas_server::{CapacityConfig, CpuUnit, WorkerProperty};
+        use nativelink_worker::capacity::{ObservedCapacity, advertised_memory_kb};
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let capacity = CapacityConfig {
+            cpu_property_name: "cpu_count".to_string(),
+            memory_property_name: "memory_kb".to_string(),
+            cpu_unit: CpuUnit::Cores,
+            overhead_cpu_millicores: 1000,
+            overhead_memory_kb: 4 * GIB,
+            memory_headroom_percent: None,
+        };
+        let largest = advertised_memory_kb(
+            Some(&capacity),
+            20,
+            Some(ObservedCapacity {
+                cpu_millicores: 14_000,
+                memory_kb: 52 * GIB,
+            }),
+            &HashMap::<String, WorkerProperty>::new(),
+            "memory_kb",
+        );
+        assert_eq!(largest, Some(40 * GIB));
+        let candidates = || {
+            [PressureCandidate {
+                item: "whole",
+                last_kb: 45 * GIB,
+                reserved_kb: 40 * GIB,
+                kill_requested: false,
+            }]
+        };
+        assert_eq!(
+            pick_pressure_victim(candidates(), Some(52 * GIB)),
+            Some("whole")
+        );
+        assert_eq!(pick_pressure_victim(candidates(), largest), None);
+    }
+
+    /// An action running `arguments` on a manager with `memory: soft` and
+    /// the pressure kill armed at a threshold the host never reaches, so
+    /// only the test asks for a kill, under a 1 GiB reservation.
+    #[cfg(target_os = "linux")]
+    async fn pressure_armed_action(
+        arguments: Vec<String>,
+    ) -> Result<Arc<RunningActionImpl>, Box<dyn core::error::Error>> {
+        use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: Some(MemoryLimit {
+                            property_name: "memory_kb".to_string(),
+                            headroom_percent: 20,
+                        }),
+                        disk_property_name: None,
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
+                        // Armed, but a threshold the host never reaches: the
+                        // test asks for the kill itself.
+                        pressure_kill: Some(PressureKill {
+                            full_avg10_percent: 100,
+                            after: Duration::from_hours(1),
+                            largest_reservation_kb: None,
+                        }),
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments,
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // A reservation the sleep stays well under: nothing but
+                    // the pressure kill can end it early.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "memory_kb".into(),
+                            value: "1048576".into(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        Ok(running_action_impl)
+    }
+
+    /// A pressure kill goes through the same path as a ceiling breach: the
+    /// process group dies at once, the result says the worker killed it for
+    /// memory, so the scheduler requeues it with a larger reservation, and
+    /// the error names the pressure.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_killed_under_memory_pressure_is_a_memory_kill()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let running_action_impl =
+            pressure_armed_action(vec!["sleep".to_string(), "30".to_string()]).await?;
+
+        let started = std::time::Instant::now();
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        // The monitor would do this once the sampler has a figure; the test
+        // stands in for it.
+        while running_action_impl.last_memory_kb() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the sampler never reported the sleeping action's memory"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        let err = result
+            .error
+            .expect("a pressure-killed action must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("memory pressure") && err.to_string().contains("55%"),
+            "error should name the pressure: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the kill should land long before the 30s sleep ends"
+        );
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledMemory as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker ended it: {usage:?}");
+        Ok(())
+    }
+
+    /// Whether a pid is still a running process; a zombie waiting for a
+    /// reaper that is not the test counts as gone.
+    #[cfg(target_os = "linux")]
+    fn process_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+        })
+    }
+
+    /// A `set -m` job in its own process group, as Bazel's test-setup.sh
+    /// starts a test, under a wrapper that keeps running (`wait`) or exits
+    /// after a second (`sleep 1`). Returns the action and where the job's
+    /// pid lands.
+    #[cfg(target_os = "linux")]
+    async fn job_control_action(
+        wrapper_tail: &str,
+    ) -> Result<(Arc<RunningActionImpl>, PathBuf), Box<dyn core::error::Error>> {
+        let pid_file = PathBuf::from(make_temp_path("job_control_pid"));
+        fs::create_dir_all(pid_file.parent().expect("a temp path has a parent")).await?;
+        let script = format!(
+            "set -m; sleep 30 & echo $! > {}; {wrapper_tail}",
+            pid_file.display()
+        );
+        let action =
+            pressure_armed_action(vec!["bash".to_string(), "-c".to_string(), script]).await?;
+        Ok((action, pid_file))
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn read_job_pid(pid_file: &Path) -> u32 {
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(pid_file)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the job never wrote its pid"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A kill reaches a job that `set -m` moved out of the action's group:
+    /// before, the kill went to the action's group alone, the job lived on
+    /// with its memory, and the requeued action ran twice.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn pressure_kill_reaches_a_job_control_group() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_action_impl, pid_file) = job_control_action("wait").await?;
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        let job_pid = read_job_pid(&pid_file).await;
+        while running_action_impl.last_memory_kb() == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        assert!(result.error.is_some(), "the action must fail: {result:?}");
+        let started = std::time::Instant::now();
+        while process_running(job_pid) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the set -m job survived the kill");
+        Ok(())
+    }
+
+    /// The same job after its wrapper has exited: nothing links it to the
+    /// action any more but the group an earlier sample found, and the
+    /// straggler sweep still ends it.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn straggler_sweep_reaches_an_orphaned_job_control_group()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_action_impl, pid_file) = job_control_action("sleep 1").await?;
+        let started = std::time::Instant::now();
+        drop(run_action(running_action_impl).await?);
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the action should end soon after its wrapper"
+        );
+        let job_pid = read_job_pid(&pid_file).await;
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the orphaned set -m job survived the sweep");
         Ok(())
     }
 

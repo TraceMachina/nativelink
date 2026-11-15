@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -79,6 +79,8 @@ async fn make_cas_store(slow_store: Arc<MemoryStore>) -> Arc<FastSlowStore> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(slow_store),
@@ -453,6 +455,8 @@ async fn cold_construct_fetches_concurrently() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(tracking_store),
@@ -1196,6 +1200,8 @@ async fn construction_failure_does_not_poison_digest() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(flaky),
@@ -1618,6 +1624,8 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(grpc_store),
@@ -1643,5 +1651,180 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
     assert_eq!(requests[0].root_digest, Some(root_digest.into()));
     assert_eq!(requests[1].root_digest, Some(root_digest.into()));
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn prepared_mount_tree_is_shared_and_pinned_until_release() -> Result<(), Error> {
+    let slow = MemoryStore::new(&MemorySpec::default());
+    let cache = Arc::new(
+        DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 1,
+                cache_root: make_temp_path("mount_cache").into(),
+                ..Default::default()
+            },
+            make_cas_store(slow.clone()).await,
+        )
+        .await?,
+    );
+    let mut digests = Vec::new();
+    for name in ["sdk-a", "sdk-b", "sdk-c"] {
+        let directory = ProtoDirectory {
+            directories: vec![DirectoryNode {
+                name: name.to_owned(),
+                digest: Some(proto_digest(&ProtoDirectory::default()).into()),
+            }],
+            ..Default::default()
+        };
+        let digest = proto_digest(&directory);
+        slow.update_oneshot(digest, directory.encode_to_vec().into())
+            .await?;
+        digests.push(digest);
+    }
+    let empty = ProtoDirectory::default();
+    slow.update_oneshot(proto_digest(&empty), empty.encode_to_vec().into())
+        .await?;
+    let mut handles =
+        futures::future::try_join_all((0..16).map(|_| cache.prepare_for_mount(digests[0], None)))
+            .await?;
+    let path = handles[0].path().to_owned();
+    assert!(handles.iter().all(|handle| handle.path() == path));
+    assert!(path.join("sdk-a").is_dir());
+    let other = cache.prepare_for_mount(digests[1], None).await?;
+    assert!(
+        path.join("sdk-a").is_dir(),
+        "active mount source was evicted"
+    );
+    // Even one remaining action must protect the shared source.
+    let last = handles.pop().unwrap();
+    drop(handles);
+    assert!(path.exists());
+    drop(last);
+    let third = cache.prepare_for_mount(digests[2], None).await?;
+    // Eviction renames the old source under the cache lock; deletion may follow
+    // asynchronously. The other two still-pinned trees must remain accessible.
+    assert!(!path.exists());
+    assert!(other.path().join("sdk-b").is_dir());
+    assert!(third.path().join("sdk-c").is_dir());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn readonly_mount_paths_and_output_fallback() -> Result<(), Error> {
+    use nativelink_proto::build::bazel::remote::execution::v2::Command;
+    use nativelink_worker::input_mounts::{InputMounts, validate_paths};
+    let paths = vec!["out/x/sdk".to_owned()];
+    validate_paths(&paths)?;
+    for invalid in [
+        "", "/sdk", "../sdk", "sdk/../x", "sdk//x", "./sdk", "sdk/", "sdk\\x", "sdk\0",
+    ] {
+        assert!(
+            validate_paths(&[invalid.to_owned()]).is_err(),
+            "{invalid:?}"
+        );
+    }
+    assert!(validate_paths(&["sdk".into(), "sdk/headers".into()]).is_err());
+    assert!(validate_paths(&["sdk".into(), "sdk".into()]).is_err());
+    validate_paths(&["sdk".into(), "sdk2".into()])?;
+    let cache = Arc::new(
+        DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: make_temp_path("mount_fallback").into(),
+                ..Default::default()
+            },
+            make_cas_store(MemoryStore::new(&MemorySpec::default())).await,
+        )
+        .await?,
+    );
+    let eligible = |command: Command| {
+        InputMounts::for_command(cache.clone(), &paths, Path::new("/action"), &command).is_some()
+    };
+    assert!(eligible(Command {
+        working_directory: "out/x".into(),
+        output_paths: vec!["obj/a.o".into(), "../clang-crashreports".into()],
+        ..Default::default()
+    }));
+    for output in [
+        "sdk",
+        "sdk/generated.h",
+        "",
+        "obj/../sdk/file",
+        "../../../escape",
+        "/absolute",
+    ] {
+        assert!(
+            !eligible(Command {
+                working_directory: "out/x".into(),
+                output_paths: vec![output.into()],
+                ..Default::default()
+            }),
+            "{output}"
+        );
+    }
+    assert!(!eligible(Command {
+        output_directories: vec!["out".into()],
+        ..Default::default()
+    }));
+    assert!(!eligible(Command {
+        output_files: vec!["out/x/sdk/file".into()],
+        ..Default::default()
+    }));
+    assert!(!eligible(Command {
+        working_directory: "out/x/sdk/include".into(),
+        ..Default::default()
+    }));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn mount_selection_requires_an_input_directory() -> Result<(), Error> {
+    use nativelink_worker::input_mounts::has_mountable_inputs;
+
+    let store = MemoryStore::new(&MemorySpec::default());
+    // The selected SDK's contents are deliberately absent: selection should
+    // read its ancestors, not download the SDK or an unrelated subtree.
+    let sdk = ProtoDirectory {
+        directories: vec![DirectoryNode {
+            name: "headers".into(),
+            digest: Some(proto_digest(&ProtoDirectory::default()).into()),
+        }],
+        ..Default::default()
+    };
+    let branch = ProtoDirectory {
+        directories: vec![DirectoryNode {
+            name: "sdk".into(),
+            digest: Some(proto_digest(&sdk).into()),
+        }],
+        ..Default::default()
+    };
+    let root = ProtoDirectory {
+        directories: vec![
+            branch.directories[0].clone(),
+            DirectoryNode {
+                name: "out".into(),
+                digest: Some(proto_digest(&branch).into()),
+            },
+        ],
+        symlinks: vec![SymlinkNode {
+            name: "alias".into(),
+            target: "sdk".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let digest = proto_digest(&root);
+    store
+        .update_oneshot(digest, root.encode_to_vec().into())
+        .await?;
+    store
+        .update_oneshot(proto_digest(&branch), branch.encode_to_vec().into())
+        .await?;
+    let cas = make_cas_store(store).await;
+    assert!(has_mountable_inputs(&cas, digest, &["out/sdk".into()], None).await?);
+    assert!(has_mountable_inputs(&cas, digest, &["sdk".into()], None).await?);
+    assert!(has_mountable_inputs(&cas, digest, &["absent".into(), "sdk".into()], None).await?);
+    assert!(!has_mountable_inputs(&cas, digest, &["out/x/sdk".into()], None).await?);
+    assert!(!has_mountable_inputs(&cas, digest, &["alias".into()], None).await?);
     Ok(())
 }

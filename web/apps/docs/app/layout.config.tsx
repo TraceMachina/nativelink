@@ -9,7 +9,6 @@ export const baseOptions: BaseLayoutProps = {
   },
   // Only the GitHub icon in the top-nav (via githubUrl). Cross-app links back to marketing
   // (/product, /pricing, /resources) clutter a docs-focused nav.
-  links: [
-  ],
+  links: [],
   githubUrl: "https://github.com/TraceMachina/nativelink",
 };

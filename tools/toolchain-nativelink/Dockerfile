@@ -1,4 +1,4 @@
-# Copyright 2022-2024 The NativeLink Authors. All rights reserved.
+# Copyright 2022-2024 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     gcc=4:13.2.0-7ubuntu1 \
     g++=4:13.2.0-7ubuntu1 \
     python3=3.12.3-0ubuntu2.1 \
-    curl=8.5.0-2ubuntu10.11 \
+    curl=8.5.0-2ubuntu10.16 \
     ca-certificates=20240203 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

@@ -16,31 +16,24 @@
 
 <br />
 
-
 <div id="badges" align="center">
 
-  [![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
-  [![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
-  [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
-  [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
-  [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
-  [![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+[![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
+[![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
+[![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
+[![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+
 </div>
 
 <a href="https://trendshift.io/repositories/11202" target="_blank"><img src="https://trendshift.io/api/badge/repositories/11202" alt="TraceMachina%2Fnativelink | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 ## What's NativeLink?
 
-NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines. Use it when robotics/AV, semiconductor, biocomputing, or Chromium-scale / mobile monorepos need shared cache and distributed execution so unchanged targets never recompile across laptops and CI.
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
-
-NativeLink is especially strong on:
-
-- Chromium-scale and mobile monorepos (C++/ObjC/Swift/Kotlin/Java) with heavy CI build graphs
-- Robotics and AV stacks in C++/CUDA on Bazel/Buck (perception, planning, simulation, hardware-in-the-loop)
-- Semiconductor flows (SystemVerilog/Verilog RTL, C/C++ firmware, EDA-adjacent Bazel/Buck tool chains)
-- Biocomputing in C++/CUDA and Python-native pipelines (bioinformatics, imaging reconstruction, biological simulation)
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
@@ -99,16 +92,16 @@ for how to build the images yourself.
 **Linux x86_64**
 
 ```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5
+NATIVELINK_VERSION=1.8.3
 
-# See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
-# to find the latest tag
-docker run \
-    -v $(pwd)/basic_cas.json5:/config \
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5"
+
+docker run --rm -it \
+    -v "$(pwd)/basic_cas.json5:/config:ro" \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v1.4.0 \
-    config
+    "ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION}" \
+    /config
 ```
 
 **Windows x86_64**
@@ -116,15 +109,15 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.8.3/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
-# Note: Adjust the path if the script is not run from the directory containing basic_cas.json
+# Note: Adjust the path if the script is not run from the directory containing basic_cas.json5
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v1.4.0 `
+    ghcr.io/tracemachina/nativelink:v1.8.3 `
     config
 ```
 
@@ -142,15 +135,16 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 > [!TIP]
 > **Common setup gotchas for Nix on macOS / Linux:**
-> * **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
+>
+> - **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
 >   ```bash
 >   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 >   ```
-> * **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
+> - **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
 >   ```text
 >   experimental-features = nix-command flakes
 >   ```
-> * **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
+> - **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
 
 **Linux, MacOS, WSL2**
 

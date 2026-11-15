@@ -7,16 +7,16 @@ resources:
   - ../../../resources/alert-kustomization
 
 patches:
-- patch: |-
-    - op: replace
-      path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
-      value: github:TraceMachina/nativelink#nativelink-worker-init
-    - op: replace
-      path: /spec/postBuild/substitute/PLACEHOLDER_CONFIG_MAP_NAME
-      value: nativelink-worker-init
-    - op: add
-      path: /spec/nameSuffix
-      value: -worker-init
-  target:
-    kind: Kustomization
-    name: nativelink-alert
+  - patch: |-
+      - op: replace
+        path: /spec/postBuild/substitute/PLACEHOLDER_FLAKE_OUTPUT
+        value: github:TraceMachina/nativelink#nativelink-worker-init
+      - op: replace
+        path: /spec/postBuild/substitute/PLACEHOLDER_CONFIG_MAP_NAME
+        value: nativelink-worker-init
+      - op: add
+        path: /spec/nameSuffix
+        value: -worker-init
+    target:
+      kind: Kustomization
+      name: nativelink-alert

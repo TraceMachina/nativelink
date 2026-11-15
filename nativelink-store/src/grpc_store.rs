@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -54,14 +54,12 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
-use nativelink_util::telemetry::ClientHeaders;
+use nativelink_util::telemetry::{forward_client_headers, inject_context};
 use nativelink_util::wire_compression::{
-    stream_decode_compressed_upload, stream_encode_compressed_download_from_reader,
+    stream_decode_compressed_upload, stream_encode_compressed_upload_from_reader,
 };
 use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
-use opentelemetry::global;
-use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::sync::{Semaphore, oneshot};
@@ -70,19 +68,6 @@ use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
-
-struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
-
-impl Injector for TonicMetadataInjector<'_> {
-    fn set(&mut self, key: &str, value: String) {
-        if let (Ok(k), Ok(v)) = (
-            MetadataKey::from_bytes(key.as_bytes()),
-            MetadataValue::try_from(&value),
-        ) {
-            self.0.insert(k, v);
-        }
-    }
-}
 
 /// Adds configured static headers, forwards nominated client request headers,
 /// and injects the current OpenTelemetry trace context into an outgoing gRPC
@@ -95,23 +80,8 @@ fn enrich_request<T>(
     for (key, value) in headers {
         request.metadata_mut().insert(key.clone(), value.clone());
     }
-    if !forward_headers.is_empty()
-        && let Some(client_headers) = Context::current().get::<ClientHeaders>()
-    {
-        for name in forward_headers {
-            if let Some(value) = client_headers.0.get(&name.to_lowercase())
-                && let (Ok(k), Ok(v)) = (
-                    MetadataKey::from_bytes(name.as_bytes()),
-                    MetadataValue::try_from(value.as_str()),
-                )
-            {
-                request.metadata_mut().insert(k, v);
-            }
-        }
-    }
-    global::get_text_map_propagator(|propagator| {
-        propagator.inject(&mut TonicMetadataInjector(request.metadata_mut()));
-    });
+    forward_client_headers(&mut request, forward_headers);
+    inject_context(&mut request);
     request
 }
 
@@ -341,7 +311,8 @@ impl GrpcStore {
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
                 spec.retry.clone(),
-            ),
+            )
+            .with_client("grpc_store"),
             connection_manager: ConnectionManager::new(
                 endpoints,
                 spec.connections_per_endpoint,
@@ -1271,6 +1242,7 @@ impl GrpcStore {
         self: Pin<&Self>,
         digest: DigestInfo,
         reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         enum UploadCompletion {
             Write(Result<(), Error>),
@@ -1319,11 +1291,12 @@ impl GrpcStore {
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
         let mut reader = reader;
-        let encode_fut = stream_encode_compressed_download_from_reader(
+        let encode_fut = stream_encode_compressed_upload_from_reader(
             &mut reader,
             compressor::Value::Zstd,
             WIRE_COMPRESSION_ZSTD_LEVEL,
             compressed_tx,
+            size_info,
         );
 
         let local_state = LocalState {
@@ -1729,9 +1702,11 @@ impl StoreDriver for GrpcStore {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
-        size_info: UploadSizeInfo,
+        mut reader: DropCloserReadHalf,
+        mut size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        const NON_RESUMABLE: bool = false;
+
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
@@ -1739,6 +1714,7 @@ impl StoreDriver for GrpcStore {
             bytes_received: i64,
             /// Remainder of a buffer too large to send as one `WriteRequest`.
             pending: Bytes,
+            size_info: UploadSizeInfo,
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
@@ -1767,6 +1743,26 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        // This boundary knows it is writing CAS content, unlike generic stores
+        // that also hold AC values or encoded data under unrelated digest keys.
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Cas) && is_digest_key {
+            size_info.validate_size(digest.size_bytes())?;
+            size_info = UploadSizeInfo::ExactSize(digest.size_bytes());
+        }
+
+        // REAPI defines empty blobs as always available, even without an upload.
+        // https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto
+        // Only CAS digest keys qualify; AC values and event records still need writes.
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Cas)
+            && is_digest_key
+            && crate::cas_utils::is_zero_digest(digest)
+        {
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            size_info.validate_size(size)?;
+            return Ok(0);
+        }
+
         // Only real digest keys may take the compressed path: for a string key
         // `into_digest()` hashes the key itself, so the remote's mandatory
         // uncompressed-digest verification would reject the upload.
@@ -1774,7 +1770,7 @@ impl StoreDriver for GrpcStore {
             && is_digest_key
             && digest.size_bytes() >= WIRE_COMPRESSION_MIN_SIZE_BYTES
         {
-            return self.update_compressed(digest, reader).await;
+            return self.update_compressed(digest, reader, size_info).await;
         }
 
         let mut buf = Uuid::encode_buffer();
@@ -1820,6 +1816,7 @@ impl StoreDriver for GrpcStore {
             did_error: false,
             bytes_received: 0,
             pending: Bytes::new(),
+            size_info,
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1858,6 +1855,14 @@ impl StoreDriver for GrpcStore {
 
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
+            if data.is_empty()
+                && let Err(err) = local_state
+                    .size_info
+                    .validate_size(u64::try_from(local_state.bytes_received).unwrap_or(u64::MAX))
+            {
+                local_state.did_error = true;
+                return Some((Err(err), local_state));
+            }
 
             Some((
                 Ok(WriteRequest {
@@ -1872,12 +1877,26 @@ impl StoreDriver for GrpcStore {
             ))
         }));
 
-        self.write(
+        // A store upload cannot replay bytes already consumed from its reader.
+        // The upstream may have lost the upload entirely, so replaying just the
+        // last two messages at nonzero offsets is not a safe resume strategy.
+        self.write_internal(
             WriteRequestStreamWrapper::from(stream)
                 .await
                 .err_tip(|| "in GrpcStore::update()")?,
+            NON_RESUMABLE,
         )
         .await
+        .map_err(|mut err| {
+            if is_retryable_code(err.code) {
+                let upstream_code = err.code;
+                err = err.append(format!(
+                    "Upstream upload failed with {upstream_code:?}; retry the full blob from offset zero"
+                ));
+                err.code = Code::Unavailable;
+            }
+            err
+        })
         .err_tip(|| "in GrpcStore::update()")?;
 
         Ok(digest.size_bytes())

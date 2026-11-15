@@ -1,4 +1,4 @@
-import { Badge, Eyebrow, Prose, Section } from "@nativelink/ui";
+import { Badge, Breadcrumbs, Eyebrow, Prose, Section } from "@nativelink/ui";
 import { marked } from "marked";
 import { notFound } from "next/navigation";
 import { formatPostDate, getAllPosts, getPost } from "../../../../lib/posts";
@@ -42,12 +42,13 @@ export default async function BlogPostPage({
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[400px] bg-[radial-gradient(ellipse_900px_400px_at_50%_-10%,rgb(var(--nl-color-brand)/0.10),transparent_70%)]" />
         <Section width="default" className="pt-24 pb-6 md:pt-32 md:pb-8">
           <div className="mx-auto max-w-[760px]">
-            <a
-              href="/resources/blog"
-              className="font-mono text-sm text-brand transition-colors hover:text-foreground"
-            >
-              ← All posts
-            </a>
+            <Breadcrumbs
+              items={[
+                { label: "Resources", href: "/resources" },
+                { label: "Blog", href: "/resources/blog" },
+                { label: post.title },
+              ]}
+            />
             <div className="mt-8 flex flex-wrap items-center gap-2">
               {post.tags.map((tag) => (
                 <Badge key={tag} variant="outline">

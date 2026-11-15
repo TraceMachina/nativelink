@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -437,7 +437,7 @@ async fn metrics_are_tracked_without_otel_endpoint() -> Result<(), Box<dyn core:
     // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
     unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
     assert!(
-        maybe_load_balanced_channel().await.is_none(),
+        maybe_load_balanced_channel().await?.is_none(),
         "Expected no channel when {NL_OTEL_ENDPOINT} is unset"
     );
     let exporter = MetricExporter::builder()
@@ -476,7 +476,7 @@ async fn metrics_are_tracked_with_otel_endpoint() -> Result<(), Box<dyn core::er
     let maybe_channel = maybe_load_balanced_channel().await;
     // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
     unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
-    let channel = maybe_channel.expect("Expected a channel when NL_OTEL_ENDPOINT is set");
+    let channel = maybe_channel?.expect("Expected a channel when NL_OTEL_ENDPOINT is set");
     let exporter = MetricExporter::builder()
         .with_tonic()
         .with_channel(channel.into())

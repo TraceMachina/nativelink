@@ -73,7 +73,9 @@ export function getAllPosts(): Post[] {
       const raw = fs.readFileSync(path.join(POSTS_DIR, file), "utf8");
       const { data, body } = parseFrontmatter(raw);
       const slug =
-        typeof data.slug === "string" && data.slug ? data.slug : file.replace(/\.(md|mdx)$/, "");
+        typeof data.slug === "string" && data.slug
+          ? data.slug
+          : file.replace(/\.(md|mdx)$/, "");
       return {
         slug,
         title: typeof data.title === "string" ? data.title : slug,
@@ -81,11 +83,20 @@ export function getAllPosts(): Post[] {
         image: typeof data.image === "string" ? data.image : undefined,
         pubDate: typeof data.pubDate === "string" ? data.pubDate : "",
         readTime: typeof data.readTime === "string" ? data.readTime : undefined,
-        excerpt: deriveExcerpt(body),
+        excerpt:
+          typeof data.excerpt === "string" && data.excerpt.trim()
+            ? data.excerpt.trim()
+            : deriveExcerpt(body),
         body,
       };
     })
-    .sort((a, b) => b.pubDate.localeCompare(a.pubDate));
+    .sort((a, b) => {
+      let compare = b.pubDate.localeCompare(a.pubDate);
+      if (compare == 0) {
+        compare = b.title.localeCompare(a.title);
+      }
+      return compare;
+    });
 }
 
 export function getPost(slug: string): Post | undefined {
