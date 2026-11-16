@@ -54,7 +54,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
       - name: Test Nix package sharing
         run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
 
