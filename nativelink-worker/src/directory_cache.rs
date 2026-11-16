@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
-use futures::stream::TryStreamExt;
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
@@ -55,7 +55,7 @@ const CONSTRUCT_DIRECTORY_CONCURRENCY: usize = 64;
 /// Default for `DirectoryCacheConfig::max_concurrent_fetches`, preserving
 /// the historical cache-wide fetch bound.
 const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 64;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
 
 /// Prefix for in-progress construction trees under `cache_root`. Cache-entry
@@ -68,6 +68,24 @@ const TOMBSTONE_PREFIX: &str = ".del-";
 
 /// Minimum interval between summary log lines, in nanoseconds (one minute).
 const SUMMARY_LOG_INTERVAL_NANOS: u64 = 60_000_000_000;
+
+type DirectoryWork<'a> = mpsc::UnboundedSender<BoxFuture<'a, ()>>;
+type DirectoryProtos = Arc<HashMap<DigestInfo, ProtoDirectory>>;
+
+async fn drive_directory_work<'a, T>(
+    start: impl FnOnce(DirectoryWork<'a>) -> BoxFuture<'a, Result<T, Error>>,
+) -> Result<T, Error> {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut root = start(sender);
+    let mut pending = FuturesUnordered::new();
+    loop {
+        tokio::select! {
+            result = &mut root => return result,
+            Some(work) = receiver.recv() => pending.push(work),
+            Some(()) = pending.next(), if !pending.is_empty() => {},
+        }
+    }
+}
 
 /// Current time as nanoseconds since the unix epoch, for lock-free LRU
 /// timestamps. Saturates instead of failing (`u64` nanos overflow in 2554).
@@ -451,10 +469,15 @@ impl DirectoryCache {
         dest_path: &Path,
         lease: Option<&dyn DigestLease>,
     ) -> Result<bool, Error> {
-        let (hit, _size) = self
-            .get_or_create_entry(digest, dest_path, None, true, lease)
-            .await?;
-        Ok(hit)
+        drive_directory_work(|work| {
+            Box::pin(async move {
+                let (hit, _size) = self
+                    .get_or_create_entry(digest, dest_path, None, true, lease, work)
+                    .await?;
+                Ok(hit)
+            })
+        })
+        .await
     }
 
     /// Acquires a reusable tree without copying it to an action workspace.
@@ -463,6 +486,18 @@ impl DirectoryCache {
         &self,
         digest: DigestInfo,
         lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        drive_directory_work(|work| {
+            Box::pin(async move { self.prepare_for_mount_inner(digest, lease, work).await })
+        })
+        .await
+    }
+
+    async fn prepare_for_mount_inner<'a>(
+        &'a self,
+        digest: DigestInfo,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<PreparedDirectory, Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
@@ -489,7 +524,7 @@ impl DirectoryCache {
             nativelink_util::metrics::INPUT_MOUNT_METRICS
                 .cache_misses
                 .add(1, &[]);
-            self.construct_entry(digest, None, true, lease).await
+            self.construct_entry(digest, None, true, lease, work).await
         };
         self.forget_construction_lock(&digest).await;
         result
@@ -508,13 +543,14 @@ impl DirectoryCache {
     /// `GetTree` prefetch on a cold miss. Subtree flights pass the root's
     /// map down instead, so cache hits (root or subtree) never prefetch. A
     /// server may paginate that traversal across multiple RPCs.
-    async fn get_or_create_entry(
-        &self,
+    async fn get_or_create_entry<'a>(
+        &'a self,
         digest: DigestInfo,
         dest_path: &Path,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<(bool, u64), Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
@@ -548,7 +584,7 @@ impl DirectoryCache {
         // then remove its lock from the map if no other callers are waiting.
         // Waiters must keep sharing this flight even if construction failed.
         let result = self
-            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
+            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease, work)
             .await;
         self.forget_construction_lock(&digest).await;
         result
@@ -615,13 +651,14 @@ impl DirectoryCache {
     /// construction lock after either success or failure.
     /// `protos` and `prefetch_on_miss` are documented on
     /// [`Self::get_or_create_entry`].
-    async fn construct_and_materialize(
-        &self,
+    async fn construct_and_materialize<'a>(
+        &'a self,
         digest: DigestInfo,
         dest_path: &Path,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<(bool, u64), Error> {
         // Re-check: another task may have just constructed this digest while
         // we waited on the construction lock. If the entry turns out to be
@@ -632,7 +669,7 @@ impl DirectoryCache {
         }
 
         let prepared = self
-            .construct_entry(digest, protos, prefetch_on_miss, lease)
+            .construct_entry(digest, protos, prefetch_on_miss, lease, work)
             .await?;
         let method = hardlink_directory_tree(prepared.path(), dest_path)
             .await
@@ -642,12 +679,13 @@ impl DirectoryCache {
     }
 
     /// Constructs and publishes a pinned entry, without copying it elsewhere.
-    async fn construct_entry(
-        &self,
+    async fn construct_entry<'a>(
+        &'a self,
         digest: DigestInfo,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<PreparedDirectory, Error> {
         // Construct the directory into a UNIQUE temp path first, then
         // atomically publish it to the canonical `cache_root/<digest>` path
@@ -678,11 +716,11 @@ impl DirectoryCache {
         } else {
             None
         };
-        let protos = prefetched.as_ref().or(protos);
+        let protos = prefetched.map(Arc::new).or(protos);
         let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
         let mut temp_guard = ScratchGuard::new(temp_path.clone());
         let size = match self
-            .construct_directory(digest, &temp_path, protos, lease)
+            .construct_directory(digest, &temp_path, protos, lease, work)
             .await
         {
             Ok(size) => size,
@@ -976,13 +1014,17 @@ impl DirectoryCache {
         }
     }
 
-    fn construct_directory<'a>(
+    fn construct_directory<'a, 'b>(
         &'a self,
         digest: DigestInfo,
-        dest_path: &'a Path,
-        protos: Option<&'a HashMap<DigestInfo, ProtoDirectory>>,
+        dest_path: &'b Path,
+        protos: Option<DirectoryProtos>,
         lease: Option<&'a dyn DigestLease>,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
+        work: DirectoryWork<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'b>>
+    where
+        'a: 'b,
+    {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
             // The root is reserved by `get_or_create_entry`; child digests are
@@ -991,7 +1033,7 @@ impl DirectoryCache {
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.
             // an incomplete GetTree response) degrades to the fetch path.
-            let prefetched = protos.and_then(|map| map.get(&digest));
+            let prefetched = protos.as_ref().and_then(|map| map.get(&digest));
             let directory: ProtoDirectory = if let Some(directory) = prefetched {
                 directory.clone()
             } else {
@@ -1039,9 +1081,25 @@ impl DirectoryCache {
                 {
                     acquire_digest(lease, &dir_digest);
                 }
-                node_futures.push(Box::pin(
-                    self.create_subdirectory(dest_path, dir_node, protos, lease),
-                ));
+                let parent = dest_path.to_owned();
+                let dir_node = dir_node.clone();
+                let protos = protos.clone();
+                let work = work.clone();
+                node_futures.push(Box::pin(async move {
+                    let (mut response, result) = oneshot::channel();
+                    let child_work = work.clone();
+                    work.send(Box::pin(async move {
+                        tokio::select! {
+                            biased;
+                            _ = response.closed() => {},
+                            value = self.create_subdirectory(&parent, &dir_node, protos, lease, child_work) => {
+                                let _ = response.send(value);
+                            },
+                        }
+                    }))
+                    .map_err(|_| make_err!(Code::Internal, "directory work queue closed"))?;
+                    result.await.map_err(|_| make_err!(Code::Internal, "directory work cancelled"))?
+                }));
             }
             for symlink in &directory.symlinks {
                 node_futures.push(Box::pin(async move {
@@ -1240,12 +1298,13 @@ impl DirectoryCache {
     /// When disabled (the default), the subtree is always constructed
     /// directly under the parent with no cache interaction — today's
     /// behavior, unchanged.
-    async fn create_subdirectory(
-        &self,
+    async fn create_subdirectory<'a>(
+        &'a self,
         parent: &Path,
         dir_node: &DirectoryNode,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
-        lease: Option<&dyn DigestLease>,
+        protos: Option<DirectoryProtos>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
@@ -1265,7 +1324,7 @@ impl DirectoryCache {
             // through this method, so nested subtrees get their own entries
             // too (leaf-level reuse).
             let (hit, _size) = self
-                .get_or_create_entry(digest, &dir_path, protos, false, lease)
+                .get_or_create_entry(digest, &dir_path, protos, false, lease, work)
                 .await?;
             let counter = if hit {
                 &self.subtree_hits
@@ -1285,7 +1344,7 @@ impl DirectoryCache {
         }
 
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path, protos, lease)
+        self.construct_directory(digest, &dir_path, protos, lease, work)
             .await
     }
 
