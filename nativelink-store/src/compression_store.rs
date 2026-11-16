@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -172,6 +172,8 @@ struct UploadState {
     footer: Footer,
     max_output_size: u64,
     input_max_size: u64,
+    /// The most blocks this upload may write.
+    max_index_count: u64,
 }
 
 impl UploadState {
@@ -184,6 +186,16 @@ impl UploadState {
         };
 
         let max_index_count = (input_max_size / u64::from(store.config.block_size)) + 1;
+        // The footer counts blocks in a u32, so no stream holds more. An exact
+        // size past that is refused; an upper bound past it (a caller that
+        // does not know the size announces u64::MAX) only bounds the loop.
+        let max_index_count = match upload_size {
+            UploadSizeInfo::ExactSize(_) => u64::from(
+                u32::try_from(max_index_count)
+                    .err_tip(|| "Could not convert max_index_count to u32")?,
+            ),
+            UploadSizeInfo::MaxSize(_) => max_index_count.min(u64::from(u32::MAX)),
+        };
 
         let header = Header {
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -192,14 +204,13 @@ impl UploadState {
             },
             upload_size,
         };
+        // The index grows as blocks are written. Sizing it up front from the
+        // announced size allocated one entry per possible block before any
+        // data arrived, which for an unknown size (u64::MAX) asked the
+        // allocator for a petabyte and aborted the process.
         let footer = Footer {
-            indexes: vec![
-                SliceIndex::default();
-                usize::try_from(max_index_count)
-                    .err_tip(|| "Could not convert max_index_count to usize")?
-            ],
-            index_count: u32::try_from(max_index_count)
-                .err_tip(|| "Could not convert max_index_count to u32")?,
+            indexes: Vec::new(),
+            index_count: 0,            // Updated later.
             uncompressed_data_size: 0, // Updated later.
             config: header.config,
             version: CURRENT_STREAM_FORMAT_VERSION,
@@ -208,11 +219,26 @@ impl UploadState {
         // This is more accurate of an estimate than what get_maximum_output_size calculates.
         let max_block_size = lz4_compress_bound(u64::from(store.config.block_size)) + U32_SZ + 1;
 
+        // Saturating: an unknown size makes the bound u64::MAX, which the
+        // inner store reads as "no useful bound".
         let max_output_size = {
+            // Room for the longest encoding of the index count (a u64, ten
+            // bytes as a varint).
+            const MAX_COUNT_SZ: u64 = 10;
             let header_size = serialized_size(&header, store.wincode_config)?;
-            let max_content_size = max_block_size * max_index_count;
-            let max_footer_size = U32_SZ + 1 + serialized_size(&footer, store.wincode_config)?;
-            header_size + max_content_size + max_footer_size
+            let max_content_size = max_block_size.saturating_mul(max_index_count);
+            let empty_footer_size = serialized_size(&footer, store.wincode_config)?;
+            let max_index_entry_size = serialized_size(
+                &SliceIndex {
+                    position_from_prev_index: u32::MAX,
+                },
+                store.wincode_config,
+            )?;
+            let max_footer_size = (U32_SZ + 1 + empty_footer_size + MAX_COUNT_SZ)
+                .saturating_add(max_index_entry_size.saturating_mul(max_index_count));
+            header_size
+                .saturating_add(max_content_size)
+                .saturating_add(max_footer_size)
         };
 
         Ok(Self {
@@ -220,6 +246,7 @@ impl UploadState {
             footer,
             max_output_size,
             input_max_size,
+            max_index_count,
         })
     }
 }
@@ -274,16 +301,8 @@ impl CompressionStore {
             wincode_config: WincodeConfig::new(),
         }))
     }
-}
 
-#[async_trait]
-impl StoreDriver for CompressionStore {
-    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
-        self.inner_store.clone().into_inner().post_init().await?;
-        Ok(())
-    }
-
-    async fn has_with_results(
+    async fn inner_has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
@@ -318,6 +337,34 @@ impl StoreDriver for CompressionStore {
             .zip(nonzero_results)
         {
             *result = inner_result;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl StoreDriver for CompressionStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        self.inner_store.clone().into_inner().post_init().await?;
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner_has_with_results(digests, results).await?;
+        // The inner store holds the framed, compressed bytes, so the sizes it
+        // reports are the compressed ones. Callers size fast-tier writes and
+        // buffers from this answer, so for a digest key report the length the
+        // digest declares, which is what a read of this store delivers. A
+        // string key declares no length and keeps the stored size; reading
+        // the uncompressed one back from the frame header is a follow-up.
+        for (key, result) in digests.iter().zip(results.iter_mut()) {
+            if let (StoreKey::Digest(digest), Some(_)) = (key.borrow(), result.as_ref()) {
+                *result = Some(digest.size_bytes());
+            }
         }
         Ok(())
     }
@@ -377,7 +424,7 @@ impl StoreDriver for CompressionStore {
 
             let mut received_amt = 0;
             let mut index_count: u32 = 0;
-            for index in &mut output_state.footer.indexes {
+            while u64::from(index_count) < output_state.max_index_count {
                 let chunk = reader
                     .consume(Some(self.config.block_size as usize))
                     .await
@@ -424,10 +471,18 @@ impl StoreDriver for CompressionStore {
                     .await
                     .err_tip(|| "Failed to write chunk to inner store in compression store")?;
 
-                index.position_from_prev_index =
-                    u32::try_from(compressed_data_sz).unwrap_or(u32::MAX);
+                output_state.footer.indexes.push(SliceIndex {
+                    position_from_prev_index: u32::try_from(compressed_data_sz).unwrap_or(u32::MAX),
+                });
 
                 index_count += 1;
+            }
+            upload_size.validate_size(received_amt)?;
+            if !reader.recv().await?.is_empty() {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Data after the declared compression input size"
+                ));
             }
             // Index 0 is actually a pointer to the second chunk. This is because we don't need
             // an index for the first item, since it starts at position `{header_len}`.

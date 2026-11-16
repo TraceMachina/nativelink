@@ -30,6 +30,12 @@ chunking blobs on demand with FastCDC 2020 when they were uploaded whole, which
 is what makes chunked downloads work for outputs produced by remote execution
 workers.
 
+In development builds, the `dedup` store validates the total input size before publishing its index.
+A failed upload can leave valid chunks without an index; it cannot publish
+an index for incomplete input. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## Requirements [#requirements]
 
 - **Bazel 9.1.1+ or 8.7.0+** on the client, with

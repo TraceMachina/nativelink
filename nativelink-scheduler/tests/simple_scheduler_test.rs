@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,12 +33,13 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event,
+    OriginEvent, event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
-    WorkerLoad, update_for_worker,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
+    KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
+use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
     SortedAwaitedActionState,
@@ -49,7 +50,8 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
+    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId,
+    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -346,6 +348,164 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     assert_eq!(resource_usage.peak_memory_kb, 12_345);
     assert!(resource_usage.sampled);
 
+    Ok(())
+}
+
+/// Starts one action on a fresh worker with origin events on, and returns
+/// the worker scheduler, the operation the worker was told to run, the
+/// start event's id, and the event receiver.
+async fn start_one_action_with_origin_events() -> Result<
+    (
+        Arc<SimpleScheduler>,
+        Arc<dyn WorkerScheduler>,
+        WorkerId,
+        OperationId,
+        String,
+        mpsc::Receiver<OriginEvent>,
+        mpsc::Receiver<UpdateForWorker>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        Some(origin_event_tx),
+    );
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let action_info = make_base_action_info(make_system_time(2), DigestInfo::new([43u8; 32], 512));
+    let _listener = scheduler
+        .add_action(OperationId::from("client-op"), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    scheduler.do_try_match_for_test().await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update.unwrap() {
+        update_for_worker::Update::StartAction(start) => {
+            OperationId::from(start.operation_id.as_str())
+        }
+        update => panic!("Unexpected worker update: {update:?}"),
+    };
+    let start_event_id = origin_event_rx.recv().await.unwrap().event_id;
+    Ok((
+        scheduler,
+        worker_scheduler,
+        worker_id,
+        operation_id,
+        start_event_id,
+        origin_event_rx,
+        rx_from_worker,
+    ))
+}
+
+fn attempt_ended(event: OriginEvent) -> ActionAttemptEnded {
+    match event.event.unwrap().event.unwrap() {
+        event::Event::Response(response) => match response.event.unwrap() {
+            response_event::Event::ActionAttemptEnded(ended) => ended,
+            other => panic!("Unexpected response event: {other:?}"),
+        },
+        other => panic!("Unexpected origin event: {other:?}"),
+    }
+}
+
+// An input fetch the worker reports as past its deadline is published as
+// ended for that, as a child of its start event, once the requeue is stored.
+#[nativelink_test]
+async fn attempt_ended_event_names_an_input_fetch_timeout() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::DeadlineExceeded,
+                "ran past its deadline"
+            )),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    let ended = attempt_ended(event);
+    assert_eq!(ended.reason, i32::from(AttemptEndReason::InputFetchTimeout));
+    assert_eq!(ended.operation_id, operation_id.to_string());
+    assert_eq!(ended.worker_id, "worker_id");
+    assert!(
+        ended.detail.contains("ran past its deadline"),
+        "{}",
+        ended.detail
+    );
+    Ok(())
+}
+
+// The worker hands a missing CAS input back as a FAILED_PRECONDITION result,
+// not an error; that result is what names the attempt as missing an input.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_missing_input() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::FailedPrecondition,
+                    "Object not found : {MISSING_INPUT_ERROR_TIP}"
+                )),
+                ..ActionResult::default()
+            })),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::MissingInput)
+    );
+    Ok(())
+}
+
+// Any other NotFound the worker reports is its own error, not a missing input.
+#[nativelink_test]
+async fn attempt_ended_event_names_other_not_found_a_worker_error() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, _start, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "no such directory")),
+        )
+        .await?;
+    assert_eq!(
+        attempt_ended(rx.recv().await.unwrap()).reason,
+        i32::from(AttemptEndReason::WorkerError)
+    );
+    Ok(())
+}
+
+// A worker that goes away ends the attempts it held as worker lost.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_lost_worker() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, _operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler.remove_worker(&worker_id).await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::WorkerLost)
+    );
     Ok(())
 }
 
@@ -2357,6 +2517,9 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     }
 
     // Now connect a new worker and it should pickup the action.
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     {
@@ -2442,6 +2605,246 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     Ok(())
 }
 
+/// The error a worker reports once its store retries ran out.
+fn store_unreachable() -> Error {
+    make_err!(Code::Unavailable, "tcp connect error").append(STORE_UNREACHABLE_ERROR_TIP)
+}
+
+/// A worker that cannot reach its store (a CAS pod being replaced) does not
+/// spend the action's `max_job_retries`; three such refusals within one
+/// second used to cancel the build. It spends its own budget, sized like a
+/// lost worker's, so an action whose store never comes back still ends, with
+/// a code the client does not retry.
+#[nativelink_test]
+async fn store_unavailable_errors_spend_the_worker_loss_budget_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // Two store refusals: each requeues the action, neither is an attempt.
+    for _ in 0..2 {
+        drop(
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(store_unreachable()),
+                )
+                .await,
+        );
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+        rx_from_worker =
+            setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => {}
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // The action's own first failure still has its whole retry budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // The third store refusal is over the worker-loss budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(store_unreachable()),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+            assert!(
+                err.to_string().contains(
+                    "could not reach its store 3 times, more than max_worker_loss_retries (2)"
+                ),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
+    }
+
+    Ok(())
+}
+
+/// An `Unavailable` the worker did not mark as a store it could not reach (a
+/// Buck2 capture helper that failed, a result the scheduler lost) is an
+/// attempt like any other error, not a store loss.
+#[nativelink_test]
+async fn unmarked_unavailable_error_spends_max_job_retries_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 5,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([98u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert!(
+                err.to_string()
+                    .contains("attempted to execute too many times 2 > 1"),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
+    }
+
+    Ok(())
+}
+
 /// Worker crash-loop regression: an action whose worker keeps disconnecting
 /// (e.g. `OOMKill`) used to bypass `max_job_retries` because
 /// `UpdateWithDisconnect` requeued without counting as an attempt. The build
@@ -2495,7 +2898,7 @@ async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );
@@ -2531,7 +2934,7 @@ async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );
@@ -3393,7 +3796,9 @@ async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error
 /// which a client-timeout sweep then finishes server-side while the worker
 /// still holds it. Returns the scheduler, the worker's channel and the
 /// operation id the worker was given.
-async fn setup_worker_holding_a_finished_operation() -> Result<
+async fn setup_worker_holding_a_finished_operation(
+    origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+) -> Result<
     (
         Arc<SimpleScheduler>,
         mpsc::Receiver<UpdateForWorker>,
@@ -3423,7 +3828,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
+        origin_event_tx,
     );
 
     let mut rx_from_worker = setup_new_worker(
@@ -3479,7 +3884,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
 async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, operation_id, action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
     assert!(logs_contain(
         "Operation timed out having no more clients listening"
     ));
@@ -3555,7 +3960,7 @@ async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Res
 #[nativelink_test]
 async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), Error> {
     let (scheduler, rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The worker's connection is gone, so the kill cannot be delivered.
     drop(rx_from_worker);
@@ -3569,11 +3974,68 @@ async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), 
     Ok(())
 }
 
+// An operation the worker was told to kill was already given up on: evicting
+// the worker for not acknowledging the kill reports no lost attempt.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_kill()
+-> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// The worker can still hold an operation that ended elsewhere before the
+// kill goes out; evicting it then reports no lost attempt either.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_that_ended_elsewhere()
+-> Result<(), Error> {
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, _rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 1_000).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The kill is delivered, but the worker is wedged (nativelink#2672): it
     // keeps its keepalives up and never reports the operation.
@@ -4050,4 +4512,220 @@ async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> 
         "the oldest waiting action takes the room a memory report opened"
     );
     Ok(())
+}
+
+/// A peer wins exactly one assignment against a real awaited-action DB.
+#[derive(MetricsComponent)]
+struct AssignmentRaceDb<A: AwaitedActionDb> {
+    inner: A,
+    contended_digest: DigestInfo,
+    lose_assignment: AtomicBool,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for AssignmentRaceDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner
+            .get_range_of_actions(state, start, end, desc)
+            .await
+    }
+
+    async fn update_awaited_action(&self, mut action: AwaitedAction) -> Result<(), Error> {
+        if action.state().stage == ActionStage::Executing
+            && action.action_info().digest() == self.contended_digest
+            && self.lose_assignment.swap(false, Ordering::AcqRel)
+        {
+            // A peer commits the assignment before this scheduler's CAS.
+            action.set_worker_id(
+                Some(WorkerId("peer-worker".to_string())),
+                make_system_time(0),
+            );
+            self.inner.update_awaited_action(action).await?;
+            return Err(make_err!(
+                Code::Aborted,
+                "Another scheduler won the assignment"
+            ));
+        }
+        self.inner.update_awaited_action(action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+async fn check_lost_assignment_skips_shape(park_first: bool) -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let notify = Arc::new(Notify::new());
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let digests = [
+        DigestInfo::new([201; 32], 512),
+        DigestInfo::new([202; 32], 512),
+        DigestInfo::new([203; 32], 512),
+    ];
+    let (pass_tx, mut pass_rx) = mpsc::unbounded_channel();
+    let (scheduler, _workers) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            executing_sweep_interval_s: -1,
+            fallback_match_interval_s: -1,
+            worker_match_logging_interval_s: if park_first { -1 } else { 1 },
+            ..Default::default()
+        },
+        GatedQueueDb {
+            inner: AssignmentRaceDb {
+                inner: memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+                contended_digest: digests[0],
+                lose_assignment: AtomicBool::new(true),
+            },
+            gate: gate.clone(),
+            listing_gate: Some(listing_gate.clone()),
+        },
+        move || {
+            let pass_tx = pass_tx.clone();
+            async move {
+                pass_tx.send(()).unwrap();
+            }
+        },
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut worker_rx = setup_new_worker(
+        &scheduler,
+        WorkerId("local-worker".to_string()),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(10),
+        )])),
+    )
+    .await?;
+    let _blocker = if park_first {
+        Some(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([200; 32], 512),
+                HashMap::from([("cpu_count".to_string(), "10".to_string())]),
+                make_system_time(0) - Duration::from_secs(1),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut listeners = Vec::new();
+    for (i, digest) in digests.into_iter().enumerate() {
+        listeners.push(
+            setup_action(
+                &scheduler,
+                digest,
+                HashMap::from([(
+                    "cpu_count".to_string(),
+                    if i == 2 { "2" } else { "1" }.to_string(),
+                )]),
+                make_system_time(i as u64),
+            )
+            .await?,
+        );
+    }
+    listing_gate.add_permits(1);
+    if park_first {
+        gate.add_permits(1);
+        let (operation_id, _) = start_execute_digest(worker_rx.recv().await.unwrap());
+        // The two actions sharing a shape park behind the full worker.
+        gate.add_permits(2);
+        tokio::task::yield_now().await;
+        assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        let worker_id = WorkerId("local-worker".to_string());
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+        // Reading the last action triggers a replay of the parked pair.
+        gate.add_permits(1);
+    } else {
+        gate.add_permits(3);
+    }
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // The first action belongs to the peer. The second has the same shape
+    // and waits; the third uses a different amount of CPU and still runs.
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[2]
+    );
+    assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    assert_eq!(listeners[1].as_state().await?.0.stage, ActionStage::Queued);
+    listing_gate.add_permits(1);
+    gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[1]
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_assignment_skips_only_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(false).await?;
+    // The listing gate allows only one query per pass; enabling diagnostics
+    // must not issue another queue or executing listing before it finishes.
+    assert!(logs_contain("Oldest actions in the matching pass"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(true).await
 }

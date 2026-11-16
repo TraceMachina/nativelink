@@ -79,7 +79,7 @@ The shape of it:
     triggers `config-reference.yaml`, which opens an auto-merging PR against
     `main`. If it did not fire, re-run it from the Actions tab or regenerate
     by hand with
-    `bun --filter @nativelink/docs gen:config-reference v1.x.y`.
+    `pnpm run --filter @nativelink/docs gen:config-reference v1.x.y`.
   </li>
   <li>
     **Write the release notes**, attributing every entry to its author, then
@@ -155,7 +155,7 @@ turn it into MDX, and the whole thing is invoked as:
 
 ```bash
 cd web
-bun --filter @nativelink/docs gen:config-reference v1.x.y
+pnpm run --filter @nativelink/docs gen:config-reference v1.x.y
 ```
 
 Passing a tag updates `lib/config-versions.ts` (which is what the docs UI

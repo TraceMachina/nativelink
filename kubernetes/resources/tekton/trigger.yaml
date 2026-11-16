@@ -155,18 +155,18 @@ spec:
     matchLabels:
       app.kubernetes.io/name: tekton-pipelines-webhook
   ingress:
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: flux-system
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: ci
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: default
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: flux-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ci
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
   policyTypes:
-  - Ingress
+    - Ingress
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

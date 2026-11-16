@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,6 +53,13 @@ pub trait LenEntry: 'static {
     /// Length of referenced data.
     fn len(&self) -> u64;
 
+    /// Length of the content a read of the entry returns. This, not `len()`,
+    /// is the size `sizes_for_keys` reports, since callers size reads by it.
+    #[inline]
+    fn content_len(&self) -> u64 {
+        self.len()
+    }
+
     /// Returns `true` if `self` has zero length.
     fn is_empty(&self) -> bool;
 
@@ -79,6 +86,11 @@ impl<T: LenEntry + Send + Sync> LenEntry for Arc<T> {
     #[inline]
     fn len(&self) -> u64 {
         T::len(self.as_ref())
+    }
+
+    #[inline]
+    fn content_len(&self) -> u64 {
+        T::content_len(self.as_ref())
     }
 
     #[inline]
@@ -615,6 +627,7 @@ where
     /// Return the sizes of a collection of `keys`. Expects `results` collection
     /// to be provided for storing the resulting key sizes. Each index value in
     /// `keys` maps directly to the size value for the key in `results`.
+    /// The size is the entry's `content_len()`, not its eviction `len()`.
     /// If no key is found in the internal map, `None` is filled in its place.
     /// If `peek` is set to `true`, the items are not promoted to the front of the
     /// LRU cache. Note: peek may still evict, but won't promote.
@@ -674,7 +687,7 @@ where
                             if !peek {
                                 entry.seconds_since_anchor = self.elapsed_seconds();
                             }
-                            *result = Some(entry.data.len());
+                            *result = Some(entry.data.content_len());
                         }
                     }
                     None => *result = None,

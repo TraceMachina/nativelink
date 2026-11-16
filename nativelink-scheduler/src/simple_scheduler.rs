@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,11 +54,12 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::{ApiWorkerScheduler, QueuedAction};
+use crate::api_worker_scheduler::{AVOID_FALLBACK_AFTER, ApiWorkerScheduler, QueuedAction};
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::resource_sketch::ResourceSketch;
 use crate::simple_scheduler_state_manager::{
     RetryLimits, SimpleSchedulerStateManager, is_lost_record,
 };
@@ -221,6 +222,12 @@ pub struct SimpleScheduler {
     /// The clock for actions queued while no worker is connected anywhere
     /// (`no_worker_action_timeout_s`); `None` when that timeout is off.
     no_worker_tracker: Option<Mutex<UnsatisfiableTracker>>,
+
+    /// When the earliest action the last pass left waiting, because only
+    /// workers it failed on were free here, may be offered to one of them:
+    /// `AVOID_FALLBACK_AFTER` after its requeue. The matching task wakes
+    /// for it, so that fallback does not wait on some other event.
+    avoid_fallback_due: Mutex<Option<SystemTime>>,
 
     /// Typed platform properties by the hash of the raw ones. Typing is a
     /// lookup and a parse per property per queued action per pass, and the
@@ -451,22 +458,27 @@ impl SimpleScheduler {
 
     /// How long until the matching loop would next wake on behalf of an
     /// unsatisfiable shape, if at all.
-    pub fn unsatisfiable_deadline_for_test(&self) -> Option<Duration> {
-        self.unsatisfiable_deadline((self.now_fn)())
+    pub fn next_wake_for_test(&self) -> Option<Duration> {
+        self.next_wake((self.now_fn)())
     }
 
-    /// How long until a pass should run for an unsatisfiable or a no-worker
-    /// shape, whichever comes first.
-    fn unsatisfiable_deadline(&self, now: SystemTime) -> Option<Duration> {
+    /// How long until a pass should run without being told to: for an
+    /// unsatisfiable or a no-worker shape, or for an action whose avoidance
+    /// fallback comes due, whichever comes first.
+    fn next_wake(&self, now: SystemTime) -> Option<Duration> {
         let unsatisfiable = self.unsatisfiable_tracker.lock().next_deadline(now);
         let no_worker = self
             .no_worker_tracker
             .as_ref()
             .and_then(|tracker| tracker.lock().next_deadline(now));
-        match (unsatisfiable, no_worker) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let avoid_fallback = self
+            .avoid_fallback_due
+            .lock()
+            .map(|due| due.duration_since(now).unwrap_or(Duration::ZERO));
+        [unsatisfiable, no_worker, avoid_fallback]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
@@ -589,6 +601,12 @@ impl SimpleScheduler {
         struct Loaded {
             action_state_result: Box<dyn ActionStateResult>,
             action_info: ActionInfoWithProps,
+            /// Workers a retry of this action should not go back to, and
+            /// their nodes.
+            avoid: Vec<WorkerId>,
+            avoid_nodes: Vec<String>,
+            /// When the action was last queued.
+            queued_since: SystemTime,
         }
 
         /// Reads what matching needs of a listed action. `None` when the
@@ -636,6 +654,12 @@ impl SimpleScheduler {
             )
             .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
 
+            // One read of the record for what the pass needs of it.
+            let facts = action_state_result
+                .dispatch_facts()
+                .await
+                .unwrap_or_default();
+            let queued_since = facts.queued_since.unwrap_or(action_info.insert_timestamp);
             Ok(Some(Loaded {
                 action_state_result,
                 action_info: ActionInfoWithProps {
@@ -644,6 +668,9 @@ impl SimpleScheduler {
                     origin_metadata: maybe_origin_metadata.unwrap_or_default(),
                     scheduler_start_execute_event_id: None,
                 },
+                avoid: facts.avoid_worker_ids,
+                avoid_nodes: facts.avoid_node_names,
+                queued_since,
             }))
         }
 
@@ -801,6 +828,7 @@ impl SimpleScheduler {
         async fn place_parked(
             parked: &mut Parked,
             placement: &mut Placement,
+            contended: &mut HashSet<PropertyShape>,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
@@ -812,7 +840,7 @@ impl SimpleScheduler {
             let mut blocked: HashSet<PropertyShape> = HashSet::new();
             let mut still_parked = VecDeque::with_capacity(parked.queue.len());
             while let Some((shape, loaded)) = parked.queue.pop_front() {
-                if blocked.contains(&shape) {
+                if blocked.contains(&shape) || contended.contains(&shape) {
                     still_parked.push_back((shape, loaded));
                     continue;
                 }
@@ -824,6 +852,9 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
+                            queued_since: loaded.queued_since,
                         }),
                     )
                     .await
@@ -845,7 +876,10 @@ impl SimpleScheduler {
                 .await
                 {
                     Ok(Dispatch::Sent) => placement.dispatched += 1,
-                    Ok(Dispatch::LostRace) => placement.lost_race += 1,
+                    Ok(Dispatch::LostRace) => {
+                        placement.lost_race += 1;
+                        contended.insert(shape);
+                    }
                     Err(err) => {
                         placement.failed += 1;
                         result = result.merge(Err(err));
@@ -907,6 +941,11 @@ impl SimpleScheduler {
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
         let mut placement = Placement::default();
+        // Once a peer wins an assignment, let it advance through that
+        // property shape for this pass. Other shapes can still use this
+        // scheduler's workers, and the next pass tries every shape again.
+        let mut contended = HashSet::new();
+        let mut oldest_queued = Vec::new();
         let hold_pass = workers.begin_pass_holds().await;
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
@@ -914,7 +953,7 @@ impl SimpleScheduler {
         // it, requeues included: the pass already reads every queued action,
         // so the ages cost nothing more from the store.
         let mut queued_ages = AgeBuckets::default();
-        while let Some(action_state_result) = stream.next().await {
+        'actions: while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
             let loaded = match load_action(
                 action_state_result,
@@ -934,6 +973,15 @@ impl SimpleScheduler {
                 loaded.action_info.inner.insert_timestamp,
                 unsatisfiable_pass.now,
             );
+            if full_worker_logging {
+                oldest_queued.push(loaded.action_info.inner.clone());
+                oldest_queued.sort_unstable_by_key(|action| action.insert_timestamp);
+                oldest_queued.truncate(5);
+            }
+            let shape = PropertyShape::from(&loaded.action_info.platform_properties);
+            if contended.contains(&shape) {
+                continue;
+            }
 
             // Room that opened since the pass last placed anything belongs
             // to the oldest action still waiting, not to this one, which is
@@ -948,6 +996,9 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
+                            queued_since: loaded.queued_since,
                         }),
                     )
                     .await;
@@ -960,6 +1011,7 @@ impl SimpleScheduler {
                     place_parked(
                         &mut parked,
                         &mut placement,
+                        &mut contended,
                         workers,
                         matching_engine_state_manager,
                         maybe_origin_event_tx,
@@ -969,6 +1021,9 @@ impl SimpleScheduler {
                     )
                     .await,
                 );
+                if contended.contains(&shape) {
+                    continue 'actions;
+                }
             };
 
             match outcome {
@@ -984,7 +1039,11 @@ impl SimpleScheduler {
                             self.now_fn.as_ref(),
                         )
                         .await
-                        .map(|_| ()),
+                        .map(|dispatch| {
+                            if dispatch == Dispatch::LostRace {
+                                contended.insert(shape);
+                            }
+                        }),
                     );
                 }
                 // A worker could run it once one has room. The match
@@ -1032,6 +1091,7 @@ impl SimpleScheduler {
                 place_parked(
                     &mut parked,
                     &mut placement,
+                    &mut contended,
                     workers,
                     matching_engine_state_manager,
                     maybe_origin_event_tx,
@@ -1042,6 +1102,16 @@ impl SimpleScheduler {
                 .await,
             );
         }
+        // An action left waiting because only workers it failed on were
+        // free here goes to one of them once it has waited
+        // AVOID_FALLBACK_AFTER (RFC-0017). Nothing else need happen by
+        // then, so the pass arranges the wake-up for the earliest one.
+        *self.avoid_fallback_due.lock() = parked
+            .queue
+            .iter()
+            .filter(|(_, loaded)| !loaded.avoid.is_empty() || !loaded.avoid_nodes.is_empty())
+            .filter_map(|(_, loaded)| loaded.queued_since.checked_add(AVOID_FALLBACK_AFTER))
+            .min();
         // The whole queue was read: a held action the pass did not meet
         // is gone, and a hold past its time is given up.
         workers
@@ -1073,6 +1143,13 @@ impl SimpleScheduler {
         record_unsatisfiable_queued(unsatisfiable_queued);
         record_queue_depth(queued_seen);
         record_queue_ages(&queued_ages);
+        if full_worker_logging {
+            let actions: Vec<_> = oldest_queued
+                .iter()
+                .map(|action| (&action.unique_qualifier, action.insert_timestamp))
+                .collect();
+            info!(?actions, queued_seen, "Oldest actions in the matching pass");
+        }
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
         self.last_unsatisfiable_backlog.store(
@@ -1100,7 +1177,25 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
-        Self::new_with_callback(
+        Self::new_with_resource_sketch(
+            spec,
+            awaited_action_db,
+            task_change_notify,
+            maybe_origin_event_tx,
+            None,
+        )
+    }
+
+    /// `new`, with the sketch a `historical_resource` parent learns from:
+    /// every sampled usage report the workers send goes into it.
+    pub fn new_with_resource_sketch<A: AwaitedActionDb>(
+        spec: &SimpleSpec,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_fleet_exchange_interval(
             spec,
             awaited_action_db,
             || {
@@ -1117,6 +1212,8 @@ impl SimpleScheduler {
             task_change_notify,
             SystemTime::now,
             maybe_origin_event_tx,
+            resource_sketch,
+            FLEET_EXCHANGE_INTERVAL,
         )
     }
 
@@ -1141,6 +1238,7 @@ impl SimpleScheduler {
             task_change_notify,
             now_fn,
             maybe_origin_event_tx,
+            None,
             FLEET_EXCHANGE_INTERVAL,
         )
     }
@@ -1148,6 +1246,7 @@ impl SimpleScheduler {
     /// Same as `new_with_callback`, with the interval at which worker
     /// capabilities are swapped with peer schedulers, so a test need not wait
     /// out the real one.
+    #[expect(clippy::too_many_arguments, reason = "the full constructor")]
     pub fn new_with_fleet_exchange_interval<
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -1161,6 +1260,7 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
         fleet_exchange_interval: Duration,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
@@ -1233,6 +1333,9 @@ impl SimpleScheduler {
         let has_peers = awaited_action_db.shares_state();
         let retry_limits = RetryLimits {
             max_job_retries,
+            max_timeout_retries: spec
+                .max_timeout_retries
+                .unwrap_or(RetryLimits::DEFAULT_TIMEOUT_RETRIES),
             max_worker_loss_retries: if spec.max_worker_loss_retries == 0 {
                 RetryLimits::DEFAULT_WORKER_LOSS_RETRIES
             } else {
@@ -1240,6 +1343,9 @@ impl SimpleScheduler {
             },
             max_escalations: spec.memory_escalation.as_ref().map_or(0, |policy| {
                 usize::try_from(policy.max_steps).unwrap_or(usize::MAX)
+            }),
+            escalate_after_worker_losses: spec.memory_escalation.as_ref().map_or(0, |policy| {
+                usize::try_from(policy.escalate_after_worker_losses).unwrap_or(usize::MAX)
             }),
         };
         let state_manager = SimpleSchedulerStateManager::new(
@@ -1262,12 +1368,14 @@ impl SimpleScheduler {
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
             spec.reservation_hold,
+            spec.worker_outcome_tripwire,
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
             spec.dispatch_ack_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
+            resource_sketch,
             has_peers,
             record_ttl,
             scheduler_id.clone(),
@@ -1347,6 +1455,16 @@ impl SimpleScheduler {
                     {
                         Ok(report) => {
                             record_executing_ages(&report.ages);
+                            for ended in &report.ended {
+                                worker_scheduler
+                                    .report_swept_attempt(
+                                        &ended.worker_id,
+                                        &ended.operation_id,
+                                        ended.reason,
+                                        ended.detail.clone(),
+                                    )
+                                    .await;
+                            }
                             if report.retired + report.requeued + report.failed > 0 {
                                 info!(
                                     retired = report.retired,
@@ -1456,12 +1574,13 @@ impl SimpleScheduler {
                             Some(Duration::from_millis(100))
                         };
                         // Wake in time to fail actions no worker can run,
-                        // even when nothing else triggers a pass.
-                        let unsatisfiable_deadline = weak_inner.upgrade().and_then(|scheduler| {
+                        // and to offer an action back to the workers it
+                        // failed on, even when nothing else triggers a pass.
+                        let next_wake = weak_inner.upgrade().and_then(|scheduler| {
                             let now = (scheduler.now_fn)();
-                            scheduler.unsatisfiable_deadline(now)
+                            scheduler.next_wake(now)
                         });
-                        let max_wait = match (max_wait, unsatisfiable_deadline) {
+                        let max_wait = match (max_wait, next_wake) {
                             (Some(max_wait), Some(deadline)) => Some(max_wait.min(deadline)),
                             (max_wait, deadline) => max_wait.or(deadline),
                         };
@@ -1488,75 +1607,6 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
-                                    // Queued and executing only: completed
-                                    // records are kept for a while and say
-                                    // nothing about matching, and listing
-                                    // them too is what made this log a full
-                                    // read of the store.
-                                    let operations_stream = scheduler
-                                        .matching_engine_state_manager
-                                        .filter_operations(OperationFilter {
-                                            stages: OperationStageFlags::Queued
-                                                | OperationStageFlags::Executing,
-                                            ..OperationFilter::default()
-                                        })
-                                        .await
-                                        .err_tip(|| "In action_scheduler getting filter result");
-
-                                    let mut oldest_actions_in_state: HashMap<
-                                        String,
-                                        BTreeSet<Arc<ActionState>>,
-                                    > = HashMap::new();
-                                    let max_items = 5;
-
-                                    match operations_stream {
-                                        Ok(stream) => {
-                                            let actions = stream
-                                                .filter_map(|item| async move {
-                                                    match item.as_ref().as_state().await {
-                                                        Ok((action_state, _origin_metadata)) => {
-                                                            Some(action_state)
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                ?e,
-                                                                "Failed to get action state!"
-                                                            );
-                                                            None
-                                                        }
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .await;
-                                            for action_state in &actions {
-                                                let name = action_state.stage.name();
-                                                if let Some(values) =
-                                                    oldest_actions_in_state.get_mut(&name)
-                                                {
-                                                    values.insert(action_state.clone());
-                                                    if values.len() > max_items {
-                                                        values.pop_first();
-                                                    }
-                                                } else {
-                                                    let mut values = BTreeSet::new();
-                                                    values.insert(action_state.clone());
-                                                    oldest_actions_in_state.insert(name, values);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(?e, "Failed to get operations list!");
-                                        }
-                                    }
-
-                                    for value in oldest_actions_in_state.values() {
-                                        let mut items = vec![];
-                                        for item in value {
-                                            items.push(item.to_string());
-                                        }
-                                        info!(?items, "Oldest actions in state");
-                                    }
-
                                     worker_match_logging_last.replace(now);
                                 }
                                 res
@@ -1607,6 +1657,7 @@ impl SimpleScheduler {
                 )),
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
+                avoid_fallback_due: Mutex::new(None),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
                 now_fn: scheduler_now_fn,
             }
@@ -1708,6 +1759,16 @@ impl WorkerScheduler for SimpleScheduler {
     ) -> Result<(), Error> {
         self.worker_scheduler
             .worker_running_operations_reported(worker_id, operation_ids)
+            .await
+    }
+
+    async fn worker_operation_memory_reported(
+        &self,
+        worker_id: &WorkerId,
+        peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_operation_memory_reported(worker_id, peaks)
             .await
     }
 

@@ -136,10 +136,11 @@ pub struct PoolConfig {
     /// one-shot instead. Bazel itself queues on `worker_max_instances`; a
     /// one-shot run of a worker tool pays the tool's startup again.
     pub acquire_timeout: Duration,
-    /// Start each worker process in its own user, PID, UTS and IPC
-    /// namespaces, as one-shot actions are when the worker runs with
-    /// `use_namespaces`. Never a mount namespace: the process outlives any
-    /// one action, so a private `/tmp` per action cannot apply to it.
+    /// Start each worker process in its own user, PID, UTS, IPC and mount
+    /// namespaces, with a fresh `/proc`, as one-shot actions are when the
+    /// worker runs with `use_namespaces`. Never a masked root or a private
+    /// `/tmp`: the process outlives any one action, so neither can apply
+    /// to it.
     pub namespaced: bool,
 }
 

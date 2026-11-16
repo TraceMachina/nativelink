@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -217,6 +217,7 @@ fn make_execution_server(
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: false,
+                execute_stream_heartbeat_s: 0,
                 cas_store: "main_cas".to_string(),
                 scheduler: "scheduler".to_string(),
             },
@@ -327,6 +328,7 @@ async fn grpc_scheduler_forwards_the_client_and_resolves_its_operation() -> Resu
             action_digest: Some(action_digest.into()),
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .with_context(client.clone())
         .await?

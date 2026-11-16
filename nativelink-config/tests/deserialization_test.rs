@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -656,6 +656,38 @@ mod shellexpand_string_tests {
     }
 }
 #[cfg(test)]
+mod fast_slow_spec_tests {
+    use nativelink_config::stores::FastSlowSpec;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn has_slow_write_wait_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                has_slow_write_wait_timeout_s: "30s",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.has_slow_write_wait_timeout_s, 30);
+    }
+
+    #[test]
+    fn leader_inactivity_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                leader_inactivity_timeout_s: "1m",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.leader_inactivity_timeout_s, 60);
+    }
+}
+
+#[cfg(test)]
 mod convert_optional_numeric_with_shellexpand_tests {
     use serde_assert::de::Error as DeError;
     use serde_assert::{Deserializer, Token};
@@ -739,5 +771,93 @@ mod convert_optional_numeric_with_shellexpand_tests {
         let json = r#"{"value": "   "}"#;
         let deserialized: OptionalNumericEntity = serde_json5::from_str(json).unwrap();
         assert_eq!(deserialized.value, None);
+    }
+}
+
+#[test]
+fn http_listener_tcp_nodelay_defaults_and_overrides() {
+    use nativelink_config::cas_server::HttpListener;
+
+    assert!(!HttpListener::default().tcp_nodelay);
+    for (input, expected) in [
+        ("{socket_address: '127.0.0.1:0'}", false),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: true}", true),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: false}", false),
+    ] {
+        let config: HttpListener = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.tcp_nodelay, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["tcp_nodelay"], expected);
+        let round_trip: HttpListener = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round_trip.tcp_nodelay, expected);
+    }
+    for invalid in ["null", "0", "'false'"] {
+        let input = format!("{{socket_address: '127.0.0.1:0', tcp_nodelay: {invalid}}}");
+        assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
+    }
+}
+
+#[test]
+fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
+    use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
+    let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
+    assert!(matches!(
+        parsed,
+        StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Oss(_))
+    ));
+    for field in [
+        "consider_expired_after_s",
+        "max_retry_buffer_per_request",
+        "max_concurrent_uploads",
+        "upload_queue_timeout_s",
+    ] {
+        let config = format!(
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET","{field}":1}}"#
+        );
+        assert!(
+            serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
+            "unexpected OSS field accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn oss_credentials_are_required_and_redacted_from_debug() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+    let missing = r#"{"region":"cn-hangzhou","bucket":"test-bucket"}"#;
+    assert!(serde_json5::from_str::<ExperimentalOssSpec>(missing).is_err());
+    let spec = ExperimentalOssSpec {
+        access_key_id: "PRIVATE_OSS_KEY_ID".into(),
+        secret_access_key: "PRIVATE_OSS_SECRET".into(),
+        session_token: Some("PRIVATE_OSS_TOKEN".into()),
+        ..Default::default()
+    };
+    let debug = format!("{spec:?}");
+    for credential in [
+        "PRIVATE_OSS_KEY_ID",
+        "PRIVATE_OSS_SECRET",
+        "PRIVATE_OSS_TOKEN",
+    ] {
+        assert!(!debug.contains(credential));
+    }
+}
+
+#[test]
+fn oss_cname_defaults_to_false_and_round_trips() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+
+    let config = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
+    let mut spec: ExperimentalOssSpec = serde_json5::from_str(config).unwrap();
+    assert!(!spec.cname);
+    spec.cname = true;
+    spec.endpoint = Some("https://cache.example.com".into());
+    let round_trip: ExperimentalOssSpec =
+        serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
+    assert!(round_trip.cname);
+    assert_eq!(round_trip.endpoint, spec.endpoint);
+    for invalid in ["null", "1", "\"true\""] {
+        let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
+        assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
     }
 }

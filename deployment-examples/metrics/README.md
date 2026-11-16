@@ -25,12 +25,14 @@ metrics. To view those metrics in Prometheus, use one of these paths:
 ### Using Docker Compose (Recommended for Development)
 
 1. Start the metrics stack:
+
 ```bash
 cd deployment-examples/metrics
 docker-compose up -d
 ```
 
 2. Configure NativeLink to send metrics to the collector:
+
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
@@ -39,6 +41,7 @@ export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=dev,nativelink.instance_
 ```
 
 3. Start NativeLink with your configuration:
+
 ```bash
 nativelink /path/to/config.json
 ```
@@ -48,16 +51,16 @@ measure:
 
 ```json5
 {
-  "name": "CAS_MAIN_STORE",
-  "cache_metrics": {
-    "cache_type": "cas",
-    "backend": {
-      "filesystem": {
-        "content_path": "~/.cache/nativelink/content_path-cas",
-        "temp_path": "~/.cache/nativelink/tmp_path-cas"
-      }
-    }
-  }
+  name: "CAS_MAIN_STORE",
+  cache_metrics: {
+    cache_type: "cas",
+    backend: {
+      filesystem: {
+        content_path: "~/.cache/nativelink/content_path-cas",
+        temp_path: "~/.cache/nativelink/tmp_path-cas",
+      },
+    },
+  },
 }
 ```
 
@@ -66,6 +69,7 @@ would without cache metrics. The disabled path doesn't add a wrapper, timer,
 attribute allocation, or OpenTelemetry recording call to cache operations.
 
 4. Access the metrics:
+
 - Prometheus UI: http://localhost:9090
 - Grafana: http://localhost:3000 (if included)
 - OTEL Collector metrics: http://localhost:8888/metrics
@@ -77,16 +81,19 @@ Prometheus scrapes that endpoint.
 ### Using Kubernetes
 
 1. Deploy the OTEL Collector:
+
 ```bash
 kubectl apply -f kubernetes/otel-collector.yaml
 ```
 
 2. Deploy Prometheus with OTLP receiver enabled:
+
 ```bash
 kubectl apply -f kubernetes/prometheus.yaml
 ```
 
 3. Configure NativeLink deployment to send metrics:
+
 ```yaml
 env:
   - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -104,22 +111,24 @@ env:
 Cache metrics are opt-in. The following series are emitted only for stores
 wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 
-| Metric | Type | Description | Labels |
-|--------|------|-------------|--------|
-| `nativelink_cache_operations_total` | Counter | Total cache operations | `cache_type`, `cache_operation_name`, `cache_operation_result` |
-| `nativelink_cache_operation_duration` | Histogram | Operation latency in milliseconds | `cache_type`, `cache_operation_name` |
-| `nativelink_cache_io_total` | Counter | Bytes read/written | `cache_type`, `cache_operation_name` |
-| `nativelink_cache_size` | Gauge | Current cache size in bytes | `cache_type` |
-| `nativelink_cache_entries` | Gauge | Number of cached entries | `cache_type` |
-| `nativelink_cache_item_size` | Histogram | Size distribution of cache entries | `cache_type` |
+| Metric                                | Type      | Description                        | Labels                                                         |
+| ------------------------------------- | --------- | ---------------------------------- | -------------------------------------------------------------- |
+| `nativelink_cache_operations_total`   | Counter   | Total cache operations             | `cache_type`, `cache_operation_name`, `cache_operation_result` |
+| `nativelink_cache_operation_duration` | Histogram | Operation latency in milliseconds  | `cache_type`, `cache_operation_name`                           |
+| `nativelink_cache_io_total`           | Counter   | Bytes read/written                 | `cache_type`, `cache_operation_name`                           |
+| `nativelink_cache_size`               | Gauge     | Current cache size in bytes        | `cache_type`                                                   |
+| `nativelink_cache_entries`            | Gauge     | Number of cached entries           | `cache_type`                                                   |
+| `nativelink_cache_item_size`          | Histogram | Size distribution of cache entries | `cache_type`                                                   |
 
 **Cache Operation Names:**
+
 - `read`: Data retrieval operations
 - `write`: Data storage operations
 - `delete`: Explicit removal operations
 - `evict`: Automatic evictions (LRU, TTL)
 
 **Cache Operation Results:**
+
 - `hit`: Data found and valid (reads)
 - `miss`: Data not found (reads)
 - `expired`: Data found but stale (reads)
@@ -128,18 +137,19 @@ wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 
 ### Execution Metrics
 
-| Metric | Type | Description | Labels |
-|--------|------|-------------|--------|
-| `nativelink_execution_stage_duration` | Histogram | Time spent in each execution stage | `execution_stage` |
-| `nativelink_execution_total_duration` | Histogram | Total execution time from submission to completion | `execution_instance` |
-| `nativelink_execution_queue_time` | Histogram | Time spent waiting in queue | `execution_priority` |
-| `nativelink_execution_active_count` | Gauge | Current actions in each stage | `execution_stage` |
-| `nativelink_execution_completed_count_total` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
-| `nativelink_execution_stage_transitions_total` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
-| `nativelink_execution_output_size` | Histogram | Size of execution outputs | - |
-| `nativelink_execution_retry_count_total` | Counter | Number of retries | - |
+| Metric                                         | Type      | Description                                        | Labels                                        |
+| ---------------------------------------------- | --------- | -------------------------------------------------- | --------------------------------------------- |
+| `nativelink_execution_stage_duration`          | Histogram | Time spent in each execution stage                 | `execution_stage`                             |
+| `nativelink_execution_total_duration`          | Histogram | Total execution time from submission to completion | `execution_instance`                          |
+| `nativelink_execution_queue_time`              | Histogram | Time spent waiting in queue                        | `execution_priority`                          |
+| `nativelink_execution_active_count`            | Gauge     | Current actions in each stage                      | `execution_stage`                             |
+| `nativelink_execution_completed_count_total`   | Counter   | Completed executions                               | `execution_result`, `execution_action_digest` |
+| `nativelink_execution_stage_transitions_total` | Counter   | Stage transition events                            | `execution_instance`, `execution_priority`    |
+| `nativelink_execution_output_size`             | Histogram | Size of execution outputs                          | -                                             |
+| `nativelink_execution_retry_count_total`       | Counter   | Number of retries                                  | -                                             |
 
 **Execution Stages:**
+
 - `unknown`: Initial state
 - `cache_check`: Checking for cached results
 - `queued`: Waiting for available worker
@@ -147,6 +157,7 @@ wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 - `completed`: Finished execution
 
 **Execution Results:**
+
 - `success`: Completed with exit code 0
 - `failure`: Completed with non-zero exit code
 - `cancelled`: Execution was cancelled
@@ -186,6 +197,7 @@ OTEL_LOGS_EXPORTER=none                            # Disable logs (if only metri
 ### Collector Configuration
 
 The OTEL Collector can be configured to:
+
 1. Add resource attributes
 2. Batch metrics for efficiency
 3. Export to multiple metrics servers
@@ -200,6 +212,7 @@ See `otel-collector-config.yaml` for a complete example.
 Prometheus offers native OTLP support and excellent query capabilities.
 
 **Direct OTLP Ingestion from NativeLink:**
+
 ```bash
 prometheus --web.enable-otlp-receiver \
           --storage.tsdb.out-of-order-time-window=30m
@@ -233,14 +246,15 @@ Then configure Prometheus to scrape the Collector:
 
 ```yaml
 scrape_configs:
-  - job_name: 'otel-collector'
+  - job_name: "otel-collector"
     static_configs:
-      - targets: ['otel-collector:9090']
+      - targets: ["otel-collector:9090"]
 ```
 
 ### Grafana Cloud
 
 For managed metrics:
+
 ```yaml
 exporters:
   otlphttp:
@@ -252,6 +266,7 @@ exporters:
 ### ClickHouse
 
 For high-volume metrics storage:
+
 ```yaml
 exporters:
   clickhouse:
@@ -265,6 +280,7 @@ exporters:
 ### Quickwit
 
 For unified logs and metrics:
+
 ```yaml
 exporters:
   otlp:
@@ -278,23 +294,27 @@ exporters:
 ### Prometheus/PromQL
 
 **Cache hit rate:**
+
 ```promql
 sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
 sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
 ```
 
 **Execution success rate:**
+
 ```promql
 sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
 sum(rate(nativelink_execution_completed_count_total[5m]))
 ```
 
 **Queue depth by priority:**
+
 ```promql
 sum(nativelink_execution_active_count{execution_stage="queued"}) by (execution_priority)
 ```
 
 **P95 cache operation latency:**
+
 ```promql
 histogram_quantile(0.95,
   sum(rate(nativelink_cache_operation_duration_bucket[5m])) by (le, cache_type)
@@ -302,6 +322,7 @@ histogram_quantile(0.95,
 ```
 
 **Worker utilization:**
+
 ```promql
 count(nativelink_execution_active_count{execution_stage="executing"} > 0) /
 count(count by (execution_worker_id) (nativelink_execution_active_count))
@@ -310,6 +331,7 @@ count(count by (execution_worker_id) (nativelink_execution_active_count))
 ### Joining with Resource Attributes
 
 Use `target_info` to join resource attributes:
+
 ```promql
 rate(nativelink_execution_completed_count_total[5m])
 * on (job, instance) group_left (k8s_cluster_name, deployment_environment)
@@ -321,6 +343,7 @@ target_info
 ### Grafana Dashboard
 
 Import the included dashboard for a comprehensive view:
+
 ```bash
 # Import via API
 curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
@@ -331,6 +354,7 @@ curl -X POST http://admin:admin@localhost:3000/api/dashboards/db \
 ```
 
 Key panels include:
+
 - Execution pipeline overview
 - Cache performance metrics
 - Worker utilization heatmap
@@ -391,17 +415,20 @@ groups:
 ### No Metrics Appearing
 
 1. Check NativeLink is configured with OTEL environment variables:
+
 ```bash
 ps aux | grep nativelink | grep OTEL
 ```
 
 2. Verify collector is receiving data:
+
 ```bash
 curl http://localhost:13133/health
 curl http://localhost:8888/metrics | grep otelcol_receiver_accepted_metric_points
 ```
 
 3. Check collector logs:
+
 ```bash
 docker logs otel-collector
 # or
@@ -415,19 +442,22 @@ If you see `nativelink_execution_*` metrics but no `nativelink_cache_*` metrics,
 ### High Memory Usage
 
 1. Adjust collector batch size:
+
 ```yaml
 processors:
   batch:
-    send_batch_size: 512  # Reduce from 1024
+    send_batch_size: 512 # Reduce from 1024
 ```
 
 2. Increase memory limits:
+
 ```yaml
 memory_limiter:
-  limit_mib: 1024  # Increase from 512
+  limit_mib: 1024 # Increase from 512
 ```
 
 3. Reduce metric cardinality by dropping labels:
+
 ```yaml
 processors:
   attributes:
@@ -439,15 +469,17 @@ processors:
 ### Out-of-Order Samples
 
 Enable out-of-order ingestion in Prometheus:
+
 ```yaml
 storage:
   tsdb:
-    out_of_order_time_window: 1h  # Increase from 30m
+    out_of_order_time_window: 1h # Increase from 30m
 ```
 
 ### Missing Resource Attributes
 
 Ensure attributes are promoted in Prometheus:
+
 ```yaml
 otlp:
   promote_resource_attributes:
@@ -487,6 +519,7 @@ otlp:
 ## Support
 
 For issues or questions:
+
 - File an issue: https://github.com/TraceMachina/nativelink/issues
 - Join our Slack: https://forms.gle/LtaWSixEC6bYi5xF7
 - Check documentation: https://nativelink.com/docs

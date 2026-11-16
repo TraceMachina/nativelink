@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ mod fake_redis;
 mod pubsub;
 mod read_only_redis;
 
-pub use dynamic_fake_redis::{FakeRedisBackend, SubscriptionManagerNotify};
+pub use dynamic_fake_redis::{FakeRedisBackend, Fault, SubscriptionManagerNotify, WRITE_COMMANDS};
 pub use fake_redis::{
     add_lua_script, add_to_response, add_to_response_raw, fake_redis_sentinel_master_stream,
     fake_redis_sentinel_stream, fake_redis_stream, make_fake_redis_with_responses,

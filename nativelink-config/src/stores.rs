@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -228,6 +228,28 @@ pub enum StoreSpec {
     ///        "delay": 0.3,
     ///        "jitter": 0.5
     ///      }
+    ///    }
+    ///    ```
+    ///
+    /// 7. **Alibaba Cloud OSS:**
+    ///    Uses the OSS S3-compatible endpoint and AWS `SigV4`. Supply the OSS
+    ///    access key explicitly per store, for example by shell-expanding
+    ///    `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` in the config.
+    ///    Set `cname` to true with an explicit HTTPS `endpoint` to use a custom
+    ///    domain bound to the bucket, without adding the bucket to the host or
+    ///    path. The default is false. Configure the domain binding, DNS, and
+    ///    TLS certificate before starting the store.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oss",
+    ///      "region": "cn-hangzhou",
+    ///      "bucket": "example-build-cache",
+    ///      "access_key_id": "oss_access_key_id",
+    ///      "secret_access_key": "oss_secret_access_key",
+    ///      "cname": false,
+    ///      "key_prefix": "cas/"
     ///    }
     ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
@@ -759,6 +781,15 @@ pub struct CacheMetricsSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cache_type: String,
 
+    /// Allow repair requests to remove the backend's copy. Defaults to false.
+    /// Enable only for disposable cache tiers with a separate correct copy to
+    /// refill from. Memory and filesystem stores evict when asked, even if
+    /// they hold the only copy. Keep this disabled when wrapping such a tier.
+    /// This only gates removal through this wrapper, not the backend's own
+    /// eviction policy. Place the wrapper around the tier inside the verifier.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub allow_remove: bool,
+
     /// Store to wrap with cache operation metrics.
     pub backend: StoreSpec,
 }
@@ -939,6 +970,84 @@ pub struct ExperimentalOciSpec {
     pub common: CommonObjectSpec,
 }
 
+/// Alibaba Cloud OSS through its S3-compatible API.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOssSpec {
+    /// OSS region, for example `cn-hangzhou`. Used for AWS `SigV4` signing
+    /// and to derive the default S3-compatible endpoint.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name to use as the backend.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Access key ID for this store. Required; no AWS credential-chain fallback.
+    /// Use shell expansion, for example `${OSS_ACCESS_KEY_ID}`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub access_key_id: String,
+
+    /// Access key secret for this store. Use `${OSS_ACCESS_KEY_SECRET}` to
+    /// keep it out of the config file. Independent of AWS S3 store credentials.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub secret_access_key: String,
+
+    /// Optional STS token for this store, for example `${OSS_SESSION_TOKEN}`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub session_token: Option<String>,
+
+    /// Optional HTTPS S3-compatible service endpoint, without a bucket or path.
+    /// Default: `https://s3.oss-{region}.aliyuncs.com`.
+    /// With `cname: true`, this must be the custom domain bound to the bucket.
+    /// Native OSS REST endpoints are not interchangeable with this endpoint.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Use `endpoint` as the bucket's custom domain without adding the bucket
+    /// to the host or path. Requires an explicit HTTPS endpoint, an OSS domain
+    /// binding, and a valid certificate for that domain. Default: false.
+    #[serde(default)]
+    pub cname: bool,
+
+    /// Prefix prepended verbatim to each object key, for example `cas/`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub key_prefix: Option<String>,
+
+    /// Retry policy for the shared S3 store. SDK retries are disabled to avoid
+    /// multiplying attempts. Default: the standard store retry policy.
+    #[serde(default)]
+    pub retry: Retry,
+
+    /// Maximum concurrent part requests per upload. Must be positive.
+    /// Default: 2. Queued parts are bounded by the same count; this is not
+    /// a global byte budget. Part size is chosen by the shared S3 store.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub multipart_max_concurrent_uploads: Option<usize>,
+}
+
+impl core::fmt::Debug for ExperimentalOssSpec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExperimentalOssSpec")
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("endpoint", &self.endpoint)
+            .field("cname", &self.cname)
+            .field("key_prefix", &self.key_prefix)
+            .field("retry", &self.retry)
+            .field(
+                "multipart_max_concurrent_uploads",
+                &self.multipart_max_concurrent_uploads,
+            )
+            .field("credentials", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1003,6 +1112,41 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// Maximum seconds an existence check (`has`, which serves
+    /// `FindMissingBlobs` and upload checks) waits on a key whose
+    /// slow-store write is still in flight before reporting the key
+    /// missing. The clock runs from when the write registered, not per
+    /// call, so a wedged write delays existence checks at most once. A
+    /// missing report costs at worst a duplicate upload of a blob that was
+    /// landing anyway — or, through a completeness check over an action
+    /// result, a rebuild of that action — while an unbounded wait hands
+    /// every existence check a wedged writer's fate. Size it under your
+    /// clients' own deadlines (Bazel's default `--remote_timeout` is 60)
+    /// and above your slow store's usual worst-case write; 30 is a sound
+    /// starting point. `0` (the default) waits indefinitely — the behavior
+    /// before this field existed — so nothing changes until it is set.
+    /// Default: 0 (wait indefinitely)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub has_slow_write_wait_timeout_s: usize,
+
+    /// Maximum seconds a cache fill (the read that populates the fast tier
+    /// from the slow tier while streaming to its reader) may go without
+    /// moving a single byte before it fails with `DEADLINE_EXCEEDED`. Only
+    /// the stalled fill fails: its dedup entry is removed so the next
+    /// reader of the key leads a fresh fill, and followers already fall
+    /// back to reading the slow store directly after their own bounded
+    /// wait. The clock measures inactivity and resets on every chunk — a
+    /// whole-transfer deadline would be wrong here, because a
+    /// multi-gigabyte blob legitimately streams for minutes. The same
+    /// timeout bounds the sizing `has()` the fill issues first, and a
+    /// transfer that has fully moved gets one further window for the fast
+    /// tier's commit — grace enough that a completed fill is not discarded
+    /// over a slow local sync, still a bound when the fast tier is a
+    /// remote store whose commit can wedge.
+    /// `0` (the default) keeps today's behavior: no inactivity bound.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub leader_inactivity_timeout_s: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
@@ -1222,6 +1366,7 @@ pub enum ExperimentalCloudObjectSpec {
     Ontap(ExperimentalOntapS3Spec),
     R2(ExperimentalR2Spec),
     Oci(ExperimentalOciSpec),
+    Oss(ExperimentalOssSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
@@ -1433,6 +1578,65 @@ pub struct CommonObjectSpec {
     /// Default: 120.0
     #[serde(default = "default_throttle_retry_budget_s")]
     pub throttle_retry_budget_s: f32,
+
+    /// Most downloads (`GET`) this process keeps in flight against the
+    /// object store at once, each counted until its body has been sent on.
+    /// Further downloads wait in the process for a permit instead of being
+    /// sent and refused, which turns an account over its limit into
+    /// queueing here rather than wasted requests and retries in lockstep.
+    /// Existence checks (`HEAD`) are not counted: they move no bytes, so
+    /// they never wait behind a body going to a slow client, and a
+    /// throttled `HEAD` does not move the limit. 0 (the default) leaves
+    /// downloads unbounded, as before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_reads: usize,
+
+    /// With `max_concurrent_reads` set, let the bound move: a throttled
+    /// download (503 `ServerBusy` or 429) halves it, not below
+    /// `min_concurrent_reads`, and a run of answered downloads raises it
+    /// by one back toward `max_concurrent_reads`. Many processes behind one
+    /// account then converge on a share of its limit. Off, the bound is
+    /// fixed at `max_concurrent_reads`.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub adaptive_read_concurrency: bool,
+
+    /// Floor for the adaptive read bound.
+    ///
+    /// Default: 4
+    #[serde(
+        default = "default_min_concurrent_reads",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub min_concurrent_reads: usize,
+
+    /// Most requests of any kind this store keeps in flight against the
+    /// object store at once: existence checks (`HEAD`), downloads, uploads,
+    /// block staging and commits, and the cleanup after a failed upload.
+    /// Each request holds a connection of its own for its whole length
+    /// (Azure Blob Storage speaks HTTP/1.1), so this bounds the connections
+    /// the store opens and the local ports they take toward the account.
+    /// At the limit, further requests wait in the process, first come first
+    /// served, for one in flight to finish: nothing is sent or refused, so
+    /// the cost shows up as latency against callers' deadlines. A download
+    /// holds its permit while its body streams to the reader, so the store
+    /// refuses to start unless `max_concurrent_reads` is above 0 and below
+    /// this: downloads then never hold more than `max_concurrent_reads`
+    /// permits, and existence checks and uploads always keep the rest.
+    /// Every store in a `shard` has a limit of its own, so N shards hold up
+    /// to N times this. 0 (the default) leaves requests unbounded, as
+    /// before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_requests: usize,
+}
+
+const fn default_min_concurrent_reads() -> usize {
+    4
 }
 
 const fn default_throttle_retry_delay_s() -> f32 {
@@ -1460,6 +1664,10 @@ impl Default for CommonObjectSpec {
             throttle_retry_delay_s: default_throttle_retry_delay_s(),
             throttle_retry_max_delay_s: default_throttle_retry_max_delay_s(),
             throttle_retry_budget_s: default_throttle_retry_budget_s(),
+            max_concurrent_reads: 0,
+            adaptive_read_concurrency: false,
+            min_concurrent_reads: default_min_concurrent_reads(),
+            max_concurrent_requests: 0,
         }
     }
 }
@@ -1888,8 +2096,13 @@ pub struct RedisSpec {
     /// This trades data for a bound. Anything not consumed within the window
     /// is deleted, so the value has to exceed the longest consumer outage you
     /// intend to survive, and it must also exceed how long a single upload can
-    /// take: the temp key an upload builds carries this same TTL, so a value
-    /// below the upload duration would expire the write in flight.
+    /// take: the temp key an upload builds carries this same TTL, and an
+    /// upload that outlives it fails rather than publishing a key that was
+    /// recreated without its first chunks.
+    ///
+    /// Unset, the temp key still expires, after an hour, so an upload that
+    /// stops part way (its client gone, the process gone) never leaves a key
+    /// behind for good. Nothing else cleans those up.
     ///
     /// Zero disables expiry. One second is the smallest value that enables it,
     /// and any value that small is almost certainly a mistake.
@@ -1931,6 +2144,35 @@ pub struct RedisSpec {
     /// Default: 1500
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_count_per_cursor: u64,
+
+    /// Replace scheduler indexes an older release created `TEMPORARY` with
+    /// persistent ones, keeping every hash.
+    ///
+    /// A temporary index is never garbage collected on `RediSearch` 2.10, so
+    /// every query walks every dead entry it has collected, and dropping one
+    /// the ordinary way deletes the hashes it covers (so does its idle
+    /// expiry). With this set, a persistent index is built beside each
+    /// temporary one, reads move to it once it holds every key (the scan
+    /// finished, nothing failed to index, and it counts as many keys as the
+    /// old one), and the old one is removed with the keys left in place.
+    ///
+    /// Set it only once no process older than v1.8.1 writes this store: those
+    /// create the index temporary again. Turn it on for every process that
+    /// reads the store together where possible: during a rolling restart,
+    /// the processes without it recreate the old index each time it is
+    /// retired and the ones with it retire it again. No key is lost, but each
+    /// round costs a backfill.
+    ///
+    /// Building the replacement needs free memory below `maxmemory`, about
+    /// what a clean index of the live keys takes. A Redis already full of
+    /// dead entries refuses it; the migration then waits, logs an error and
+    /// leaves everything in place. Restarting Redis frees that memory: it
+    /// rebuilds every index from the keys, without the dead entries, though
+    /// a temporary index stays temporary and fills up again.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub migrate_temporary_indexes: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

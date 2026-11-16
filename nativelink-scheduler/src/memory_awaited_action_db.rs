@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,14 +19,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, stream};
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
-use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -331,6 +330,31 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
 
     /// The function to get the current time.
     now_fn: NowFn,
+
+    /// Mints the id of each new operation.
+    operation_id_fn: OperationIdFn,
+}
+
+/// Mints operation ids; a random UUID unless a test needs them repeatable.
+#[derive(Clone)]
+pub struct OperationIdFn(Arc<dyn Fn() -> OperationId + Send + Sync>);
+
+impl OperationIdFn {
+    pub fn new(f: impl Fn() -> OperationId + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl Default for OperationIdFn {
+    fn default() -> Self {
+        Self::new(OperationId::default)
+    }
+}
+
+impl core::fmt::Debug for OperationIdFn {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OperationIdFn").finish_non_exhaustive()
+    }
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbImpl<I, NowFn> {
@@ -774,7 +798,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Cacheable(unique_key) => Some(unique_key.clone()),
             ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
-        let operation_id = OperationId::default();
+        let operation_id = (self.operation_id_fn.0)();
         let awaited_action = AwaitedAction::new(
             operation_id.clone(),
             action_info.clone(),
@@ -929,6 +953,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         tasks_change_notify: Arc<Notify>,
         now_fn: NowFn,
     ) -> Self {
+        Self::new_with_operation_id_fn(
+            eviction_config,
+            tasks_change_notify,
+            now_fn,
+            OperationIdFn::default(),
+        )
+    }
+
+    /// Same as `new()`, with the source of new operation ids.
+    pub fn new_with_operation_id_fn(
+        eviction_config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+        operation_id_fn: OperationIdFn,
+    ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
             client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
@@ -938,6 +977,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
             connected_clients_for_operation_id: HashMap::new(),
             action_event_tx,
             now_fn,
+            operation_id_fn,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -979,28 +1019,25 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
-    fn get_all_awaited_actions(
+    /// The listing is read whole, under one hold of the lock taken here,
+    /// before the stream exists, and the stream then only hands out what
+    /// was read. The lock must not be taken inside the stream: a reader
+    /// that prefetches rows (the filter pass reads 64 at a time) would be
+    /// left with a lock wait parked inside the stream while it hands rows
+    /// on, and if the reader then writes, on the same task, it waits for
+    /// the same lock; the release goes to the parked wait, which nothing
+    /// polls, and the scheduler stops for good.
+    async fn get_all_awaited_actions(
         &self,
-    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error>>
-    {
-        std::future::ready(Ok(ChunkedStream::new(
-            Bound::Unbounded,
-            Bound::Unbounded,
-            move |start, end, mut output| async move {
-                let inner = self.inner.lock().await;
-                let mut maybe_new_start = None;
-
-                for (operation_id, item) in
-                    inner.get_awaited_actions_range(start.as_ref(), end.as_ref())
-                {
-                    output.push_back(item);
-                    maybe_new_start = Some(operation_id);
-                }
-
-                Ok(maybe_new_start
-                    .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
-            },
-        )))
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<Result<Self::Subscriber, Error>> = {
+            let inner = self.inner.lock().await;
+            inner
+                .get_awaited_actions_range(Bound::Unbounded, Bound::Unbounded)
+                .map(|(_, item)| Ok(item))
+                .collect()
+        };
+        Ok(stream::iter(listed))
     }
 
     async fn get_by_operation_id(
@@ -1010,52 +1047,32 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         Ok(self.inner.lock().await.get_by_operation_id(operation_id))
     }
 
-    fn get_range_of_actions(
+    /// Read whole under one hold of the lock, like `get_all_awaited_actions`,
+    /// and for the same reason.
+    async fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
-    {
-        std::future::ready(Ok(ChunkedStream::new(
-            start,
-            end,
-            move |start, end, mut output| async move {
-                let inner = self.inner.lock().await;
-                let mut done = true;
-                let mut new_start = start.as_ref();
-                let mut new_end = end.as_ref();
-
-                let iterator = inner
-                    .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
-                    .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
-
-                // TODO(palfrey) This should probably use the `.left()/right()` pattern,
-                // but that doesn't exist in the std or any libraries we use.
-                if desc {
-                    for result in iterator.rev() {
-                        let (sorted_awaited_action, item) =
-                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                        output.push_back(item);
-                        new_end = Bound::Excluded(sorted_awaited_action);
-                        done = false;
-                    }
-                } else {
-                    for result in iterator {
-                        let (sorted_awaited_action, item) =
-                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                        output.push_back(item);
-                        new_start = Bound::Excluded(sorted_awaited_action);
-                        done = false;
-                    }
-                }
-                if done {
-                    return Ok(None);
-                }
-                Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
-            },
-        )))
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<Result<Self::Subscriber, Error>> = {
+            let inner = self.inner.lock().await;
+            let iterator = inner
+                .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
+                .map(|res| {
+                    res.map(|(_, item)| item)
+                        .err_tip(|| "In AwaitedActionDb::get_range_of_actions")
+                });
+            // TODO(palfrey) This should probably use the `.left()/right()` pattern,
+            // but that doesn't exist in the std or any libraries we use.
+            if desc {
+                iterator.rev().collect()
+            } else {
+                iterator.collect()
+            }
+        };
+        Ok(stream::iter(listed))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {

@@ -58,11 +58,19 @@
     font-family: var(--nl-font-sans);
     text-wrap: pretty;
   }
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     text-wrap: balance;
     letter-spacing: -0.02em;
   }
-  code, kbd, pre, samp {
+  code,
+  kbd,
+  pre,
+  samp {
     font-family: var(--nl-font-mono);
   }
   ::selection {
@@ -72,10 +80,15 @@
   /* Tailwind v4 dropped the default cursor:pointer on buttons. Fumadocs
    * components don't always set it either. Restore for every interactive
    * element so hover affordances feel right. */
-  a, button, [role="button"], summary, label[for] {
+  a,
+  button,
+  [role="button"],
+  summary,
+  label[for] {
     cursor: pointer;
   }
-  button:disabled, [aria-disabled="true"] {
+  button:disabled,
+  [aria-disabled="true"] {
     cursor: not-allowed;
   }
 }

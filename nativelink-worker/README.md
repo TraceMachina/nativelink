@@ -35,16 +35,16 @@ environment except for optional `SSL_CERT_FILE` and `SSL_CERT_DIR`, and private
 stdin/stdout pipes. Stderr is inherited for diagnostics. The first stdin line is
 a JSON record with these fields:
 
-| Field | Meaning |
-| --- | --- |
-| `root` | `/`, the filesystem of the execution container. |
-| `stateDirectory` | Configured state directory plus a fresh session UUID. |
-| `protectedPaths` | Credential and configuration paths the helper must exclude, including aliases. |
-| `internalPaths` | Internal cache paths excluded from browsing; materialized action inputs remain visible. |
-| `gateway` | Configured authenticated ingest endpoint. |
-| `tokenFile` | Path to the helper's private credential; the JSON never contains its contents. |
-| `finalizeSeconds` | Final capture budget, default 120 seconds and at most 3600. |
-| `session` | `id`, `tool`, `build`, `action`, `attempt`, `worker`, and `container`. |
+| Field             | Meaning                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------- |
+| `root`            | `/`, the filesystem of the execution container.                                         |
+| `stateDirectory`  | Configured state directory plus a fresh session UUID.                                   |
+| `protectedPaths`  | Credential and configuration paths the helper must exclude, including aliases.          |
+| `internalPaths`   | Internal cache paths excluded from browsing; materialized action inputs remain visible. |
+| `gateway`         | Configured authenticated ingest endpoint.                                               |
+| `tokenFile`       | Path to the helper's private credential; the JSON never contains its contents.          |
+| `finalizeSeconds` | Final capture budget, default 120 seconds and at most 3600.                             |
+| `session`         | `id`, `tool`, `build`, `action`, `attempt`, `worker`, and `container`.                  |
 
 `session.id` is a fresh UUID; `tool` is `buck2`; `build` is the invocation ID;
 `action` is the action digest hash; `attempt` is the operation ID. `worker` is

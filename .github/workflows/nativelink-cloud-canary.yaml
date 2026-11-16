@@ -1,9 +1,9 @@
 ---
-name: NativeLink Cloud Canary
+name: CI / Canary
 
 on:
   schedule:
-    - cron: '17 6 * * *'
+    - cron: "17 6 * * *"
   workflow_dispatch:
   pull_request:
     branches: [main]
@@ -12,7 +12,12 @@ on:
       - .github/actions/setup-nativelink-cloud/**
       - .github/workflows/nativelink-cloud-canary.yaml
 
-permissions: read-all
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,6 +33,9 @@ jobs:
       - name: Checkout
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
 
       - name: Setup Bazel
         uses: >- # v0.19.0
@@ -146,6 +154,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Set up Docker Buildx
         uses: >- # v3.9.0
           docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
@@ -160,9 +171,11 @@ jobs:
             OPT_LEVEL=fastbuild
             ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
           load: true # Brings the image into `docker images` for docker-compose.
+          secret-files: |
+            ci-metadata=ci-metadata.bazelrc
           tags: trace_machina/nativelink:latest
 
       - name: Run upload-dependent integration tests
         env:
-          NL_LOCAL_UPLOADS: '1'
+          NL_LOCAL_UPLOADS: "1"
         run: ./run_integration_tests.sh chunking_cache_test.sh simple_cache_test.sh

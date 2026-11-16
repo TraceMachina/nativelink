@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -114,6 +114,13 @@ impl StoreDriver for RefStore {
 
     async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         self.get_store()?.as_store_driver_pin().remove(key).await
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.get_store()?
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
     }
 
     async fn has_with_results(

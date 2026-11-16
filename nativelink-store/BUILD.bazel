@@ -51,6 +51,7 @@ rust_library(
         "src/oci_store.rs",
         "src/ontap_s3_existence_cache_store.rs",
         "src/ontap_s3_store.rs",
+        "src/oss_store.rs",
         "src/r2_store.rs",
         "src/redis_store.rs",
         "src/redis_utils/aggregate_types.rs",
@@ -59,6 +60,7 @@ rust_library(
         "src/redis_utils/ft_cursor_read.rs",
         "src/redis_utils/ft_info.rs",
         "src/redis_utils/ft_search_count.rs",
+        "src/redis_utils/index_migration.rs",
         "src/redis_utils/mod.rs",
         "src/ref_store.rs",
         "src/s3_store.rs",
@@ -142,7 +144,9 @@ rust_test_suite(
     timeout = "moderate",
     srcs = [
         "tests/ac_utils_test.rs",
+        "tests/azure_blob_store_test.rs",
         "tests/azurite_store_test.rs",
+        "tests/cache_metrics_remove_metrics_test.rs",
         "tests/cache_metrics_store_test.rs",
         "tests/common_s3_utils_test.rs",
         "tests/completeness_checking_store_test.rs",
@@ -160,6 +164,7 @@ rust_test_suite(
         "tests/oci_store_test.rs",
         "tests/ontap_s3_existence_cache_store_test.rs",
         "tests/ontap_s3_store_test.rs",
+        "tests/oss_store_test.rs",
         "tests/r2_store_test.rs",
         "tests/redis_store_test.rs",
         "tests/ref_store_test.rs",
@@ -221,6 +226,7 @@ rust_test_suite(
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",
+        "@crates//:rcgen",
         "@crates//:redis",
         "@crates//:redis-test",
         "@crates//:regex",
@@ -239,9 +245,15 @@ rust_test_suite(
         "@crates//:tracing-test",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:webpki-roots",
         "@crates//:wincode",
         "@crates//:zip",
-    ],
+    ] + select({
+        # The caps crate only compiles on Linux: capabilities are a Linux
+        # kernel concept, and macOS is also `unix`.
+        "@platforms//os:linux": ["@crates//:caps"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

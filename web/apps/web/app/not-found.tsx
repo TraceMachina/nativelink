@@ -50,7 +50,9 @@ export default function NotFound() {
                 <p className="font-mono text-sm font-semibold text-foreground">
                   {l.label}
                 </p>
-                <p className="mt-0.5 text-sm text-muted-foreground">{l.description}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {l.description}
+                </p>
               </div>
               <span
                 aria-hidden="true"

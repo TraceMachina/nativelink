@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -384,6 +384,8 @@ async fn stress_concurrent_construction() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(delay_store),

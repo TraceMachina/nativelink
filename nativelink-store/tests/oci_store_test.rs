@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -250,7 +250,7 @@ async fn ranged_get_sends_range_header_path_style() -> Result<(), Error> {
             .uri(format!(
                 "https://{HOST}/{BUCKET}/{VALID_HASH1}-1000?x-id=GetObject"
             ))
-            .header("range", format!("bytes={OFFSET}-{}", OFFSET + LENGTH))
+            .header("range", format!("bytes={OFFSET}-{}", OFFSET + LENGTH - 1))
             .body(SdkBody::empty())
             .unwrap(),
         http::Response::builder()

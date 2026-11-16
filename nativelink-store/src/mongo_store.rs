@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -486,7 +486,8 @@ impl StoreDriver for ExperimentalMongoStore {
 
         // Read all data into memory with proper EOF handling
         let mut data = Vec::new();
-        while let Ok(chunk) = reader.recv().await {
+        loop {
+            let chunk = reader.recv().await?;
             if chunk.is_empty() {
                 break; // Empty chunk signals EOF
             }
@@ -494,6 +495,7 @@ impl StoreDriver for ExperimentalMongoStore {
         }
 
         let size = data.len().try_into().unwrap_or(i64::MAX);
+        upload_size.validate_size(data.len() as u64)?;
 
         // Create document
         let doc = doc! {

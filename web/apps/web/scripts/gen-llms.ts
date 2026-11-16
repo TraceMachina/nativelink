@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // Generate the marketing site's llms files, and the repository's.
 //
 //   public/llms.txt, public/llms-small.txt, public/llms-full.txt
@@ -15,14 +14,18 @@
 //   ../docs/scripts/gen-llms.mjs     the documentation corpus, built from the docs nav
 //
 // Usage, from web/:
-//   bun --filter @nativelink/web gen:llms
+//   pnpm run --filter @nativelink/web gen:llms
 
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSections, renderFull, renderSmall } from "../../docs/scripts/gen-llms.mjs";
-import type { DocsCorpus } from "../lib/llms";
+import {
+  buildSections,
+  renderFull,
+  renderSmall,
+} from "../../docs/scripts/gen-llms.mjs";
+import type { DocsCorpus } from "../lib/llms.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
@@ -32,17 +35,23 @@ const publicDir = join(appRoot, "public");
 // lib/posts.ts resolves content/posts against the working directory when it
 // is first evaluated, so change directory before importing the site module.
 process.chdir(appRoot);
-const site = await import("../lib/llms");
+const site = await import("../lib/llms.ts");
 
 // The docs nav lists the changelog page, which is itself generated; the docs
 // generator fails loudly on a nav entry with no page behind it.
 const changelog = join(docsRoot, "content/docs/reference/changelog.md");
 if (!existsSync(changelog)) {
-  const result = spawnSync(process.execPath, [join(docsRoot, "scripts/gen-changelog.mjs")], {
-    stdio: "inherit",
-  });
+  const result = spawnSync(
+    process.execPath,
+    [join(docsRoot, "scripts/gen-changelog.mjs")],
+    {
+      stdio: "inherit",
+    },
+  );
   if (result.status !== 0) {
-    throw new Error("gen-llms: could not generate the docs changelog page first");
+    throw new Error(
+      "gen-llms: could not generate the docs changelog page first",
+    );
   }
 }
 
@@ -50,7 +59,11 @@ if (!existsSync(changelog)) {
 function findRepoRoot(from: string): string | null {
   let dir = from;
   for (let i = 0; i < 8; i += 1) {
-    if (existsSync(join(dir, "cliff.toml")) && existsSync(join(dir, "AGENTS.md"))) return dir;
+    if (
+      existsSync(join(dir, "cliff.toml")) &&
+      existsSync(join(dir, "AGENTS.md"))
+    )
+      return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

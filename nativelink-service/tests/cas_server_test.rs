@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -119,6 +119,39 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     assert!(raw_response.is_ok());
     let response = raw_response.unwrap().into_inner();
     assert_eq!(response.missing_blob_digests.len(), 1);
+    Ok(())
+}
+
+// An unknown instance name, or a GetTree without its root digest, is a bad
+// argument. Bazel retries INTERNAL but fails fast on INVALID_ARGUMENT.
+#[nativelink_test]
+async fn bad_arguments_are_invalid_argument() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+
+    let unknown_instance = cas_server
+        .find_missing_blobs(Request::new(FindMissingBlobsRequest {
+            instance_name: "unknown_instance".to_string(),
+            blob_digests: vec![],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown_instance.code(), Code::InvalidArgument);
+
+    let Err(no_root) = cas_server
+        .get_tree(Request::new(GetTreeRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            page_size: 0,
+            page_token: String::new(),
+            root_digest: None,
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+    else {
+        panic!("GetTree without a root digest must fail");
+    };
+    assert_eq!(no_root.code(), Code::InvalidArgument);
     Ok(())
 }
 

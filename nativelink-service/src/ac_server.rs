@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -86,16 +86,15 @@ impl AcServer {
         request: GetActionResultRequest,
     ) -> Result<Response<ActionResult>, Error> {
         let instance_name = &request.instance_name;
-        let store_info = self
-            .stores
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store_info = self.stores.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         // TODO(palfrey) We should write a test for these errors.
         let digest: DigestInfo = request
             .action_digest
             .clone()
-            .err_tip(|| "Action digest was not set in message")?
+            .ok_or_else(|| make_input_err!("Action digest was not set in message"))?
             .try_into()?;
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -125,10 +124,9 @@ impl AcServer {
         request: UpdateActionResultRequest,
     ) -> Result<Response<ActionResult>, Error> {
         let instance_name = &request.instance_name;
-        let store_info = self
-            .stores
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store_info = self.stores.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         if store_info.read_only {
             return Err(make_err!(
@@ -140,7 +138,7 @@ impl AcServer {
         let digest: DigestInfo = request
             .action_digest
             .clone()
-            .err_tip(|| "Action digest was not set in message")?
+            .ok_or_else(|| make_input_err!("Action digest was not set in message"))?
             .try_into()?;
 
         // Acknowledge a failed result without storing it, so the action is
@@ -162,7 +160,7 @@ impl AcServer {
 
         let action_result = request
             .action_result
-            .err_tip(|| "Action result was not set in message")?;
+            .ok_or_else(|| make_input_err!("Action result was not set in message"))?;
 
         let mut store_data = BytesMut::with_capacity(ESTIMATED_DIGEST_SIZE);
         action_result

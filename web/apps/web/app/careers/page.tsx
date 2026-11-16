@@ -26,7 +26,7 @@ export default function CareersPage() {
           <Reveal>
             <div className="mx-auto max-w-[900px] text-center">
               <Eyebrow className="mb-5">Careers</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[64px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 We are making a small team{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   bigger
@@ -124,9 +124,9 @@ export default function CareersPage() {
               appreciated contribution.
             </p>
             <p>
-              We prioritize a love of build systems, low latency, an interest
-              in Rust, and experience with Rust or C++. None of it needs to be
-              on a resume: it can be in your commits.
+              We prioritize a love of build systems, low latency, an interest in
+              Rust, and experience with Rust or C++. None of it needs to be on a
+              resume: it can be in your commits.
             </p>
           </div>
         </Reveal>

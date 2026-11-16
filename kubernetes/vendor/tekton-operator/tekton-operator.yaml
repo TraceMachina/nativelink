@@ -583,7 +583,7 @@ rules:
   - apiGroups:
       - operator.tekton.dev
     resources:
-      - '*'
+      - "*"
       - tektonaddons
     verbs:
       - get
@@ -635,7 +635,7 @@ rules:
       - triggers.tekton.dev
       - operator.tekton.dev
     resources:
-      - '*'
+      - "*"
     verbs:
       - add
       - get
@@ -649,7 +649,7 @@ rules:
   - apiGroups:
       - dashboard.tekton.dev
     resources:
-      - '*'
+      - "*"
       - tektonaddons
       - extensions
     verbs:
@@ -708,9 +708,9 @@ rules:
   - apiGroups:
       - serving.knative.dev
     resources:
-      - '*'
-      - '*/status'
-      - '*/finalizers'
+      - "*"
+      - "*/status"
+      - "*/finalizers"
     verbs:
       - get
       - list
@@ -761,7 +761,7 @@ rules:
   - apiGroups:
       - results.tekton.dev
     resources:
-      - '*'
+      - "*"
     verbs:
       - delete
       - deletecollection

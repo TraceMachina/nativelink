@@ -20,6 +20,11 @@ GCS is one `provider` value of the same cloud object store used by
 [OCI Object Storage](/how-to/stores/oci-object-storage). The composition
 around it is identical; only the provider block changes.
 
+In development builds, GCS validates small uploads before issuing a write and checks resumable
+uploads before sending the final chunk. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## The recipe [#the-recipe]
 
 ```json5

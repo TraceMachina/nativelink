@@ -1,19 +1,24 @@
 # ---
-name: Local Remote Execution
+name: CI / LRE
 
 on:
   push:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
   pull_request:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
 
-permissions: read-all
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,6 +38,9 @@ jobs:
       - name: Checkout
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix

@@ -1,6 +1,7 @@
 # Getting started
 
 Get your credentials and paste them into `user.bazelrc`
+
 ```
 build --remote_cache=grpcs://TODO
 build --bes_backend=grpcs://TODO
