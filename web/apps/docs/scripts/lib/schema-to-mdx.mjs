@@ -172,9 +172,9 @@ function normalizeProseText(text) {
       "A scheduler that forwards",
     )
     .replace(/\bThe the value\b/g, "The value")
-    .replace(/\bset to -1 to disable\b/g, "set to `-1` to disable")
     .replace(/TODO\(.+\)/, "")
-    .replace(/([.!?]) {2,}(?=[A-Z`])/g, "$1 ");
+    .replace(/([.!?]) {2,}(?=[A-Z`])/g, "$1 ")
+    .replace(/(?<![\w`])(-\d+(?:\.\d+)?)(?![\w`])/g, "`$1`")
 }
 
 /** Sanitise a run of text that contains no code fences. Inline code spans are
