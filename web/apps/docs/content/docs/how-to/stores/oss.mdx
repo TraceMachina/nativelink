@@ -1,0 +1,163 @@
+---
+title: Alibaba Cloud OSS
+description: Use an OSS bucket as the cache through the S3-compatible API.
+---
+
+<Prerequisites>
+  A NativeLink development build with the `oss` provider, an OSS bucket, and an
+  Alibaba Cloud AccessKey with object read, write, and multipart abort permissions.
+</Prerequisites>
+
+The `oss` provider uses the [OSS S3-compatible API](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+and the shared NativeLink S3 store. It derives the service endpoint from the
+bucket region, uses virtual-hosted addressing, and signs requests with AWS SigV4.
+Optional trailing checksums are disabled to avoid `aws-chunked` uploads.
+OSS lists the required object and multipart operations in its
+[S3 compatibility reference](https://www.alibabacloud.com/help/en/oss/developer-reference/compatibility-with-amazon-s3).
+This is an API compatibility basis, not evidence of a successful live deployment.
+
+This provider is available in development builds. Object names are `key_prefix`
+followed by the standard NativeLink store key, as in the
+[S3 store](/how-to/stores/s3-and-compatible).
+
+## Configure the store [#configure-the-store]
+
+Configure credentials explicitly for each OSS store. Reference independent
+variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
+expansion. For temporary credentials, also configure `session_token`, for example
+`${OSS_SESSION_TOKEN}`. Keep the values out of source control.
+
+The provider requires explicit credentials and ignores the AWS credential chain
+and `AWS_*` variables, so an AWS S3 store in the same process can use its own
+credentials. Different OSS stores can reference different variable names.
+Automatic Alibaba Cloud RAM role discovery is not supported.
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oss",
+      region: "cn-hangzhou",
+      bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+Use a separate `key_prefix`, such as `ac/`, for the Action Cache. The optional
+`endpoint` overrides the service URL, for example
+`https://s3.oss-cn-hangzhou-internal.aliyuncs.com`. It must be HTTPS and must not
+contain a bucket, object path, user information, query, or fragment. A native OSS
+REST endpoint (`oss-...`) is not interchangeable with an S3-compatible endpoint
+(`s3.oss-...`).
+
+## Use a custom domain [#use-a-custom-domain]
+
+Set `cname: true` to use an HTTPS custom domain bound to the bucket. This option
+requires an explicit `endpoint`. The provider uses that host directly, without
+adding the bucket name to the host or path. The default is `cname: false`, which
+keeps virtual-hosted service-endpoint addressing.
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oss",
+      region: "cn-hangzhou",
+      bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
+      endpoint: "https://cache.example.com",
+      cname: true,
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+An object named `cas/key` uses `https://cache.example.com/cas/key`. Keep `bucket`
+set to the actual bucket and `region` set to its region. Requests still use AWS
+SigV4, with the custom host included in the signature. This mode does not switch
+to the native OSS REST protocol.
+
+Before starting NativeLink, [bind the custom domain to the bucket and configure
+DNS](https://www.alibabacloud.com/help/en/oss/user-guide/access-buckets-via-custom-domain-names),
+then configure a valid TLS certificate for the domain. Setting `cname` does not
+create the binding, DNS record, or certificate. Mainland buckets require a domain
+with ICP registration. The endpoint must not contain an object path, credentials,
+query, or fragment. Confirm S3 API compatibility against the real domain before
+deployment; wire replay tests do not verify the OSS domain binding or policy.
+
+## Endpoint access restrictions [#endpoint-access-restrictions]
+
+Alibaba Cloud restricts default public endpoints for accounts that activated OSS
+on or after March 20, 2025, at 00:00 UTC+8, when the bucket is in a Chinese mainland
+region. Data operations can fail with `PublicEndpointForbidden` (HTTP 400).
+The [OSS policy notice](https://www.alibabacloud.com/en/notice/oss_update_notice_policy_change_in_calling_data_api_operations_via_the_default_public_domain_name_45a)
+describes the affected operations. The
+[AWS SDK access guide](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+also lists this restriction; the S3-compatible endpoint is not a workaround.
+
+For affected accounts accessing a bucket over the public internet, Alibaba Cloud
+requires a custom domain name (CNAME). Use the [custom-domain mode](#use-a-custom-domain)
+with an endpoint bound to the bucket. Setting `endpoint` alone keeps the default
+service-endpoint addressing and adds the bucket name to the host.
+
+For a workload in an Alibaba Cloud VPC with access to the bucket's regional
+internal endpoint, use the
+[documented internal-endpoint option](https://www.alibabacloud.com/help/en/oss/user-guide/0048-00000401).
+For a bucket in `cn-hangzhou`, set this field in the OSS store configuration:
+
+```json5
+endpoint: "https://s3.oss-cn-hangzhou-internal.aliyuncs.com",
+```
+
+The internal endpoint is not reachable from the public internet. Accounts that
+activated OSS before the policy cutoff and buckets outside Chinese mainland
+regions are outside the scope of this notice. Confirm the account, bucket region,
+and network access before choosing an endpoint.
+
+## Retry and resource behavior [#retry-and-resource-behavior]
+
+The optional `retry` object uses the standard store retry policy. SDK retries
+are disabled, but the shared HTTP transport also retries: its attempts can
+multiply the store retry loop. A total retry budget is not yet implemented.
+
+Each SDK operation attempt has a 120-second timeout. The custom HTTP connector
+does not currently apply the SDK connection-timeout setting to TCP connections.
+Receiving an upload part before an SDK call, reading a download body after the
+response headers, and waiting for a consumer are not covered by a total transfer
+deadline.
+
+Uploads and downloads use the existing S3 transfer implementation, including
+multipart uploads and transfer size validation. Its buffering and concurrency
+behavior is inherited. `multipart_max_concurrent_uploads` bounds both queued
+parts and concurrent part requests per upload (default: 2). Part sizes depend
+on the declared upload size. This adapter does not provide a global byte budget
+or upload admission queue. OSS-specific spool, TTL, and read-proxy settings are
+not supported. To expire cached objects, configure bucket lifecycle rules
+separately.
+
+## Verify [#verify]
+
+Point the CAS service at this store and run the same build twice with remote
+caching enabled. The first build should upload its outputs and the second should
+reuse them. Check both a small Action Cache entry and an object large enough to
+use multipart upload. A successful replay test does not establish compatibility
+with a live bucket, its permissions, or its endpoint restrictions.
+
+<VerifyBlock>
+  The second build reports remote cache hits, and downloaded outputs match the
+  first build. OSS wire replay tests cover endpoint selection, signing scope,
+  direct reads, small uploads, multipart completion, and failure cleanup;
+  verification against a real OSS bucket is still required before production use.
+</VerifyBlock>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Add verification or a local fast tier around the OSS backend.
+</NextStep>
