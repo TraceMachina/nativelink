@@ -996,9 +996,12 @@ impl DirectoryCache {
                 directory.clone()
             } else {
                 let _permit = self.acquire_fetch_permit().await?;
-                get_and_decode_digest(self.cas_store.as_ref(), digest.into())
-                    .await
-                    .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?
+                Box::pin(get_and_decode_digest(
+                    self.cas_store.as_ref(),
+                    digest.into(),
+                ))
+                .await
+                .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?
             };
 
             // Create the destination directory. It must be writable while it
@@ -1264,9 +1267,8 @@ impl DirectoryCache {
             // byte-identical wherever else it appears; construction recurses
             // through this method, so nested subtrees get their own entries
             // too (leaf-level reuse).
-            let (hit, _size) = self
-                .get_or_create_entry(digest, &dir_path, protos, false, lease)
-                .await?;
+            let (hit, _size) =
+                Box::pin(self.get_or_create_entry(digest, &dir_path, protos, false, lease)).await?;
             let counter = if hit {
                 &self.subtree_hits
             } else {
