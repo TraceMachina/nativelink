@@ -25,7 +25,7 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
 use nativelink_worker::running_actions_manager::download_to_directory;
