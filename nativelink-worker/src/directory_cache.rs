@@ -272,9 +272,15 @@ pub struct DirectoryCache {
     /// CAS blob with APFS `clonefile(2)`. Only ever non-zero on macOS with
     /// `experimental_clone_executables` enabled.
     executable_clone_hits: AtomicU64,
+    /// Count of executable files whose clone was attempted and failed, so
+    /// they were copied instead. Steadily rising with `executable_clone_hits`
+    /// at zero means cloning is enabled but failing for every file (for
+    /// example, the store's files carry metadata a clone would inherit).
+    executable_clone_misses: AtomicU64,
     /// Count of files given a private inode by fetching the blob and
     /// writing a full copy: executables that could not be cloned, plus
-    /// non-executables that could not be hardlinked.
+    /// non-executables that could not be hardlinked. Counted once the copy
+    /// is in place, so a failed copy is not a hit.
     file_copy_hits: AtomicU64,
     /// Count of subtree materializations served from the cache by the
     /// subtree's own `Directory` digest. Only ever non-zero when
@@ -375,6 +381,7 @@ impl DirectoryCache {
             clonefile_hits: AtomicU64::new(0),
             hardlink_hits: AtomicU64::new(0),
             executable_clone_hits: AtomicU64::new(0),
+            executable_clone_misses: AtomicU64::new(0),
             file_copy_hits: AtomicU64::new(0),
             subtree_hits: AtomicU64::new(0),
             subtree_misses: AtomicU64::new(0),
@@ -506,6 +513,7 @@ impl DirectoryCache {
             clonefile_hits = self.clonefile_hits.load(Ordering::Relaxed),
             hardlink_hits = self.hardlink_hits.load(Ordering::Relaxed),
             executable_clone_hits = self.executable_clone_hits.load(Ordering::Relaxed),
+            executable_clone_misses = self.executable_clone_misses.load(Ordering::Relaxed),
             file_copy_hits = self.file_copy_hits.load(Ordering::Relaxed),
             subtree_hits = self.subtree_hits.load(Ordering::Relaxed),
             subtree_misses = self.subtree_misses.load(Ordering::Relaxed),
@@ -1217,6 +1225,20 @@ impl DirectoryCache {
             fs::write(&file_path, b"")
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
+            // Read-only like every other materialized input, and +x when
+            // asked for: an empty wrapper script must still exec.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if file_node.is_executable {
+                    0o555
+                } else {
+                    0o444
+                };
+                fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
+                    .await
+                    .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+            }
             return Ok(());
         }
 
@@ -1236,15 +1258,33 @@ impl DirectoryCache {
                         return Ok(());
                     }
                     // The blob left the filesystem tier, it carries
-                    // metadata a copy would not, ... — never fatal: a
-                    // failed clone leaves nothing behind, and the copy
-                    // below builds the same file the way it always has.
-                    Err(e) => trace!(
-                        ?digest,
-                        ?file_path,
-                        error = ?e,
-                        "CAS blob not cloneable, copying instead"
-                    ),
+                    // metadata a copy would not, ... — not fatal: a
+                    // failed clone normally leaves nothing behind, and the
+                    // copy below builds the same file the way it always
+                    // has. `executable_clone_misses` makes a clone that
+                    // always fails visible.
+                    Err(e) => {
+                        self.executable_clone_misses.fetch_add(1, Ordering::Relaxed);
+                        // A rejected clone that could not be removed is
+                        // still in the way, and the copy cannot be written
+                        // over it. A file that was there before the clone
+                        // (AlreadyExists) is not ours, and the copy
+                        // overwrites it as it always has.
+                        if e.code != Code::AlreadyExists
+                            && fs::symlink_metadata(&file_path).await.is_ok()
+                        {
+                            return Err(e.append(format!(
+                                "{} is left behind, so the file cannot be copied there instead",
+                                file_path.display()
+                            )));
+                        }
+                        trace!(
+                            ?digest,
+                            ?file_path,
+                            error = ?e,
+                            "CAS blob not cloneable, copying instead"
+                        );
+                    }
                 }
             }
             return self.copy_file_to(&digest, &file_path, true).await;
@@ -1289,9 +1329,44 @@ impl DirectoryCache {
         digest: &DigestInfo,
         file_path: &Path,
     ) -> Result<(), Error> {
-        // Ensure the blob is in the fast (filesystem) tier so it has an
-        // on-disk file we can hardlink. This may fetch from the slow store,
-        // so it holds a fetch permit.
+        let file_path = file_path.to_path_buf();
+        self.with_cas_blob_path_locked(
+            filesystem_store,
+            digest,
+            "hardlink",
+            move |src| async move {
+                fs::hard_link(&src, &file_path).await.err_tip(|| {
+                    format!(
+                        "Failed to hardlink CAS blob into cache entry: {}",
+                        file_path.display()
+                    )
+                })
+            },
+        )
+        .await
+    }
+
+    /// Runs `materialize` on the on-disk path of the `FilesystemStore` CAS
+    /// blob for `digest`, for `hardlink_cas_blob` and
+    /// `clone_cas_blob_executable` alike, so the eviction-race discipline
+    /// lives in one place: the blob is first populated into the fast tier
+    /// (which may fetch from the slow store, so it holds a fetch permit),
+    /// then its path is resolved and used under the entry lock, so an
+    /// eviction cannot move it while `materialize` runs.
+    ///
+    /// Returns a `NotFound` error if the blob is not present in the
+    /// filesystem tier; `purpose` names the use in that error.
+    async fn with_cas_blob_path_locked<T, Fut, F>(
+        &self,
+        filesystem_store: &FilesystemStore,
+        digest: &DigestInfo,
+        purpose: &'static str,
+        materialize: F,
+    ) -> Result<T, Error>
+    where
+        Fut: Future<Output = Result<T, Error>> + Send,
+        F: FnOnce(std::ffi::OsString) -> Fut + Send,
+    {
         {
             let _permit = self.acquire_fetch_permit().await?;
             self.cas_store
@@ -1300,21 +1375,11 @@ impl DirectoryCache {
                 .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
         }
 
-        let file_entry = filesystem_store
+        filesystem_store
             .get_file_entry_for_digest(digest)
             .await
-            .err_tip(|| "Resolving CAS file entry for hardlink")?;
-
-        let file_path = file_path.to_path_buf();
-        file_entry
-            .get_file_path_locked(move |src| async move {
-                fs::hard_link(&src, &file_path).await.err_tip(|| {
-                    format!(
-                        "Failed to hardlink CAS blob into cache entry: {}",
-                        file_path.display()
-                    )
-                })
-            })
+            .err_tip(|| format!("Resolving CAS file entry for {purpose}"))?
+            .get_file_path_locked(materialize)
             .await
     }
 
@@ -1334,8 +1399,10 @@ impl DirectoryCache {
     /// The clone keeps the blob's mtime, as the hardlink of a
     /// non-executable file does.
     ///
-    /// Any error means "not cloneable" and leaves nothing at `file_path`;
-    /// callers fall back to `copy_file_to`.
+    /// Any error means "not cloneable" and normally leaves nothing at
+    /// `file_path`, and callers fall back to `copy_file_to`; a rejected
+    /// clone that could not be removed is the exception, which `create_file`
+    /// checks for.
     #[cfg(target_os = "macos")]
     async fn clone_cas_blob_executable(
         &self,
@@ -1343,32 +1410,18 @@ impl DirectoryCache {
         digest: &DigestInfo,
         file_path: &Path,
     ) -> Result<(), Error> {
-        {
-            let _permit = self.acquire_fetch_permit().await?;
-            self.cas_store
-                .populate_fast_store(StoreKey::Digest(*digest))
-                .await
-                .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
-        }
-
-        let file_entry = filesystem_store
-            .get_file_entry_for_digest(digest)
-            .await
-            .err_tip(|| "Resolving CAS file entry for clone")?;
-
         let dst = file_path.to_path_buf();
-        file_entry
-            .get_file_path_locked(move |src| async move {
-                clone_file_pristine(Path::new(&src), &dst, 0o555)
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Failed to clone CAS blob into cache entry: {}",
-                            dst.display()
-                        )
-                    })
-            })
-            .await
+        self.with_cas_blob_path_locked(filesystem_store, digest, "clone", move |src| async move {
+            clone_file_pristine(Path::new(&src), &dst, 0o555)
+                .await
+                .err_tip(|| {
+                    format!(
+                        "Failed to clone CAS blob into cache entry: {}",
+                        dst.display()
+                    )
+                })
+        })
+        .await
     }
 
     /// Fetches the blob for `digest` from the CAS and writes a private copy at
@@ -1381,7 +1434,6 @@ impl DirectoryCache {
         file_path: &Path,
         executable: bool,
     ) -> Result<(), Error> {
-        self.file_copy_hits.fetch_add(1, Ordering::Relaxed);
         let data = {
             let _permit = self.acquire_fetch_permit().await?;
             self.cas_store
@@ -1411,6 +1463,7 @@ impl DirectoryCache {
         #[cfg(not(unix))]
         let _ = executable;
 
+        self.file_copy_hits.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1650,6 +1703,7 @@ impl DirectoryCache {
             clonefile_hits: self.clonefile_hits.load(Ordering::Relaxed),
             hardlink_hits: self.hardlink_hits.load(Ordering::Relaxed),
             executable_clone_hits: self.executable_clone_hits.load(Ordering::Relaxed),
+            executable_clone_misses: self.executable_clone_misses.load(Ordering::Relaxed),
             file_copy_hits: self.file_copy_hits.load(Ordering::Relaxed),
             subtree_hits: self.subtree_hits.load(Ordering::Relaxed),
             subtree_misses: self.subtree_misses.load(Ordering::Relaxed),
@@ -1682,6 +1736,12 @@ impl MetricsComponent for DirectoryCache {
             &self.executable_clone_hits,
             MetricKind::Counter,
             "Executable files cloned from the CAS blob with APFS clonefile(2) (macOS only)"
+        );
+        publish!(
+            "executable_clone_misses",
+            &self.executable_clone_misses,
+            MetricKind::Counter,
+            "Executable files whose clone failed and that were copied instead (macOS only)"
         );
         publish!(
             "file_copy_hits",
@@ -1736,6 +1796,9 @@ pub struct CacheStats {
     /// Executable files cloned from the CAS blob with APFS `clonefile(2)`
     /// (macOS).
     pub executable_clone_hits: u64,
+    /// Executable files whose clone failed and that were copied instead
+    /// (macOS).
+    pub executable_clone_misses: u64,
     /// Files fetched and written as a full private copy.
     pub file_copy_hits: u64,
     /// Subtree materializations served from the cache by digest. Always zero
@@ -1920,12 +1983,20 @@ mod tests {
         // point: real CAS backends won't have it.
 
         let directory = ProtoDirectory {
-            files: vec![FileNode {
-                name: "empty.txt".to_string(),
-                digest: Some(zero_digest.into()),
-                is_executable: false,
-                ..Default::default()
-            }],
+            files: vec![
+                FileNode {
+                    name: "empty.sh".to_string(),
+                    digest: Some(zero_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "empty.txt".to_string(),
+                    digest: Some(zero_digest.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+            ],
             directories: vec![],
             symlinks: vec![],
             ..Default::default()
@@ -1950,6 +2021,18 @@ mod tests {
         assert!(empty_path.exists(), "zero-byte file should be created");
         let metadata = fs::metadata(&empty_path).await.unwrap();
         assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
+
+        // Read-only like every other input, and an empty executable keeps
+        // its +x bit (an empty wrapper script must still exec).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (name, mode) in [("empty.txt", 0o444), ("empty.sh", 0o555)] {
+                let metadata = fs::metadata(dest.join(name)).await.unwrap();
+                assert_eq!(metadata.len(), 0, "{name}");
+                assert_eq!(metadata.permissions().mode() & 0o7777, mode, "{name}");
+            }
+        }
 
         Ok(())
     }
@@ -2857,6 +2940,36 @@ mod tests {
     /// The clone owns a reference to its data blocks: evicting the CAS blob
     /// from the `FilesystemStore` (rename to temp, then unlink) leaves the
     /// cached executable intact and readable.
+    /// Polls for up to five seconds until no file under `root` (recursively)
+    /// matches `counts`, for files a store unlinks in the background.
+    /// Returns how many still matched on the last look.
+    #[cfg(target_os = "macos")]
+    async fn wait_until_no_files_under(
+        root: &Path,
+        counts: impl Fn(&std::fs::Metadata) -> bool + Sync,
+    ) -> Result<usize, Error> {
+        let mut files_left = usize::MAX;
+        for _ in 0..500 {
+            files_left = 0;
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(dir) = pending.pop() {
+                let mut entries = fs::read_dir(&dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir() {
+                        pending.push(entry.path());
+                    } else if counts(&entry.metadata().await?) {
+                        files_left += 1;
+                    }
+                }
+            }
+            if files_left == 0 {
+                break;
+            }
+            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        }
+        Ok(files_left)
+    }
+
     #[cfg(target_os = "macos")]
     #[nativelink_test]
     async fn test_executable_clone_survives_cas_eviction() -> Result<(), Error> {
@@ -2903,25 +3016,10 @@ mod tests {
                 .is_err()
         );
         assert!(!cas_path.exists(), "eviction must move the CAS blob away");
-        let mut blob_files_left = usize::MAX;
-        for _ in 0..500 {
-            blob_files_left = 0;
-            let mut pending = vec![temp_dir.path().join("cas_temp")];
-            while let Some(dir) = pending.pop() {
-                let mut entries = fs::read_dir(&dir).await?;
-                while let Some(entry) = entries.next_entry().await? {
-                    if entry.file_type().await?.is_dir() {
-                        pending.push(entry.path());
-                    } else if entry.metadata().await?.len() == content.len() as u64 {
-                        blob_files_left += 1;
-                    }
-                }
-            }
-            if blob_files_left == 0 {
-                break;
-            }
-            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
-        }
+        let blob_files_left = wait_until_no_files_under(&temp_dir.path().join("cas_temp"), |m| {
+            m.len() == content.len() as u64
+        })
+        .await?;
         assert_eq!(blob_files_left, 0, "the evicted blob must be unlinked");
 
         for file in [
@@ -3123,25 +3221,8 @@ mod tests {
         assert!(!cache_root.join(CLONE_PROBE_NAME).exists());
 
         // The store deletes its own probe file in the background.
-        let mut files_left = usize::MAX;
-        for _ in 0..500 {
-            files_left = 0;
-            let mut pending = vec![temp_dir.path().join("cas_temp")];
-            while let Some(dir) = pending.pop() {
-                let mut entries = fs::read_dir(&dir).await?;
-                while let Some(entry) = entries.next_entry().await? {
-                    if entry.file_type().await?.is_dir() {
-                        pending.push(entry.path());
-                    } else {
-                        files_left += 1;
-                    }
-                }
-            }
-            if files_left == 0 {
-                break;
-            }
-            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
-        }
+        let files_left =
+            wait_until_no_files_under(&temp_dir.path().join("cas_temp"), |_| true).await?;
         assert_eq!(files_left, 0, "probe file left in the store's temp dir");
         Ok(())
     }
@@ -3257,41 +3338,9 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn path_cstring(path: &Path) -> std::ffi::CString {
-        use std::os::unix::ffi::OsStrExt;
-        std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap()
-    }
-
-    /// Names of the extended attributes on `path`.
-    #[cfg(target_os = "macos")]
-    fn xattr_names(path: &Path) -> Vec<String> {
-        let path_c = path_cstring(path);
-        let mut names = vec![0u8; 4096];
-        // SAFETY: `names` is a writable buffer of the length passed.
-        let size = unsafe {
-            libc::listxattr(
-                path_c.as_ptr(),
-                names.as_mut_ptr().cast(),
-                names.len(),
-                libc::XATTR_NOFOLLOW,
-            )
-        };
-        assert!(size >= 0, "listxattr: {}", std::io::Error::last_os_error());
-        names.truncate(size.unsigned_abs());
-        names
-            .split(|byte| *byte == 0)
-            .filter(|name| !name.is_empty())
-            .map(|name| String::from_utf8_lossy(name).into_owned())
-            .collect()
-    }
-
-    #[cfg(target_os = "macos")]
-    fn set_file_flags(path: &Path, flags: u32) {
-        let path_c = path_cstring(path);
-        // SAFETY: `path_c` is a NUL-terminated C string that outlives the call.
-        let rc = unsafe { libc::chflags(path_c.as_ptr(), flags) };
-        assert_eq!(rc, 0, "chflags: {}", std::io::Error::last_os_error());
-    }
+    use nativelink_util::fs_util::file_metadata_for_tests::{
+        set_file_flags, set_xattr, xattr_names,
+    };
 
     /// A CAS blob carrying an extended attribute is not cloned — the clone
     /// would hand that attribute to the action — but copied, and the copy
@@ -3306,19 +3355,7 @@ mod tests {
 
             // Setting an attribute needs write permission; the blob is 0o444.
             fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o644)).await?;
-            let path_c = path_cstring(&cas_path);
-            // SAFETY: both C strings and the value buffer outlive the call.
-            let rc = unsafe {
-                libc::setxattr(
-                    path_c.as_ptr(),
-                    c"com.apple.quarantine".as_ptr(),
-                    b"0081;0;test;".as_ptr().cast(),
-                    12,
-                    0,
-                    0,
-                )
-            };
-            assert_eq!(rc, 0, "setxattr: {}", std::io::Error::last_os_error());
+            set_xattr(&cas_path, "com.apple.quarantine", b"0081;0;test;");
             fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o444)).await?;
         }
         assert!(xattr_names(&cas_path).contains(&"com.apple.quarantine".to_string()));
@@ -3340,6 +3377,10 @@ mod tests {
 
         let stats = cache.stats().await;
         assert_eq!(stats.executable_clone_hits, 0, "a dirty blob is not cloned");
+        assert_eq!(
+            stats.executable_clone_misses, 1,
+            "the failed clone is counted"
+        );
         assert_eq!(stats.file_copy_hits, 1, "it is copied");
         for file in [
             cache.get_cache_path(&dir_digest).join("tool"),
@@ -3393,6 +3434,7 @@ mod tests {
 
             let stats = cache.stats().await;
             assert_eq!(stats.executable_clone_hits, 0, "{name}: not cloned");
+            assert_eq!(stats.executable_clone_misses, 1, "{name}: miss counted");
             assert_eq!(stats.file_copy_hits, 1, "{name}: copied");
             for file in [
                 cache.get_cache_path(&dir_digest).join("tool"),

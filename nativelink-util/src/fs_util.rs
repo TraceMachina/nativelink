@@ -230,15 +230,23 @@ fn clonefile_nofollow(src: &core::ffi::CStr, dst: &core::ffi::CStr) -> std::io::
 /// inspected before it is kept, and it is kept only if it is a regular file
 /// with no file flags and no extended attributes (other than the
 /// kernel-assigned `com.apple.provenance`, which a file the same process
-/// writes carries as well). The check runs on the clone, not on `src`: the
-/// clone is a private snapshot, so what is checked is exactly what is kept
-/// and nothing can change between the check and the use.
+/// writes carries as well). ACLs need no check: without `CLONE_ACL` the
+/// clone does not take the source's ACL but inherits the target
+/// directory's, exactly as the byte copy would. The check runs on the
+/// clone, not on `src`: the clone is a private snapshot, so what is checked
+/// is exactly what is kept and nothing can change between the check and the
+/// use. A source that already carries file flags is refused before it is
+/// cloned, since a clone carrying a system flag such as `SF_IMMUTABLE` is
+/// one a non-root process could not remove again.
 ///
-/// On any error `dst` does not exist afterwards (unless it existed before:
-/// `clonefile(2)` refuses to replace it and it is left alone). Returns `Err`
-/// on EXDEV (cross-volume), ENOTSUP (filesystem doesn't support clones), an
-/// existing `dst`, a clone that fails the check, or any other errno; callers
-/// are expected to fall back to a byte copy.
+/// Returns `Err` on EXDEV (cross-volume), ENOTSUP (filesystem doesn't
+/// support clones), an existing `dst`, a source or clone that fails the
+/// check, or any other errno; callers are expected to fall back to a byte
+/// copy. On any error `dst` does not exist afterwards, with two exceptions
+/// a caller must check for before writing its copy there: a `dst` that
+/// existed before (`clonefile(2)` refuses to replace it and it is left
+/// alone), and a rejected clone that could not be removed, which the error
+/// names.
 #[cfg(target_os = "macos")]
 pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -246,24 +254,50 @@ pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::
     let src_c = path_to_cstring(src)?;
     let dst_c = path_to_cstring(dst)?;
     let dst = dst.to_path_buf();
+    let src = src.to_path_buf();
     crate::spawn_blocking!("clone_file_pristine", move || {
+        check_no_file_flags(&std::fs::symlink_metadata(&src)?, "source")?;
         clonefile_nofollow(&src_c, &dst_c)?;
-        let kept = check_clone_is_pristine(&dst, &dst_c)
-            .and_then(|()| std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode)));
-        if kept.is_err() {
-            // An inherited immutable flag would stop the unlink. Only a
-            // regular file is touched: `chflags` follows symlinks.
-            if std::fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file()) {
-                // SAFETY: `dst_c` is a NUL-terminated C string that outlives
-                // the call.
-                unsafe { libc::chflags(dst_c.as_ptr(), 0) };
-            }
-            drop(std::fs::remove_file(&dst));
+        let Err(rejected) = check_clone_is_pristine(&dst, &dst_c)
+            .and_then(|()| std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode)))
+        else {
+            return Ok(());
+        };
+        // A flag set on the source after the check above would stop the
+        // unlink. Only a regular file is touched: `chflags` follows symlinks.
+        if std::fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file()) {
+            // SAFETY: `dst_c` is a NUL-terminated C string that outlives
+            // the call.
+            unsafe { libc::chflags(dst_c.as_ptr(), 0) };
         }
-        kept
+        match std::fs::remove_file(&dst) {
+            Err(remove_err) if remove_err.kind() != std::io::ErrorKind::NotFound => {
+                Err(std::io::Error::new(
+                    remove_err.kind(),
+                    format!(
+                        "{rejected}; the rejected clone could not be removed and is left at {}: {remove_err}",
+                        dst.display()
+                    ),
+                ))
+            }
+            _ => Err(rejected),
+        }
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+/// Refuses a file carrying BSD file flags; `what` names it in the error.
+#[cfg(target_os = "macos")]
+fn check_no_file_flags(metadata: &Metadata, what: &str) -> std::io::Result<()> {
+    use std::os::macos::fs::MetadataExt;
+
+    match metadata.st_flags() {
+        0 => Ok(()),
+        flags => Err(std::io::Error::other(format!(
+            "{what} carries file flags {flags:#x}"
+        ))),
+    }
 }
 
 /// The check behind [`clone_file_pristine`]: `path` is a regular file with
@@ -271,8 +305,6 @@ pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::
 /// `com.apple.provenance`.
 #[cfg(target_os = "macos")]
 fn check_clone_is_pristine(path: &Path, path_c: &core::ffi::CStr) -> std::io::Result<()> {
-    use std::os::macos::fs::MetadataExt;
-
     /// Stamped by the kernel on files a provenance-tracked process creates,
     /// so the byte copy this clone stands in for would carry it too.
     const KERNEL_ASSIGNED_XATTR: &[u8] = b"com.apple.provenance";
@@ -281,12 +313,7 @@ fn check_clone_is_pristine(path: &Path, path_c: &core::ffi::CStr) -> std::io::Re
     if !metadata.is_file() {
         return Err(std::io::Error::other("clone is not a regular file"));
     }
-    if metadata.st_flags() != 0 {
-        return Err(std::io::Error::other(format!(
-            "clone inherited file flags {:#x}",
-            metadata.st_flags()
-        )));
-    }
+    check_no_file_flags(&metadata, "clone")?;
 
     // The names come back as consecutive NUL-terminated strings. Almost
     // always there are none, which the first call answers on its own.
@@ -696,6 +723,118 @@ fn calculate_directory_size_impl<'a>(
     })
 }
 
+/// Helpers for tests that need a file carrying the metadata a clone would
+/// inherit. Shared so this crate's tests and the worker's directory cache
+/// tests set and read it the same way.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod file_metadata_for_tests {
+    use std::ffi::CString;
+    use std::path::Path;
+
+    pub fn path_cstring(path: &Path) -> CString {
+        super::path_to_cstring(path).unwrap()
+    }
+
+    pub fn set_xattr(path: &Path, name: &str, value: &[u8]) {
+        let path_c = path_cstring(path);
+        let name_c = CString::new(name).unwrap();
+        // SAFETY: both C strings and the value buffer outlive the call.
+        let rc = unsafe {
+            libc::setxattr(
+                path_c.as_ptr(),
+                name_c.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "setxattr: {}", std::io::Error::last_os_error());
+    }
+
+    /// Names of the extended attributes on `path`.
+    pub fn xattr_names(path: &Path) -> Vec<String> {
+        let path_c = path_cstring(path);
+        // SAFETY: a null buffer of size 0 asks only for the size needed.
+        let size = unsafe {
+            libc::listxattr(
+                path_c.as_ptr(),
+                core::ptr::null_mut(),
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert!(size >= 0, "listxattr: {}", std::io::Error::last_os_error());
+        let mut names = vec![0u8; size.unsigned_abs()];
+        // SAFETY: `names` is a writable buffer of exactly the length passed.
+        let size = unsafe {
+            libc::listxattr(
+                path_c.as_ptr(),
+                names.as_mut_ptr().cast(),
+                names.len(),
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert!(size >= 0, "listxattr: {}", std::io::Error::last_os_error());
+        names.truncate(size.unsigned_abs());
+        names
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect()
+    }
+
+    pub fn set_file_flags(path: &Path, flags: u32) {
+        let path_c = path_cstring(path);
+        // SAFETY: `path_c` is a NUL-terminated C string that outlives the call.
+        let rc = unsafe { libc::chflags(path_c.as_ptr(), flags) };
+        assert_eq!(rc, 0, "chflags: {}", std::io::Error::last_os_error());
+    }
+
+    /// Whether `path` has an ACL with extended entries.
+    pub fn has_extended_acl(path: &Path) -> bool {
+        use core::ffi::{c_char, c_int, c_void};
+
+        /// From `<sys/acl.h>`; the libc crate exposes none of the ACL API.
+        const ACL_TYPE_EXTENDED: c_int = 0x0000_0100;
+        unsafe extern "C" {
+            fn acl_get_link_np(path_p: *const c_char, acl_type: c_int) -> *mut c_void;
+            fn acl_free(obj_p: *mut c_void) -> c_int;
+        }
+
+        let path_c = path_cstring(path);
+        // SAFETY: `path_c` is a NUL-terminated C string that outlives the
+        // call.
+        let acl = unsafe { acl_get_link_np(path_c.as_ptr(), ACL_TYPE_EXTENDED) };
+        if acl.is_null() {
+            // ENOENT is how a file with no extended ACL answers.
+            let err = std::io::Error::last_os_error();
+            assert_eq!(
+                err.raw_os_error(),
+                Some(libc::ENOENT),
+                "acl_get_link_np: {err}"
+            );
+            return false;
+        }
+        // SAFETY: `acl` came from `acl_get_link_np` and is freed exactly once.
+        unsafe { acl_free(acl) };
+        true
+    }
+
+    /// Adds an ACL entry to `path`, written as `chmod +a` takes it, such as
+    /// `"everyone deny execute"`.
+    pub fn add_acl_entry(path: &Path, entry: &str) {
+        let status = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg(entry)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "chmod +a {entry}: {status}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -928,32 +1067,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
-    fn set_xattr(path: &Path, name: &str, value: &[u8]) {
-        let path_c = path_to_cstring(path).unwrap();
-        let name_c = std::ffi::CString::new(name).unwrap();
-        // SAFETY: both C strings and the value buffer outlive the call.
-        let rc = unsafe {
-            libc::setxattr(
-                path_c.as_ptr(),
-                name_c.as_ptr(),
-                value.as_ptr().cast(),
-                value.len(),
-                0,
-                0,
-            )
-        };
-        assert_eq!(rc, 0, "setxattr: {}", std::io::Error::last_os_error());
-    }
-
-    #[cfg(target_os = "macos")]
-    fn set_flags(path: &Path, flags: u32) {
-        let path_c = path_to_cstring(path).unwrap();
-        // SAFETY: `path_c` is a NUL-terminated C string that outlives the call.
-        let rc = unsafe { libc::chflags(path_c.as_ptr(), flags) };
-        assert_eq!(rc, 0, "chflags: {}", std::io::Error::last_os_error());
-    }
-
     /// `clone_file_pristine` on a clean file: the clone is a new inode with
     /// the source's bytes and the requested mode, the source is untouched, an
     /// existing destination is refused and left alone, and a missing source
@@ -1003,6 +1116,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[nativelink_test("crate")]
     async fn test_clone_file_pristine_rejects_inherited_metadata() -> Result<(), Error> {
+        use super::file_metadata_for_tests::{
+            add_acl_entry, has_extended_acl, set_file_flags, set_xattr,
+        };
+
         let temp_dir = TempDir::new()?;
         let dst = temp_dir.path().join("dst");
 
@@ -1018,10 +1135,10 @@ mod tests {
         for (name, flags) in [("nodump", libc::UF_NODUMP), ("uchg", libc::UF_IMMUTABLE)] {
             let flagged = temp_dir.path().join(name);
             fs::write(&flagged, b"x").await?;
-            set_flags(&flagged, flags);
+            set_file_flags(&flagged, flags);
             let result = clone_file_pristine(&flagged, &dst, 0o555).await;
             // Clear before asserting so the temp dir can always be removed.
-            set_flags(&flagged, 0);
+            set_file_flags(&flagged, 0);
             let err = result.unwrap_err();
             assert!(err.to_string().contains("file flags"), "{name}: {err}");
             assert!(
@@ -1029,6 +1146,18 @@ mod tests {
                 "{name}: no clone left"
             );
         }
+
+        // An ACL on the source does not reach the clone: without CLONE_ACL,
+        // clonefile(2) gives the clone the target directory's inherited ACL,
+        // as a byte copy gets. So a `deny execute` on the blob cannot stop
+        // the action from running its clone.
+        let with_acl = temp_dir.path().join("with_acl");
+        fs::write(&with_acl, b"x").await?;
+        add_acl_entry(&with_acl, "everyone deny execute");
+        assert!(has_extended_acl(&with_acl));
+        let acl_dst = temp_dir.path().join("acl_dst");
+        clone_file_pristine(&with_acl, &acl_dst, 0o555).await?;
+        assert!(!has_extended_acl(&acl_dst), "the source's ACL was cloned");
 
         // CLONE_NOFOLLOW clones a symlink as a symlink; that is not a file.
         let link = temp_dir.path().join("link");
