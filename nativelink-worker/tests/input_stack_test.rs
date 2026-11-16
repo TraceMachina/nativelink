@@ -17,7 +17,9 @@ use std::process::Command;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use nativelink_config::stores::{FastSlowSpec, FilesystemSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Error, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::{Directory, DirectoryNode, FileNode};
 use nativelink_store::ac_utils::{compute_buf_digest, serialize_and_upload_message};
@@ -57,8 +59,8 @@ impl InputTree {
             &FastSlowSpec {
                 fast: StoreSpec::Filesystem(fast_spec),
                 slow: StoreSpec::Memory(MemorySpec::default()),
-                fast_direction: Default::default(),
-                slow_direction: Default::default(),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
                 has_slow_write_wait_timeout_s: 0,
                 leader_inactivity_timeout_s: 0,
