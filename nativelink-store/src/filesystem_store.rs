@@ -21,6 +21,7 @@ use std::borrow::Cow;
 #[cfg(unix)]
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
@@ -351,6 +352,21 @@ impl FileEntry for FileEntryImpl {
     ) -> Result<(Self, FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
         let temp_file_result = fs::create_file(temp_full_path.clone())
+            .or_else(|err| async {
+                if err.code != Code::NotFound {
+                    return Err(err);
+                }
+                let parent = Path::new(&temp_full_path)
+                    .parent()
+                    .err_tip(|| "Temporary CAS path has no parent")?;
+                fs::create_dir_all(parent).await.map_err(|restore_err| {
+                    err.merge(restore_err).append(format!(
+                        "Failed to restore temporary CAS directory {}",
+                        parent.display()
+                    ))
+                })?;
+                fs::create_file(temp_full_path.clone()).await
+            })
             .or_else(|mut err| async {
                 let remove_result = fs::remove_file(&temp_full_path).await.err_tip(|| {
                     format!(
@@ -769,7 +785,22 @@ impl LenEntry for FileEntryImpl {
             Version::V2,
         );
 
-        if let Err(err) = fs::rename(&from_path, &to_path).await {
+        let mut result = fs::rename(&from_path, &to_path).await;
+        if result.as_ref().is_err_and(|err| err.code == Code::NotFound)
+            && fs::metadata(&from_path).await.is_ok()
+            && let Some(parent) = Path::new(&to_path).parent()
+        {
+            result = match fs::create_dir_all(parent).await {
+                Ok(()) => fs::rename(&from_path, &to_path).await,
+                Err(restore_err) => result.map_err(|err| {
+                    err.merge(restore_err).append(format!(
+                        "Failed to restore CAS eviction directory {}",
+                        parent.display()
+                    ))
+                }),
+            };
+        }
+        if let Err(err) = result {
             // ENOENT from rename is ambiguous: the source may be gone, or
             // a directory component of the destination (the temp dir) may
             // be missing. Confirm the source is genuinely gone before
@@ -1951,7 +1982,22 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                     warn!(?err, ?from_path, "Failed to set CAS blob read-only");
                 }
             }
-            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
+            let mut result = (rename_fn)(&from_path, &final_path).map_err(Error::from);
+            if result.as_ref().is_err_and(|err| err.code == Code::NotFound)
+                && fs::metadata(&from_path).await.is_ok()
+                && let Some(parent) = Path::new(&final_path).parent()
+            {
+                result = match fs::create_dir_all(parent).await {
+                    Ok(()) => (rename_fn)(&from_path, &final_path).map_err(Error::from),
+                    Err(restore_err) => result.map_err(|err| {
+                        err.merge(restore_err).append(format!(
+                            "Failed to restore CAS content directory {}",
+                            parent.display()
+                        ))
+                    }),
+                };
+            }
+            let result = result.err_tip(|| {
                 format!(
                     "Failed to rename temp file to final path {}",
                     final_path.display()

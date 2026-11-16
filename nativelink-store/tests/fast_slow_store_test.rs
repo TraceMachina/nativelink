@@ -52,6 +52,46 @@ use rand::{Rng, SeedableRng};
 
 const MEGABYTE_SZ: usize = 1024 * 1024;
 
+#[nativelink_test]
+async fn slow_fill_restores_removed_filesystem_directories() -> Result<(), Error> {
+    let content_path = make_temp_path("restore_content");
+    let temp_path = make_temp_path("restore_temp");
+    let fast = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        ..Default::default()
+    })
+    .await?;
+    let slow = MemoryStore::new(&MemorySpec::default());
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    slow.update_oneshot(digest, Bytes::from_static(b"abc"))
+        .await?;
+    let store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(FilesystemSpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(fast.clone()),
+        Store::new(slow),
+    );
+    fs::remove_dir_all(&temp_path).await?;
+    fs::remove_dir_all(&content_path).await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        b"abc".as_slice()
+    );
+    assert_eq!(
+        fast.get_part_unchunked(digest, 0, None).await?,
+        b"abc".as_slice()
+    );
+    Ok(())
+}
+
 fn make_stores_direction(
     fast_direction: StoreDirection,
     slow_direction: StoreDirection,

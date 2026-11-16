@@ -191,6 +191,27 @@ a cache hit.
 
 <Accordions>
 
+<Accordion title="A cache directory disappears while the store is running" id="cache-directory-missing-at-runtime">
+
+In development builds, a missing parent directory during temporary-file creation,
+upload publication, or eviction is recreated and the operation is retried once.
+Rename recovery first checks that the source file still exists. Directory recovery
+does not reconstruct deleted blobs or publish a failed upload.
+
+If recovery fails, uploads return an error with path context. Failed eviction
+leaves an existing content file in place. Successful eviction moves it to
+`temp_path`, where outstanding entry references can still read it; the last
+reference dropping removes the retired file.
+
+Check for external cleanup of `content_path` and `temp_path`. Recreating a
+directory does not establish why it disappeared or restore a missing mount.
+
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="make_and_open_file" />
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="emplace_file" />
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="unref" />
+
+</Accordion>
+
 <Accordion title="The index contains a file that is missing from disk" id="index-file-missing-from-disk">
 
 An upload that encounters a missing file during duplicate comparison removes

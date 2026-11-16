@@ -912,6 +912,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     // Now make it impossible for the file to be moved into the final path.
     // This will trigger an error on `rename()`.
     fs::remove_dir_all(&content_path).await?;
+    fs::create_file(&content_path).await?;
 
     // Because send_eof() waits for shutdown of the rx side, we cannot just await in this thread.
     background_spawn!(
@@ -922,11 +923,11 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
     );
 
     // Now finish waiting on update(). This should result in an error because we deleted our dest
-    // folder.
+    // folder and replaced it with a file.
     let update_result = &mut *update_fut.lock().await;
     assert!(
         update_result.await.is_err(),
-        "Expected update to fail due to temp file being deleted before rename"
+        "Expected update to fail because the destination parent is a file"
     );
 
     // Delete may happen on another thread, so wait for it.
@@ -2564,11 +2565,51 @@ async fn unref_is_idempotent_when_file_already_gone() -> Result<(), Error> {
     Ok(())
 }
 
-/// rename ENOENT is ambiguous: a missing temp directory must not be mistaken
-/// for a vanished source. With the source still present, unref must warn and
-/// leave the content file intact rather than flip to Temp and orphan it.
+/// Eviction restores its temporary directory without invalidating readers.
 #[nativelink_test]
-async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<(), Error> {
+async fn unref_restores_missing_temp_dir() -> Result<(), Error> {
+    struct LocalHooks;
+    impl FileEntryHooks for LocalHooks {}
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        ..Default::default()
+    })
+    .await?;
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let file_entry = store.get_file_entry_for_digest(&digest).await?;
+    let content_file = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
+    let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+
+    fs::remove_dir_all(&temp_path).await?;
+    assert!(store.get_evicting_map().remove(&digest.into()).await);
+    assert_eq!(store.has(digest).await?, None);
+    assert!(fs::metadata(&content_file).await.is_err());
+    let mut contents = Vec::new();
+    reader.read_to_end(&mut contents).await?;
+    assert_eq!(contents, VALUE1.as_bytes());
+    drop(reader);
+    let mut reader = file_entry.read_file_part(0, u64::MAX).await?;
+    contents.clear();
+    reader.read_to_end(&mut contents).await?;
+    assert_eq!(contents, VALUE1.as_bytes());
+    drop(reader);
+    file_entry.unref().await;
+    drop(file_entry);
+    assert!(
+        list_file_names(&format!("{temp_path}/{DIGEST_FOLDER_V2}"))
+            .await?
+            .is_empty()
+    );
+    check_storage_dir_empty(&content_path).await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unref_preserves_content_when_temp_dir_cannot_be_restored() -> Result<(), Error> {
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
@@ -2584,15 +2625,15 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
     store.update_oneshot(digest, VALUE1.into()).await?;
     let file_entry = store.get_file_entry_for_digest(&digest).await?;
 
-    // Remove the temp dir so rename's destination parent is gone (ENOENT)
-    // while the source content file is perfectly intact.
-    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER_V2}")).await?;
+    // Leave the immediate parent missing, but block its restoration with a file.
+    fs::remove_dir_all(&temp_path).await?;
+    fs::create_file(&temp_path).await?;
 
     file_entry.unref().await;
 
     assert!(
         logs_contain("Failed to rename file"),
-        "missing temp dir (source present) must warn, not be treated as benign"
+        "a blocked eviction path must report the failure"
     );
     assert!(
         !logs_contain("treating as benign"),
@@ -3255,5 +3296,202 @@ async fn incomplete_whole_file_does_not_replace_existing_blob() -> Result<(), Er
         .unwrap_err();
     assert_eq!(error.code, Code::InvalidArgument);
     assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn uploads_restore_removed_parent_directories() -> Result<(), Error> {
+    for key in [
+        StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 3)?),
+        StoreKey::new_str("directory-recovery"),
+    ] {
+        for (remove_temp, remove_content) in [(true, false), (false, true), (true, true)] {
+            let content_path = make_temp_path("restore_content");
+            let temp_path = make_temp_path("restore_temp");
+            let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+                content_path: content_path.clone(),
+                temp_path: temp_path.clone(),
+                ..Default::default()
+            })
+            .await?;
+            if remove_temp {
+                fs::remove_dir_all(&temp_path).await?;
+            }
+            if remove_content {
+                fs::remove_dir_all(&content_path).await?;
+            }
+            store
+                .update_oneshot(key.clone(), Bytes::from_static(b"abc"))
+                .await?;
+            assert_eq!(
+                store.get_part_unchunked(key.clone(), 0, None).await?,
+                b"abc".as_slice()
+            );
+            assert!(
+                list_file_names(&format!("{temp_path}/{DIGEST_FOLDER_V2}"))
+                    .await?
+                    .is_empty()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn blocked_temp_parent_does_not_publish_blob() -> Result<(), Error> {
+    let temp_path = make_temp_path("blocked_temp");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("blocked_content"),
+        temp_path: temp_path.clone(),
+        ..Default::default()
+    })
+    .await?;
+    let parent = format!("{temp_path}/{DIGEST_FOLDER_V2}");
+    fs::remove_dir_all(&parent).await?;
+    fs::create_file(&parent).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    let err = store
+        .update_oneshot(digest, Bytes::from_static(b"abc"))
+        .await
+        .unwrap_err();
+    assert!(err.message_string().contains(&parent), "{err:?}");
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[nativelink_test]
+async fn dangling_parent_reports_directory_recovery_failure() -> Result<(), Error> {
+    for block_temp in [true, false] {
+        let content_path = make_temp_path("dangling_content");
+        let temp_path = make_temp_path("dangling_temp");
+        let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            ..Default::default()
+        })
+        .await?;
+        let root = if block_temp {
+            &temp_path
+        } else {
+            &content_path
+        };
+        let parent = format!("{root}/{DIGEST_FOLDER_V2}");
+        fs::remove_dir_all(&parent).await?;
+        fs::symlink(make_temp_path("missing_target"), &parent).await?;
+        let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+        let err = store
+            .update_oneshot(digest, Bytes::from_static(b"abc"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.message_string().contains("Failed to restore"),
+            "{err:?}"
+        );
+        assert!(err.message_string().contains(&parent), "{err:?}");
+        assert_eq!(store.has(digest).await?, None);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[nativelink_test]
+async fn failed_eviction_directory_recovery_preserves_source() -> Result<(), Error> {
+    let content_path = make_temp_path("eviction_content");
+    let temp_path = make_temp_path("eviction_temp");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        ..Default::default()
+    })
+    .await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    store
+        .update_oneshot(digest, Bytes::from_static(b"abc"))
+        .await?;
+    let entry = store.get_file_entry_for_digest(&digest).await?;
+    let parent = format!("{temp_path}/{DIGEST_FOLDER_V2}");
+    fs::remove_dir_all(&parent).await?;
+    fs::symlink(make_temp_path("missing_target"), &parent).await?;
+    assert!(store.get_evicting_map().remove(&digest.into()).await);
+    assert!(logs_contain("Failed to restore CAS eviction directory"));
+    let path = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
+    drop(entry);
+    assert_eq!(read_file_contents(&path).await?, b"abc");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn missing_publish_source_is_not_retried_or_recreated() -> Result<(), Error> {
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+    CALLS.store(0, Ordering::SeqCst);
+    let content_path = make_temp_path("missing_source_content");
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("missing_source_temp"),
+            ..Default::default()
+        },
+        |from, _| {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            std::fs::remove_file(from)?;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        },
+    )
+    .await?;
+    fs::remove_dir_all(&content_path).await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    let err = store
+        .update_oneshot(digest, Bytes::from_static(b"abc"))
+        .await
+        .unwrap_err();
+    assert!(err.message_string().contains(&content_path), "{err:?}");
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(store.has(digest).await?, None);
+    assert!(fs::metadata(&content_path).await.is_err());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn publish_retries_once_and_preserves_previous_generation() -> Result<(), Error> {
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+    static FAIL: AtomicBool = AtomicBool::new(false);
+    struct LocalHooks;
+    impl FileEntryHooks for LocalHooks {}
+    CALLS.store(0, Ordering::SeqCst);
+    FAIL.store(false, Ordering::SeqCst);
+    let content_path = make_temp_path("retry_content");
+    let temp_path = make_temp_path("retry_temp");
+    let store = FilesystemStore::<TestFileEntry<LocalHooks>>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            ..Default::default()
+        },
+        |from, to| {
+            if FAIL.load(Ordering::SeqCst) {
+                CALLS.fetch_add(1, Ordering::SeqCst);
+                return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+            }
+            std::fs::rename(from, to)
+        },
+    )
+    .await?;
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    store
+        .update_oneshot(digest, Bytes::from_static(b"abc"))
+        .await?;
+    FAIL.store(true, Ordering::SeqCst);
+    let err = store
+        .update_oneshot(digest, Bytes::from_static(b"def"))
+        .await
+        .unwrap_err();
+    assert!(err.message_string().contains(&content_path), "{err:?}");
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        b"abc".as_slice()
+    );
+    check_storage_dir_empty(&temp_path).await?;
     Ok(())
 }
