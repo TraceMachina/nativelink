@@ -1093,7 +1093,7 @@ impl DirectoryCache {
                             biased;
                             _ = response.closed() => {},
                             value = self.create_subdirectory(&parent, &dir_node, protos, lease, child_work) => {
-                                let _ = response.send(value);
+                                drop(response.send(value));
                             },
                         }
                     }))
