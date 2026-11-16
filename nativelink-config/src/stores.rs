@@ -230,6 +230,28 @@ pub enum StoreSpec {
     ///      }
     ///    }
     ///    ```
+    ///
+    /// 7. **Alibaba Cloud OSS:**
+    ///    Uses the OSS S3-compatible endpoint and AWS `SigV4`. Supply the OSS
+    ///    access key explicitly per store, for example by shell-expanding
+    ///    `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` in the config.
+    ///    Set `cname` to true with an explicit HTTPS `endpoint` to use a custom
+    ///    domain bound to the bucket, without adding the bucket to the host or
+    ///    path. The default is false. Configure the domain binding, DNS, and
+    ///    TLS certificate before starting the store.
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oss",
+    ///      "region": "cn-hangzhou",
+    ///      "bucket": "example-build-cache",
+    ///      "access_key_id": "oss_access_key_id",
+    ///      "secret_access_key": "oss_secret_access_key",
+    ///      "cname": false,
+    ///      "key_prefix": "cas/"
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store
@@ -948,6 +970,84 @@ pub struct ExperimentalOciSpec {
     pub common: CommonObjectSpec,
 }
 
+/// Alibaba Cloud OSS through its S3-compatible API.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOssSpec {
+    /// OSS region, for example `cn-hangzhou`. Used for AWS `SigV4` signing
+    /// and to derive the default S3-compatible endpoint.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name to use as the backend.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Access key ID for this store. Required; no AWS credential-chain fallback.
+    /// Use shell expansion, for example `${OSS_ACCESS_KEY_ID}`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub access_key_id: String,
+
+    /// Access key secret for this store. Use `${OSS_ACCESS_KEY_SECRET}` to
+    /// keep it out of the config file. Independent of AWS S3 store credentials.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub secret_access_key: String,
+
+    /// Optional STS token for this store, for example `${OSS_SESSION_TOKEN}`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub session_token: Option<String>,
+
+    /// Optional HTTPS S3-compatible service endpoint, without a bucket or path.
+    /// Default: `https://s3.oss-{region}.aliyuncs.com`.
+    /// With `cname: true`, this must be the custom domain bound to the bucket.
+    /// Native OSS REST endpoints are not interchangeable with this endpoint.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Use `endpoint` as the bucket's custom domain without adding the bucket
+    /// to the host or path. Requires an explicit HTTPS endpoint, an OSS domain
+    /// binding, and a valid certificate for that domain. Default: false.
+    #[serde(default)]
+    pub cname: bool,
+
+    /// Prefix prepended verbatim to each object key, for example `cas/`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub key_prefix: Option<String>,
+
+    /// Retry policy for the shared S3 store. SDK retries are disabled to avoid
+    /// multiplying attempts. Default: the standard store retry policy.
+    #[serde(default)]
+    pub retry: Retry,
+
+    /// Maximum concurrent part requests per upload. Must be positive.
+    /// Default: 2. Queued parts are bounded by the same count; this is not
+    /// a global byte budget. Part size is chosen by the shared S3 store.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub multipart_max_concurrent_uploads: Option<usize>,
+}
+
+impl core::fmt::Debug for ExperimentalOssSpec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExperimentalOssSpec")
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("endpoint", &self.endpoint)
+            .field("cname", &self.cname)
+            .field("key_prefix", &self.key_prefix)
+            .field("retry", &self.retry)
+            .field(
+                "multipart_max_concurrent_uploads",
+                &self.multipart_max_concurrent_uploads,
+            )
+            .field("credentials", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1266,6 +1366,7 @@ pub enum ExperimentalCloudObjectSpec {
     Ontap(ExperimentalOntapS3Spec),
     R2(ExperimentalR2Spec),
     Oci(ExperimentalOciSpec),
+    Oss(ExperimentalOssSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {
