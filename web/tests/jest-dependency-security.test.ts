@@ -13,7 +13,9 @@ const fromCore = createRequire(fromJest.resolve("@jest/core"));
 const fromConfig = createRequire(fromCore.resolve("jest-config"));
 const fromGlob = createRequire(fromConfig.resolve("glob"));
 const fromTransform = createRequire(fromCore.resolve("@jest/transform"));
-const fromIstanbul = createRequire(fromTransform.resolve("babel-plugin-istanbul"));
+const fromIstanbul = createRequire(
+  fromTransform.resolve("babel-plugin-istanbul"),
+);
 const fromExclude = createRequire(fromIstanbul.resolve("test-exclude"));
 
 test.each([
@@ -51,16 +53,19 @@ test.each([
 test.each([
   ["glob", fromGlob("minimatch").Minimatch],
   ["test-exclude", fromExclude("minimatch").Minimatch],
-])("%s rejects excessive globstar-parent pattern expansion", (_name, Minimatch) => {
-  // GHSA-g3hv-75wg-m249: a small input must honor the expansion budget.
-  const pattern = Array(8).fill("**/../a/b").join("/");
-  const options = { optimizationLevel: 2, braceExpandMax: 64 };
-  expect(() => new Minimatch(pattern, options)).toThrow("too many patterns");
+])(
+  "%s rejects excessive globstar-parent pattern expansion",
+  (_name, Minimatch) => {
+    // GHSA-g3hv-75wg-m249: a small input must honor the expansion budget.
+    const pattern = Array(8).fill("**/../a/b").join("/");
+    const options = { optimizationLevel: 2, braceExpandMax: 64 };
+    expect(() => new Minimatch(pattern, options)).toThrow("too many patterns");
 
-  const ordinary = new Minimatch("**/../a/b/**/../c/d", {
-    optimizationLevel: 2,
-  });
-  expect(ordinary.match("../a/b/../c/d")).toBe(true);
-  expect(ordinary.match("x/a/b/y/c/d")).toBe(true);
-  expect(ordinary.match("x/a/b/y/c/other")).toBe(false);
-});
+    const ordinary = new Minimatch("**/../a/b/**/../c/d", {
+      optimizationLevel: 2,
+    });
+    expect(ordinary.match("../a/b/../c/d")).toBe(true);
+    expect(ordinary.match("x/a/b/y/c/d")).toBe(true);
+    expect(ordinary.match("x/a/b/y/c/other")).toBe(false);
+  },
+);
