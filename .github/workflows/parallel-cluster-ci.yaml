@@ -185,6 +185,8 @@ jobs:
 
       - name: Summarize build, tests and cache reuse
         if: always()
+        env:
+          NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
         run: |
           if [ -f "$RUNNER_TEMP/benchmark-summary/cluster.json" ]; then
             python3 .github/scripts/ci_benchmark.py summarize \

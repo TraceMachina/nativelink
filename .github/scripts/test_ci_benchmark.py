@@ -137,6 +137,55 @@ class BenchmarkTest(unittest.TestCase):
             self.assertIn('Unknown', output.getvalue())
             self.assertIn('2/3 | failed', output.getvalue())
 
+    def test_summary_links_each_iteration_to_its_build_results_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            result = {'revision': 'a' * 40, 'total_seconds': 12, 'runs': [
+                {'iteration': 1, 'seconds': 10, 'exit_code': 0,
+                 'invocation_id': 'first-invocation',
+                 'cache': {'total_reuse_percent': 50.0, 'local_action_hits': 1,
+                           'disk_hits': 1, 'remote_hits': 1}, 'tests': {'cached': 1, 'total': 2}},
+                {'iteration': 2, 'seconds': 4, 'exit_code': 0,
+                 'invocation_id': 'second-invocation',
+                 'cache': {'total_reuse_percent': 100.0, 'local_action_hits': 2,
+                           'disk_hits': 0, 'remote_hits': 2}, 'tests': {'cached': 2, 'total': 2}}]}
+            path.write_text(json.dumps(result))
+            with patch.dict(os.environ, {'NL_RESULTS_URL': 'https://ui.example/a/acme/build/'}), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            text = output.getvalue()
+            self.assertIn('[invocation](https://ui.example/a/acme/build/first-invocation)', text)
+            self.assertIn('[invocation](https://ui.example/a/acme/build/second-invocation)', text)
+            self.assertIn('| Build results |', text)
+            self.assertIn('NativeLink `bep_server`', text)
+
+    def test_summary_omits_links_and_says_so_when_results_url_is_unset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            path.write_text(json.dumps({'revision': 'a' * 40, 'total_seconds': 1, 'runs': [
+                {'iteration': 1, 'seconds': 1, 'exit_code': 0, 'invocation_id': 'unused',
+                 'cache': {'total_reuse_percent': None, 'local_action_hits': None,
+                           'disk_hits': None, 'remote_hits': None},
+                 'tests': {'cached': 0, 'total': 0}}]}))
+            with patch.dict(os.environ, {}, clear=True), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            text = output.getvalue()
+            self.assertNotIn('[invocation]', text)
+            self.assertIn('Build-results links are unavailable', text)
+
+    def test_results_link_rejects_non_http_prefixes_and_trailing_slashes(self):
+        self.assertEqual(ci_benchmark.results_link('https://ui.example/a/acme/build/',
+                                                   'inv-1'),
+                         'https://ui.example/a/acme/build/inv-1')
+        self.assertEqual(ci_benchmark.results_link('http://localhost:21089/a/acme/build', 'inv-1'),
+                         'http://localhost:21089/a/acme/build/inv-1')
+        self.assertIsNone(ci_benchmark.results_link('', 'inv-1'))
+        self.assertIsNone(ci_benchmark.results_link('https://ui.example/build/', ''))
+        for bad in ('grpcs://ui.example/build/', 'ui.example/build/', 'javascript:alert(1)'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ci_benchmark.results_link(bad, 'inv-1')
+
     def test_docs_lint_does_not_depend_on_a_floating_vale_release(self):
         workflow = Path('.github/workflows/vale.yaml').read_text()
         action = workflow.split('errata-ai/vale-action@', 1)[1]

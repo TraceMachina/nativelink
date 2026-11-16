@@ -8,3 +8,12 @@ overrides:
   "moment": "^2.31.0"
   "qs": "^6.16.1"
   "uuid": "^11.1.1"
+
+# so dependency-security.test.cjs works
+publicHoistPattern:
+  - "@azure/identity"
+  - "@azure/ms-rest-js"
+  - applicationinsights
+  - axios
+  - sequelize
+  - uuid

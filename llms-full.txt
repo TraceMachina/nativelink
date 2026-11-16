@@ -14783,8 +14783,9 @@ anything else in it: **all workers must share the same CAS storage path.**
 When they do not, actions fail with
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 which the worker reports to the scheduler as `FAILED_PRECONDITION` with that
@@ -18544,8 +18545,9 @@ The error your developers report will not contain the word "missing" and
 will not look like a cache problem. The underlying message is:
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 <Callout type="info" title="That wording is load-bearing">
@@ -21366,6 +21368,11 @@ does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
 uploaded" mistake into a fast error, not to provide a guarantee. See
 <SourceLink file="nativelink-service/src/execution_server.rs" symbol="ExecutionServer" />.
+
+**A malformed `Action.timeout` is rejected.** A negative `seconds` or `nanos`,
+or `nanos` of 1,000,000,000 or more, is not a valid `google.protobuf.Duration`,
+so `Execute` returns `INVALID_ARGUMENT`. A valid timeout longer than the
+worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
 
 **`ActionStage::CacheCheck` is never emitted.** The cache lookup happens in a
 decorator in front of the scheduler, so the state is skipped entirely. A

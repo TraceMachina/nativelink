@@ -138,8 +138,9 @@ The error your developers report will not contain the word "missing" and
 will not look like a cache problem. The underlying message is:
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 <Callout type="info" title="That wording is load-bearing">
