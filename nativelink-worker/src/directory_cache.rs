@@ -1091,7 +1091,7 @@ impl DirectoryCache {
                     work.send(Box::pin(async move {
                         tokio::select! {
                             biased;
-                            _ = response.closed() => {},
+                            () = response.closed() => {},
                             value = self.create_subdirectory(&parent, &dir_node, protos, lease, child_work) => {
                                 drop(response.send(value));
                             },
