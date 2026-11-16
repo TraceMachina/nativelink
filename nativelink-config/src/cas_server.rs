@@ -1342,7 +1342,7 @@ pub struct PersistentWorkersConfig {
     pub acquire_timeout_s: u64,
 
     /// Isolate workers by the bazel Action instance group name which is
-    /// extracted from the ActionUniqueKey used to distinguish Actions.
+    /// extracted from the `ActionUniqueKey` used to distinguish Actions.
     /// Default: false
     #[serde(default)]
     pub isolate_by_instance_name: bool,
