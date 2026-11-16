@@ -1,0 +1,82 @@
+---
+title: Fork-Sync-All integration
+description: A proposal for optional Remote Execution API integration with Fork-Sync-All.
+---
+
+# Fork-Sync-All integration
+
+## Status
+
+This page is a proposal for maintainer discussion only. It does not describe an
+existing partnership, endorsement, roadmap commitment, or supported NativeLink
+feature. NativeLink maintainers retain full discretion over whether to accept,
+change, defer, or decline this proposal.
+
+## Context
+
+[Fork-Sync-All](https://github.com/Interested-Deving-1896/fork-sync-all) (FSA)
+orchestrates repository synchronization, CI workflows, validation, and
+Git-platform automation. NativeLink provides Remote Execution API-compatible
+remote execution and remote caching.
+
+The proposed integration keeps these responsibilities separate: FSA remains
+the orchestration and policy layer, while NativeLink remains an optional
+execution and cache service used through supported build-tool clients.
+
+## Proposed integration
+
+An initial integration could let an explicitly opted-in FSA build job configure
+its build tool with NativeLink REAPI endpoints:
+
+- a remote execution endpoint for eligible, hermetic build actions;
+- a remote cache endpoint for action-result and content-addressable storage;
+- an optional REAPI instance name for deployment-specific namespacing.
+
+The first pilot should use an existing supported client and a reproducible,
+non-privileged build. It should not require a NativeLink-specific protocol or
+changes to NativeLink's core service.
+
+## Boundaries and security
+
+- Remote execution must be opt-in per repository and workload. Existing
+  workflows should remain unchanged until an owner enables it.
+- FSA should continue to own repository policy, approval, concurrency,
+  workflow dispatch, provenance, and result reporting.
+- NativeLink should continue to own its supported execution, cache, scheduler,
+  and worker behavior.
+- Untrusted pull-request code must not receive privileged credentials or
+  access trusted worker pools and cache namespaces.
+- Endpoint authentication and TLS should use the build tool's supported
+  mechanisms. Credentials must not be embedded in endpoint URLs, workflow
+  inputs, logs, or artifacts.
+- The NativeLink worker API is a worker-registration/control surface, not a
+  build-client endpoint. Clients must use the documented REAPI endpoints.
+- Remote execution requires hermetic actions, compatible toolchains and
+  platform properties, plus deployment-level resource and network controls.
+
+## Suggested evaluation
+
+1. Confirm the appropriate NativeLink client/API configuration and supported
+   deployment model with maintainers.
+2. Select a disposable FSA build/test workload with no production secrets.
+3. Compare local and remote results for correctness before measuring speed.
+4. Test TLS/authentication, cache isolation, cancellation, retries, timeouts,
+   worker compatibility, quotas, and provenance.
+5. Expand only after the pilot and security review pass.
+
+## Collaboration requested
+
+Feedback is requested on whether this direction is technically appropriate,
+which client and endpoint configuration should be used first, and whether
+maintainers prefer an FSA-side adapter, documentation-only guidance, or a
+jointly reviewed compatibility prototype.
+
+No maintainer implementation work or NativeLink-side changes are assumed by
+this proposal.
+
+## Related projects
+
+- [NativeLink](https://github.com/TraceMachina/nativelink)
+- [Fork-Sync-All](https://github.com/Interested-Deving-1896/fork-sync-all)
+- [FSA-side integration pull request](https://github.com/Interested-Deving-1896/fork-sync-all/pull/1022)
+- [Initial collaboration proposal to Harper-Carroll's repository](https://github.com/harper-carroll/nativelink/pull/1)
