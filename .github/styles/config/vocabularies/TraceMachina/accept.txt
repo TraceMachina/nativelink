@@ -499,3 +499,7 @@ simulatable
 URIs
 [Aa]bliterated
 [Uu]npatched
+Alibaba
+OSS
+AccessKey
+SigV4
