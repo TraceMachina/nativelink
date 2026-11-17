@@ -31,6 +31,7 @@
     "./mobile-nav": "./src/components/mobile-nav.tsx",
     "./nav": "./src/lib/nav.ts",
     "./prose": "./src/components/prose.tsx",
+    "./reo-script": "./src/components/reo-script.tsx",
     "./reveal": "./src/components/reveal.tsx",
     "./section": "./src/components/section.tsx",
     "./site-footer": "./src/components/site-footer.tsx",

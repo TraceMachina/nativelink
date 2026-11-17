@@ -18,6 +18,7 @@ export { FAQ, type FAQItem } from "./components/faq";
 export { Reveal } from "./components/reveal";
 export { ThemeProvider, useTheme, themeInitScript, type Theme } from "./components/theme-provider";
 export { ThemeToggle } from "./components/theme-toggle";
+export { ReoScript } from "./components/reo-script";
 export { AskAi, type AskAiProps, askAiPrompt } from "./components/ask-ai";
 export { Counter } from "./components/counter";
 export { Marquee } from "./components/marquee";

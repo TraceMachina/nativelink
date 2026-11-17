@@ -1,4 +1,5 @@
 import { source } from "@/lib/source";
+import { ReoScript } from "@nativelink/ui";
 import { GoogleTagManager } from "@next/third-parties/google";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
@@ -14,7 +15,8 @@ export const metadata: Metadata = {
     default: "NativeLink Docs",
     template: "%s | NativeLink Docs",
   },
-  description: "Documentation for NativeLink, a high-performance remote build cache and execution service.",
+  description:
+    "Documentation for NativeLink, a high-performance remote build cache and execution service.",
   metadataBase: new URL("https://docs.nativelink.com"),
 };
 
@@ -25,6 +27,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
+      <head>
+        <ReoScript />
+      </head>
       <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         {/* RootProvider configures the theme via next-themes. Setting BOTH

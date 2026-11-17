@@ -1,4 +1,4 @@
-import { SiteFooter, ThemeProvider, themeInitScript } from "@nativelink/ui";
+import { ReoScript, SiteFooter, ThemeProvider, themeInitScript } from "@nativelink/ui";
 import { GoogleTagManager } from "@next/third-parties/google";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
@@ -29,6 +29,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: Inline before hydration so the theme is correct on first paint. */}
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <ReoScript />
       </head>
       <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
