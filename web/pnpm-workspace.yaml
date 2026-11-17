@@ -1,0 +1,20 @@
+allowBuilds:
+  "@biomejs/biome": true
+  "@parcel/watcher": false
+  esbuild: true
+  unrs-resolver: false
+
+overrides:
+  # Jest and coverage tooling: GHSA-3g3m-2fjr-6pw4 / GHSA-g3hv-75wg-m249.
+  "glob@>=9.0.0 <14.0.2": "^14.0.6"
+  "minimatch@>=7.0.0 <11.0.1": "^11.0.8"
+  katex@>=0.11.0 <0.18.2: ^0.18.2
+  # Because of https://github.com/fuma-nama/fumadocs/issues/3604
+  mdast-util-to-markdown: 2.1.2
+  "baseline-browser-mapping": "2.11.35"
+  "dompurify": "^3.4.17"
+  "postcss": "^8.5.23"
+
+packages:
+  - apps/*
+  - packages/*

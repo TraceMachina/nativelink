@@ -61,7 +61,13 @@ const actions = [
     detail: "worker us-east-1b/17",
     time: "31.4s",
   },
-  { kind: "cache hit", dot: "bg-success", label: "//src/util:digest", detail: "", time: "0.01s" },
+  {
+    kind: "cache hit",
+    dot: "bg-success",
+    label: "//src/util:digest",
+    detail: "",
+    time: "0.01s",
+  },
   {
     kind: "remote exec",
     dot: "bg-brand",
@@ -113,7 +119,9 @@ export function HeroVisual({ className }: HeroVisualProps) {
 
         {/* Invocation header: what ran, how it went, and the facts a build page carries */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/70 px-5 py-3 font-mono text-[11px]">
-          <span className="font-semibold text-foreground">{invocation.command}</span>
+          <span className="font-semibold text-foreground">
+            {invocation.command}
+          </span>
           <span className="flex items-center gap-1.5 text-success">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
             {invocation.status}
@@ -128,13 +136,18 @@ export function HeroVisual({ className }: HeroVisualProps) {
             </span>
           ))}
         </div>
-        <div className="flex gap-1 border-b border-border/70 px-4 pt-2" aria-hidden="true">
+        <div
+          className="flex gap-1 border-b border-border/70 px-4 pt-2"
+          aria-hidden="true"
+        >
           {tabs.map((tab) => (
             <span
               key={tab}
               className={cn(
                 "rounded-t-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider",
-                tab === "Timing" ? "border-b-2 border-brand text-brand" : "text-muted-foreground",
+                tab === "Timing"
+                  ? "border-b-2 border-brand text-brand"
+                  : "text-muted-foreground",
               )}
             >
               {tab}
@@ -158,7 +171,11 @@ export function HeroVisual({ className }: HeroVisualProps) {
                   initial={{ width: 0 }}
                   whileInView={{ width: `${hitRate}%` }}
                   viewport={{ once: true }}
-                  transition={{ duration: 1.2, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                  transition={{
+                    duration: 1.2,
+                    delay: 0.3,
+                    ease: [0.16, 1, 0.3, 1],
+                  }}
                   className="h-full rounded-full bg-gradient-to-r from-brand to-brand-strong"
                 />
               </div>
@@ -189,7 +206,9 @@ export function HeroVisual({ className }: HeroVisualProps) {
               </p>
               <p className="mt-1 font-mono text-[11px] text-muted-foreground">
                 of action time in {invocation.wallTime} ·{" "}
-                <span className="text-success">{invocation.parallelism} parallel</span>
+                <span className="text-success">
+                  {invocation.parallelism} parallel
+                </span>
               </p>
             </div>
           </div>
@@ -225,16 +244,28 @@ export function HeroVisual({ className }: HeroVisualProps) {
                   <div className="flex h-2.5 flex-1 overflow-hidden rounded-sm bg-foreground/[0.04]">
                     <motion.div
                       initial={{ width: 0 }}
-                      whileInView={{ width: `${(action.queued / axisMax) * 100}%` }}
+                      whileInView={{
+                        width: `${(action.queued / axisMax) * 100}%`,
+                      }}
                       viewport={{ once: true }}
-                      transition={{ duration: 0.6, delay: i * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                      transition={{
+                        duration: 0.6,
+                        delay: i * 0.06,
+                        ease: [0.16, 1, 0.3, 1],
+                      }}
                       className="h-full bg-foreground/15"
                     />
                     <motion.div
                       initial={{ width: 0 }}
-                      whileInView={{ width: `${(action.executing / axisMax) * 100}%` }}
+                      whileInView={{
+                        width: `${(action.executing / axisMax) * 100}%`,
+                      }}
                       viewport={{ once: true }}
-                      transition={{ duration: 0.8, delay: i * 0.06 + 0.1, ease: [0.16, 1, 0.3, 1] }}
+                      transition={{
+                        duration: 0.8,
+                        delay: i * 0.06 + 0.1,
+                        ease: [0.16, 1, 0.3, 1],
+                      }}
                       className="h-full bg-gradient-to-r from-brand to-brand-strong"
                     />
                   </div>
@@ -268,11 +299,18 @@ export function HeroVisual({ className }: HeroVisualProps) {
                 transition={{ delay: 0.7 + i * 0.12 }}
                 className="flex items-center gap-2"
               >
-                <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", row.dot)} />
+                <span
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                    row.dot,
+                  )}
+                />
                 <span className="w-[5.5rem] shrink-0">{row.kind}</span>
                 <span className="truncate text-foreground/80">{row.label}</span>
                 {row.detail ? (
-                  <span className="hidden text-muted sm:inline">· {row.detail}</span>
+                  <span className="hidden text-muted sm:inline">
+                    · {row.detail}
+                  </span>
                 ) : null}
                 <span className="ml-auto shrink-0 text-muted">{row.time}</span>
               </motion.div>

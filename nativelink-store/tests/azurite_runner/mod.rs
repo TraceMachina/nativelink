@@ -135,7 +135,7 @@ fn find_azurite_binary() -> Result<PathBuf, Error> {
     if !runner_path.exists() {
         return Err(make_err!(
             Code::NotFound,
-            "azurite-blob not found at {}. Try running `bun install` in nativelink-store/tests/azurite_runner",
+            "azurite-blob not found at {}. Try running `pnpm install` in nativelink-store/tests/azurite_runner",
             runner_path.display()
         ));
     }

@@ -324,6 +324,67 @@ pub struct FetchConfig {
     /// This store name referenced here may be reused multiple times.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub fetch_store: StoreRefName,
+
+    /// Optional HTTP and HTTPS downloader. Omitted means lookup-only, with no origin access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloader: Option<FetchDownloaderConfig>,
+}
+
+const fn default_allow_unknown_fetch_qualifiers() -> bool {
+    true
+}
+
+/// Opt-in origin retrieval for the Remote Asset Fetch service.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct FetchDownloaderConfig {
+    /// CAS used by this instance's CAS and `ByteStream` services.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cas_store: StoreRefName,
+
+    /// Explicit HTTP forward proxy URL, optionally including credentials.
+    /// Prefer `http_proxy_secret_file` for credentials. Setting both is invalid.
+    /// The default HTTP client connects directly and ignores proxy environment variables.
+    /// An explicit proxy adds a concurrent alternative; the first successful transfer wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_proxy: Option<String>,
+
+    /// File containing the proxy URL. Whitespace is trimmed; read once at startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_proxy_secret_file: Option<String>,
+
+    /// Hosts bypassing the explicit proxy, using `reqwest` matching rules.
+    /// Only applies to the configured proxy; an empty list bypasses no hosts.
+    /// Proxy environment variables are not consulted.
+    #[serde(default)]
+    pub no_proxy: Vec<String>,
+
+    /// Reject downloads without a supported checksum. Default: false.
+    #[serde(default)]
+    pub require_checksum: bool,
+
+    /// Accept unrecognized qualifiers as opaque cache-key metadata without applying
+    /// their semantics. Set false to reject them. Default: true.
+    /// `bazel.canonical_id` is recognized as cache identity metadata.
+    #[serde(default = "default_allow_unknown_fetch_qualifiers")]
+    pub allow_unknown_qualifiers: bool,
+
+    /// Maximum downloaded object size, checked even without Content-Length.
+    /// Zero means no size limit (the default).
+    #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
+    pub max_size_bytes: u64,
+
+    /// Maximum simultaneous download requests per instance, including CAS publication.
+    /// Zero selects the default: 4. Each request can race two attempts when a proxy
+    /// is configured. A positive `max_size_bytes` also bounds each attempt's spool.
+    #[serde(default)]
+    pub max_concurrent_downloads: usize,
+
+    /// Total origin retrieval timeout across all candidate URIs, including CAS writes.
+    /// Request timeouts are clamped to this limit. Zero selects the default: 300 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub timeout_s: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -346,7 +407,7 @@ fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     *t == Default::default()
 }
 
-#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ByteStreamConfig {
@@ -379,6 +440,33 @@ pub struct ByteStreamConfig {
         alias = "persist_stream_on_disconnect_timeout"
     )]
     pub persist_stream_on_disconnect_timeout_s: usize,
+
+    /// Recover a resumed upload (a write whose first offset is nonzero) that
+    /// reaches an instance holding no state for its UUID, which happens when
+    /// several instances sit behind a load balancer without session affinity.
+    /// When the blob already exists in the store, the write completes
+    /// immediately; otherwise the client receives UNAVAILABLE, re-queries the
+    /// write status (an instance holding the upload answers with its offset,
+    /// any other answers 0) and resumes or restarts from there. With this
+    /// off, such a resume fails the upload with a non-retryable
+    /// "out of order data" error.
+    ///
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub recover_unknown_uuid_resumes: bool,
+}
+
+// Not derived: the derive would default `recover_unknown_uuid_resumes` to
+// false, diverging from the deserialization default above.
+impl Default for ByteStreamConfig {
+    fn default() -> Self {
+        Self {
+            cas_store: StoreRefName::default(),
+            max_bytes_per_stream: 0,
+            persist_stream_on_disconnect_timeout_s: 0,
+            recover_unknown_uuid_resumes: true,
+        }
+    }
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires
@@ -728,6 +816,19 @@ pub struct HttpListener {
     /// Default: false
     #[serde(default)]
     pub freebind: bool,
+
+    /// Disable batching of small TCP writes on accepted connections, including
+    /// HTTP/2 control frames.
+    /// Applies to both plaintext and TLS connections. Set to true to opt into
+    /// sending small writes promptly. When false or omitted, preserves default
+    /// TCP buffering behavior.
+    /// Older binaries without this option reject the field even when set to
+    /// false. Config templates must omit it until all consuming binaries support
+    /// it. Remove the field entirely before rolling back to an older binary.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub tcp_nodelay: bool,
 
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
@@ -1874,7 +1975,7 @@ impl CasConfig {
         Self::try_from_json5_str(&json_contents)
     }
 
-    fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
+    pub fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
         let mut config: Self = serde_json5::from_str(json_contents)?;
         for server in &config.servers {
             if let Some(services) = &server.services {

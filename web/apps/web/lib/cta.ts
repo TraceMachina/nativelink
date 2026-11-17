@@ -16,7 +16,11 @@ export interface Cta {
 }
 
 /** The primary action everywhere: the docs quickstart. */
-export const GET_STARTED: Cta = { label: "Get started", href: "/docs", external: true };
+export const GET_STARTED: Cta = {
+  label: "Get started",
+  href: "/docs",
+  external: true,
+};
 
 /** The human-contact action everywhere: the Contact page, which shows the addresses. */
 export const TALK_TO_US: Cta = { label: "Talk to us", href: "/contact" };
@@ -36,5 +40,7 @@ export const CLONE_THE_REPO: Cta = {
  * would close with a "See pricing" button that links to itself.
  */
 export function closingSecondaryCta(pathname: string | null | undefined): Cta {
-  return isCurrentNavHref(SEE_PRICING.href, pathname ?? undefined) ? TALK_TO_US : SEE_PRICING;
+  return isCurrentNavHref(SEE_PRICING.href, pathname ?? undefined)
+    ? TALK_TO_US
+    : SEE_PRICING;
 }

@@ -32,7 +32,8 @@ const nextConfig = {
         "/deployment/metrics": "/operate/observability",
         "/deployment/oci-object-storage": "/how-to/stores/oci-object-storage",
         "/deployment/on-prem-overview": "/operate/deploy-bare-metal",
-        "/deployment/persistent-workers": "/remote-execution/persistent-workers",
+        "/deployment/persistent-workers":
+          "/remote-execution/persistent-workers",
         // getting-started pages renamed to say what the reader gets rather
         // than what the page is about.
         "/getting-started/on-prem": "/getting-started/shared-cache",

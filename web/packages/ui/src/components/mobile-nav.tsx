@@ -124,7 +124,9 @@ export function MobileNav({
                     href="/"
                     onClick={() => setOpen(false)}
                     aria-label="NativeLink — home"
-                    aria-current={isCurrentNavHref("/", currentPath) ? "page" : undefined}
+                    aria-current={
+                      isCurrentNavHref("/", currentPath) ? "page" : undefined
+                    }
                     className="inline-flex items-center"
                   >
                     <Logo size="md" />
@@ -162,9 +164,13 @@ export function MobileNav({
                         key={link.href}
                         className={cn(
                           "transition-all duration-300 ease-out",
-                          open ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
+                          open
+                            ? "translate-y-0 opacity-100"
+                            : "translate-y-2 opacity-0",
                         )}
-                        style={{ transitionDelay: open ? `${60 + i * 40}ms` : "0ms" }}
+                        style={{
+                          transitionDelay: open ? `${60 + i * 40}ms` : "0ms",
+                        }}
                       >
                         <a
                           href={link.href}
@@ -208,7 +214,9 @@ export function MobileNav({
                       onClick={() => setOpen(false)}
                     >
                       {ctaLabel}
-                      {leavesSite(ctaHref) ? <ExternalLinkIcon className="opacity-90" /> : null}
+                      {leavesSite(ctaHref) ? (
+                        <ExternalLinkIcon className="opacity-90" />
+                      ) : null}
                     </a>
                   </Button>
                   <div className="mt-4 flex items-center justify-center gap-2">

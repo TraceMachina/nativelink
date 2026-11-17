@@ -16,15 +16,15 @@
 
 <br />
 
-
 <div id="badges" align="center">
 
-  [![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
-  [![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
-  [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
-  [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
-  [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
-  [![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+[![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
+[![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
+[![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
+[![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+
 </div>
 
 <a href="https://trendshift.io/repositories/11202" target="_blank"><img src="https://trendshift.io/api/badge/repositories/11202" alt="TraceMachina%2Fnativelink | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -135,15 +135,16 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 > [!TIP]
 > **Common setup gotchas for Nix on macOS / Linux:**
-> * **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
+>
+> - **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
 >   ```bash
 >   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 >   ```
-> * **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
+> - **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
 >   ```text
 >   experimental-features = nix-command flakes
 >   ```
-> * **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
+> - **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
 
 **Linux, MacOS, WSL2**
 

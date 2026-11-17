@@ -134,61 +134,98 @@ speaks the Remote Execution API works without modification.
 
 # https://nativelink.com/pricing
 
-**Pricing**: Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.
+**Pricing**: Three tiers: self-host the source-available release for free with no limits, or license the full platform for your whole company as Enterprise Tier 1 or Tier 2. Enterprise is quoted by email and priced on the licence portal, not on this page.
 
-Two tiers that grow with a team. No hidden fees and no per-user pricing.
+Free to run, licensed for your whole company. Three tiers.
 
-**Open Source: free, forever.** Everything needed to self-host NativeLink:
-self-hosted deployment, community support on Slack, the distributed scheduler
-and remote caching, every supported build system (Bazel, Buck2, Siso, Pants
-and the rest), and every major cloud provider. Start at https://docs.nativelink.com.
+**Open Source: free, forever.** Everything needed to run NativeLink yourself,
+with no limit on cores, machines or users: the distributed scheduler, remote
+cache and remote execution, every supported build system (Bazel, Buck2, Siso, Pants, Goma, Soong, CMake via recc, BuildStream, GN, Cargo),
+on AWS, GCP, Azure or your own hardware, with community support on Slack. Most
+of the repository is FSL-1.1-Apache-2.0; metrics and remote persistent workers
+are Business Source Licensed, so sharing one deployment across a team in
+production needs an Enterprise licence (https://nativelink.com/license). Start at https://docs.nativelink.com.
 
-**Enterprise: custom, billed annually.** Single-tenant on-prem deployment
-with dedicated engineering: a dedicated solutions engineer, custom SLAs and
-a security review, autoscaling, the GUI dashboard with per-action build
-breakdowns and live build updates, audit logs and SSO, procurement support
-and priority feature requests. Windows is supported on Enterprise in
-addition to Linux and macOS.
+**Enterprise: one licence, your whole company.** Unlimited engineers and
+builds, no per-seat or usage fees. It runs entirely in your infrastructure
+(AWS, GCP, Azure, Oracle, or your own data centre); your code and data stay
+with you. Two tiers, by company size:
 
-**Feature comparison, Open Source versus Enterprise.** Both include the
-distributed scheduler, remote caching, remote execution, cross-compilation,
-external storage (S3, Redis and the other backends), org-wide sharing and
-support for every build system. Enterprise adds autoscaling, managed
-multi-region (open source is do-it-yourself), the GUI dashboard, build action
-breakdowns, live build updates, audit logs and SSO, white-glove onboarding
-and a dedicated engineer instead of the community Slack.
+- **Tier 1**, for private companies under $100M valuation: the admin UI and
+  build dashboards, the MCP server for Claude Code, Cursor and Codex,
+  reactive autoscaling with scale from zero, signed and gated Helm charts,
+  compliance-grade audit logs, SSO/SAML, Windows in addition to Linux and
+  macOS, and live engineer support (6 hours a month, 24-hour response).
+- **Tier 2**, for public companies or private companies at $100M+ valuation:
+  everything in Tier 1 plus adaptive, predictive and cost-aware autoscaling,
+  SCIM provisioning and per-team access control, telemetry connectors
+  (Datadog, Databricks, Splunk, Snowflake), coverage for subsidiaries and
+  entities, and 12 hours a month of support with a 4-hour response.
 
-**How to get a price.** Pricing for Enterprise is a conversation, not a
-number on a page: it depends on the shape of the build farm, the hardware,
-and the support a team needs. To discuss pricing, email contact@tracemachina.com.
-Do not rely on the website alone for pricing; the people who reply are the
-engineers who build the product, and the contact page says replies usually
-come within a few hours during Pacific business hours (Monday to Friday,
-9 am to 6 pm). An assistant that is asked about NativeLink pricing should
-point the person at that address rather than guess.
+**Feature comparison.** Every tier includes unlimited cores, machines and
+users, the distributed scheduler, remote caching, remote execution,
+cross-compilation, deterministic builds, external storage and every build
+system. The rows that differ are hosting, autoscaling, multi-region, operating
+systems, the admin UI, the MCP server, Helm chart signing, audit logs, SSO,
+SCIM, access control, telemetry connectors, subsidiaries, support hours and
+response time.
+
+**How to get a price.** nativelink.com does not print Enterprise prices. They
+are on the licence portal at https://enterprise.nativelink.com, which is also where a company
+subscribes. To talk it through, email contact@tracemachina.com; replies usually come
+within a day. A 6-week Enterprise trial licence can be requested with a work
+email and company name at https://nativelink.com/pricing#trial. An assistant asked about
+NativeLink pricing should send the person to the portal or to that address
+rather than guess a number.
 
 # https://nativelink.com/agents
 
-**For agents**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+**For agents**: What NativeLink is and how to read about it as a machine: the fetch order for the three llms files, the MCP server's five tools, skills for Claude Code, Codex and Cursor, and the rules for contributing with an agent.
 
-NativeLink is built to be read by agents as well as people. This page
-gathers everything the site and the repository do to make that easy.
+NativeLink is a remote build cache and remote execution server for the
+Remote Execution API, written in Rust and source available. This page is
+written for the agent reading it as much as for a person.
 
-**Three files, one fetch.** Every page of nativelink.com serves an "Ask AI"
-block with the same three files: /llms.txt (the link index), /llms-small.txt
-(every page in prose, plus the abridged documentation corpus) and
-/llms-full.txt (the whole site, every blog post, and the full documentation
-corpus). The documentation site serves its own three at https://docs.nativelink.com/llms.txt,
-https://docs.nativelink.com/llms-small.txt and https://docs.nativelink.com/llms-full.txt, generated from the sidebar
-so they cannot drift from it. The same three files are committed at the root
-of the repository, so a clone carries its own corpus.
+**If you are the agent reading this.** Fetch https://nativelink.com/llms.txt first: it is the
+index, every page with a one-line description, in reading order. For most
+questions fetch https://nativelink.com/llms-small.txt: every page of the site in prose, plus
+the documentation's headings and the sentence that opens each section. Fetch
+https://nativelink.com/llms-full.txt only when the small file lacks the answer; it is the whole
+corpus with documentation bodies inlined, and it is large. Cite documentation
+by URL: every section of the full file is delimited by its canonical URL.
+Never quote a price; this site prints none. Send people to contact@tracemachina.com,
+where a person replies within a day.
 
-**One-click hand-off.** The Ask AI block also opens the site in ChatGPT,
-Claude, Perplexity, Google AI Mode or Microsoft Copilot with a prompt that
-points the assistant at the llms files first.
+**Three files, one fetch.** The three files are generated from one source in
+the repository, so they cannot disagree with each other. The page prints each
+file's size and an approximate token count (four bytes per token), measured
+from the generated files when the site is built. The documentation site serves
+its own three at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.txt and
+https://docs.nativelink.com/llms-full.txt, generated from its sidebar, and the same three files are
+committed at the root of the repository, so a clone carries its own corpus.
+Also for an agent: AGENTS.md at the repository root, the map of the code for
+an agent changing it, and https://docs.nativelink.com/agents, how to read the documentation end to
+end, cite it, and verify a claim against the source.
+
+**If you are the person.** Every page serves an "Ask AI" block that opens the
+site in ChatGPT, Claude, Perplexity, Google AI Mode or Microsoft Copilot with a
+prompt that follows the protocol above: read the llms files first, then ask
+about your build and your team and work towards a configuration.
+
+**The MCP server.** The NativeLink MCP server gives Claude Code, Cursor and
+Codex five tools for configuring and tuning builds without leaving the editor:
+generate a Bazel configuration (a .bazelrc with remote cache and execution
+settings for the project at hand); fetch documentation and best practices (the
+matching pages from https://docs.nativelink.com, so the answer cites the source); analyse build
+performance (where the time goes, the cache hit rate, what to change); watch
+files, build and test on change; and list recent builds from the Build Event
+Protocol. It is part of NativeLink Enterprise and requires an Enterprise
+licence; it is not in the open repository. Everything else on this page is
+free. To talk about it: https://nativelink.com/contact.
 
 **Skills for coding agents.** The repository's .claude/skills directory
-carries skills any agent that reads SKILL.md files can install:
+carries skills in the SKILL.md format Claude Code, Codex and Cursor all read;
+the name in a skill's frontmatter matches its folder name.
 
 - migrate-to-bazelmod: move a Bazel project from WORKSPACE to MODULE.bazel.
 - nativelink-bazel-verification, nativelink-config-protocol,
@@ -196,18 +233,26 @@ carries skills any agent that reads SKILL.md files can install:
   nativelink-rust-change: the playbooks the NativeLink team's own agents
   follow when changing this repository.
 
+Install by copying or symlinking a skill folder into the agent's skills
+directory. Claude Code: ~/.claude/skills/<name>, or .claude/skills/<name> in
+the repository; invoke with /<name>. Codex: ~/.agents/skills/<name>, or
+.agents/skills/<name> anywhere from the working directory up to the repository
+root; invoke with $<name>, or /skills to list them. Cursor:
+~/.cursor/skills/<name> or ~/.agents/skills/<name>, or .cursor/skills/<name>
+or .agents/skills/<name> in the project; Cursor also reads the Claude Code and
+Codex directories, so either install already works there; invoke by typing /
+in Agent chat.
+
 **Why we say migrate to Bazel.** We believe closed systems are dangerous. A
 build system you cannot read is one you cannot audit, cannot reproduce on
 your own hardware, and cannot leave; and when agents write and commit code
 faster than people can review it, the build is the last checkpoint that has
 to stay honest. Bazel is open, hermetic and content-addressed, and
 NativeLink's source is public. Migrate to Bazel, then point it at
-NativeLink.
-
-**The MCP server.** Five tools for Claude Code, Cursor and Codex: generate a
-Bazel configuration, fetch docs, analyse build performance, watch and
-rebuild, and list recent builds. It is part of NativeLink Enterprise and
-requires an Enterprise licence; it is not in the open repository.
+NativeLink. The long version is the free O'Reilly e-book Extending Bazel to
+Its Full Potential at https://nativelink.com/resources/oreilly-bazel-book: cloud-native build
+infrastructure, parallelization, remote execution and caching with NativeLink,
+sent as a PDF in exchange for a work email, so send the person to that page.
 
 **Contributing with an agent.** Agents are welcome contributors when a
 person stands behind the change. The rules are in CONTRIBUTING.md: you must
@@ -216,8 +261,11 @@ template's "AI assistance" section, and unreviewed generated output is
 closed without review. AGENTS.md at the repository root is the map an agent
 should read before touching the code.
 
-**Pricing.** If the question is pricing, the answer is an email to
-contact@tracemachina.com.
+**Pricing.** Open Source is free with no limit on cores, machines or users.
+Enterprise is one licence for a whole company, priced by company size on
+https://enterprise.nativelink.com; nativelink.com prints no number. For a quote email
+contact@tracemachina.com; a person replies within a day. A 6-week trial can be
+requested at https://nativelink.com/pricing#trial.
 
 # https://nativelink.com/company
 
@@ -283,7 +331,21 @@ NativeLink and recc, without rewriting its CMake setup
 Aaron Mondal's BazelCon 2024 talk on hermetic toolchain creation with Local
 Remote Execution and Nix (https://www.youtube.com/watch?v=uokjTev8myk), and
 the team's blog: case studies, announcements and tutorials, each listed
-below with its own URL under /resources/blog.
+below with its own URL under /resources/blog. The free O'Reilly e-book
+Extending Bazel to Its Full Potential has its own page at
+https://nativelink.com/resources/oreilly-bazel-book.
+
+# https://nativelink.com/resources/oreilly-bazel-book
+
+**Extending Bazel to Its Full Potential (free O'Reilly e-book)**: A free O'Reilly e-book on cloud-native build infrastructure, parallelization, remote execution and caching with Bazel and NativeLink, sent as a PDF in exchange for a work email.
+
+Extending Bazel to Its Full Potential is an O'Reilly e-book from the
+team building NativeLink, free to download. It covers cloud-native build
+infrastructure design, advanced parallelization strategies, remote execution
+and caching best practices, and new Bazel use cases, with code samples and
+configurations. The download is a PDF, sent after a short form that asks for
+a work email; there is no direct link to pass on, so send a person to this
+page.
 
 # https://nativelink.com/contact
 
@@ -356,13 +418,14 @@ history. Privacy requests go to privacy@tracemachina.com.
 
 **Blog**: every post, newest first. The full text of each is in /llms-full.txt.
 
+- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.
 - [The Inaugural RE API Fellow](https://nativelink.com/resources/blog/re-api-fellow) (2026-09-08): When people first see the open source NativeLink repository on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change.…
 - [How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink](https://nativelink.com/resources/blog/case-study-menlo-security) (2026-08-28): "NativeLink is the simplest way to get fast builds with Chromium." Christopher Staite, Principal Engineer, Menlo Security
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
 - [Case Study: LastMile AI](https://nativelink.com/resources/blog/case-study-last-mile-ai) (2025-09-25): LastMile AI is an AI startup creating tools to enable developers to build AI agents. The team comes from backgrounds in top research and engineering organizations, building infrastructure and devel…
 - [Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake, Nativelink and BuildStream](https://nativelink.com/resources/blog/accelerating-cmake-with-nativelink) (2025-08-12): Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and…
-- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Trust Root Support in Nativelink](https://nativelink.com/resources/blog/adding-trust-roots-to-nativelink) (2025-05-15): Open source thrives on community contributions, and today’s story is a perfect example of why. External engineer Sam Eskandar identified a pain point in Nativelink's TLS configuration and delivered…
+- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Thirdwave Automation and NativeLink](https://nativelink.com/resources/blog/case-study-thirdwave-automation) (2025-03-06): “Our business relies on delivering autonomous systems with an exceptional level of safety. With NativeLink’s massively-parallel cloud service, we can now iterate faster and continuously learn from…
 - [Fortune 50 Manufacturer Uses NativeLink For 20x Accelerated Build Speed and 30x Improved Storage Density](https://nativelink.com/resources/blog/case-study-fortune-50-manufacturer) (2025-01-21): A Fortune 50 Manufacturer builds a Chromium-based browser, and it has been an integral part of their product lineup, requiring robust and efficient build infrastructure to keep up with its evolving…
 - [NativeLink for Semiconductors](https://nativelink.com/resources/blog/semiconductors) (2024-12-04): NativeLink has become a critical architectural component for companies developing custom silicon. From the outset, our mission was to build an open-source simulation platform designed to scale with…
@@ -1975,6 +2038,14 @@ In development builds, ByteStream rejects a completed upload whose byte count
 differs from the size in its CAS resource name, even without a `verify` store.
 See [upload integrity](/how-to/stores/compose-stores#upload-integrity).
 
+## Download remote assets on a cache miss
+
+In development builds, `fetch` can download HTTP and HTTPS assets when a URI mapping
+is missing or its CAS blob has been evicted. This supports a shared dependency
+downloader for short-lived CI clients, as discussed in
+[issue #2770](https://github.com/TraceMachina/nativelink/issues/2770).
+Omitting `downloader` keeps the existing lookup-only behavior.
+
 ## Instance names
 
 Most services are declared as an **array**, and each element carries an
@@ -2215,7 +2286,7 @@ through to the slow store and refill the fast tier.
 
 # https://docs.nativelink.com/how-to/stores/s3-and-compatible
 
-**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2 or NetApp ONTAP S3: one store type, three providers, and the shared options that decide cost and failure behaviour.
+**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2, Alibaba Cloud OSS, or NetApp ONTAP S3, and choose the options that decide cost and failure behaviour.
 
 **Who this is for:** anyone who wants durability they don't operate, on S3 or
 something that speaks S3. **What you'll have at the end:** a bucket-backed CAS
@@ -2231,23 +2302,33 @@ config.
 
 ### Other services that speak S3
 
-The `aws` provider reaches any S3-compatible service, not only AWS. Four
-optional fields cover the difference:
+The `aws` provider can reach other S3-compatible services. For Alibaba Cloud OSS,
+use the dedicated [`oss` provider](#alibaba-cloud-oss), which configures its
+addressing and checksum requirements. Four optional fields configure other
+services:
 
 ## Cloudflare R2
 
 R2 has no regions from the client's point of view: the endpoint is derived
 entirely from your account ID.
 
+## Alibaba Cloud OSS
+
+The `oss` provider uses Alibaba Cloud's S3-compatible API with virtual-hosted
+addressing and explicit credentials for each store. It requires `region`,
+`bucket`, `access_key_id`, and `secret_access_key`; it does not fall back to the
+AWS credential chain. Optional fields include `session_token`, `endpoint`, `cname`,
+`key_prefix`, `retry`, and `multipart_max_concurrent_uploads` (default: 2).
+
 ## NetApp ONTAP S3
 
 On-premises S3 needs an explicit endpoint, the storage VM serving it, and
 usually a private CA bundle:
 
-## The options all three share
+## Common options for AWS, R2, and ONTAP
 
-Every provider flattens the same block of common options. These are the ones
-worth setting deliberately:
+The `aws`, `r2`, and `ontap` providers flatten the same block of common options.
+These are the ones worth setting deliberately:
 
 ## Steps
 
@@ -2492,6 +2573,49 @@ the failure the checksum downgrade exists to prevent, and it shows up first on
 Action Cache entries because they are small single-`PUT` objects. Confirm you
 are on a NativeLink version that carries the `oci` provider rather than
 pointing the `aws` provider at an OCI endpoint by hand.
+
+# https://docs.nativelink.com/how-to/stores/oss
+
+**Alibaba Cloud OSS**: Use an OSS bucket as the cache through the S3-compatible API.
+
+The `oss` provider uses the [OSS S3-compatible API](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+and the shared NativeLink S3 store. It derives the service endpoint from the
+bucket region, uses virtual-hosted addressing, and signs requests with AWS SigV4.
+Optional trailing checksums are disabled to avoid `aws-chunked` uploads.
+
+## Configure the store
+
+Configure credentials explicitly for each OSS store. Reference independent
+variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
+expansion. For temporary credentials, also configure `session_token`, for example
+`${OSS_SESSION_TOKEN}`. Keep the values out of source control.
+
+## Use a custom domain
+
+Set `cname: true` to use an HTTPS custom domain bound to the bucket. This option
+requires an explicit `endpoint`. The provider uses that host directly, without
+adding the bucket name to the host or path. The default is `cname: false`, which
+keeps virtual-hosted service-endpoint addressing.
+
+## Endpoint access restrictions
+
+Alibaba Cloud restricts default public endpoints for accounts that activated OSS
+on or after March 20, 2025, at 00:00 UTC+8, when the bucket is in a Chinese mainland
+region. Data operations can fail with `PublicEndpointForbidden` (HTTP 400).
+
+## Retry and resource behavior
+
+The optional `retry` object uses the standard store retry policy. SDK retries
+are disabled, but the shared HTTP transport also retries: its attempts can
+multiply the store retry loop. A total retry budget is not yet implemented.
+
+## Verify
+
+Point the CAS service at this store and run the same build twice with remote
+caching enabled. The first build should upload its outputs and the second should
+reuse them. Check both a small Action Cache entry and an object large enough to
+use multipart upload. A successful replay test does not establish compatibility
+with a live bucket, its permissions, or its endpoint restrictions.
 
 # https://docs.nativelink.com/how-to/stores/compose-stores
 
@@ -4406,6 +4530,11 @@ contain slashes, so left-to-right parsing cannot find the boundary, while
 right-to-left can, because the trailing components are fixed. See
 .
 
+## Intentional deviations from the specification
+
+Two behaviors differ from what the REAPI or ByteStream text suggests. Both are
+deliberate, and changing either would break existing clients.
+
 ## Related
 
 - [Architecture deep dive](/explanations/architecture-deep-dive): where each
@@ -5001,7 +5130,7 @@ For a typo fix, a doc tweak or a single unit test, the
 [Cargo workflow](/contribute/cargo) is faster to get into and nothing will
 go wrong. Reach for Nix when you are touching the build graph, working on
 LRE, chasing a difference between your machine and CI, or working on the
-docs, since `vale` and `bun` both come from here.
+docs, since `vale` and `pnpm` both come from here.
 
 ## Common questions
 
@@ -5268,7 +5397,7 @@ that will fail your PR if you skip them. **Time:** thirty minutes, once.
 
 Edit any `.mdx` file under `apps/docs/content/docs/` and the dev server picks
 it up on save. To preview the marketing site and the docs together (the
-marketing app redirects `/docs` to the docs app in dev), run `bun dev` and use
+marketing app redirects `/docs` to the docs app in dev), run `pnpm dev` and use
 `http://localhost:3000/docs`.
 
 ## Pick the archetype first

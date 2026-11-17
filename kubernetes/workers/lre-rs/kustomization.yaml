@@ -4,14 +4,14 @@ kind: Kustomization
 nameSuffix: -lre-rs
 
 components:
-- ../../components/worker
+  - ../../components/worker
 
 patches:
-- path: worker-lre-rs.yaml
-  target:
-    kind: Deployment
-    name: nativelink-worker
+  - path: worker-lre-rs.yaml
+    target:
+      kind: Deployment
+      name: nativelink-worker
 
 images:
-- name: nativelink-worker
-  newName: nativelink-worker-lre-rs
+  - name: nativelink-worker
+    newName: nativelink-worker-lre-rs

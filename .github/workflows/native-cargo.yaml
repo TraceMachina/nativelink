@@ -6,10 +6,14 @@ on:
   # on-demand. Per-PR build/test signal is covered by the warm-cluster CI / NativeLink lane;
   # this keeps full cargo and cross-platform coverage running daily against main.
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

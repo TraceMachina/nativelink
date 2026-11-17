@@ -3,9 +3,13 @@ name: Images / SemVer OCI
 on:
   push:
     tags:
-      - '*'
+      - "*"
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +20,7 @@ jobs:
     name: Resolve image matrix
     runs-on: ubuntu-24.04
     outputs:
-       matrix: ${{ steps.setmatrix.outputs.matrix }}
+      matrix: ${{ steps.setmatrix.outputs.matrix }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2

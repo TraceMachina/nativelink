@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: 'Image to build'
+        description: "Image to build"
         required: false
-        default: 'nativelink'
+        default: "nativelink"
         type: choice
         options:
           - nativelink
           - nativelink-worker-init
           - nativelink-worker-lre-cc
       skip_signing:
-        description: 'Skip cosign signing'
+        description: "Skip cosign signing"
         required: false
         default: true
         type: boolean

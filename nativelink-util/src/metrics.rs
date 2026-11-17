@@ -1007,6 +1007,12 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_description("Number of connected workers in each non-default state")
             .with_unit("{worker}")
             .build(),
+
+        worker_tripwire: meter
+            .u64_counter("scheduler.worker.tripwire")
+            .with_description("Workers the outcome tripwire acted on, by outcome: drained, or held when as many workers were already drained as it may drain")
+            .with_unit("{worker}")
+            .build(),
     }
 });
 
@@ -1039,6 +1045,8 @@ pub struct WorkerMetrics {
     pub worker_keepalive_gap: metrics::Histogram<f64>,
     /// Connected workers currently paused or draining.
     pub worker_state_count: metrics::UpDownCounter<i64>,
+    /// Workers the outcome tripwire drained, or held back from draining.
+    pub worker_tripwire: metrics::Counter<u64>,
 }
 
 /// Records a worker joining the pool.
@@ -1075,6 +1083,14 @@ pub fn record_worker_state(state: &'static str, entered: bool) {
         if entered { 1 } else { -1 },
         &[KeyValue::new(WORKER_STATE, state)],
     );
+}
+
+/// Records the outcome tripwire acting on a worker: `drained`, or `held`
+/// when as many workers were already drained as it may drain at once.
+pub fn record_worker_tripwire(outcome: &'static str) {
+    WORKER_METRICS
+        .worker_tripwire
+        .add(1, &[KeyValue::new("outcome", outcome)]);
 }
 
 /// Records a dispatch going back to the queue untried: the worker declined

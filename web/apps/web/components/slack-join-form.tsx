@@ -33,12 +33,16 @@ export function SlackJoinForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: address }),
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
       if (!response.ok) {
         throw new Error(data.error || "Failed to send your request");
       }
       setIsSuccess(true);
-      setMessage(`Thanks. We'll send an invite to ${address}, usually within a day.`);
+      setMessage(
+        `Thanks. We'll send an invite to ${address}, usually within a day.`,
+      );
       setEmail("");
     } catch (error) {
       setIsSuccess(false);
@@ -88,7 +92,12 @@ export function SlackJoinForm() {
           </output>
         ) : null}
 
-        <Button type="submit" size="lg" className="w-full" disabled={isLoading || isSuccess}>
+        <Button
+          type="submit"
+          size="lg"
+          className="w-full"
+          disabled={isLoading || isSuccess}
+        >
           {isLoading ? "Sending..." : "Join the Slack community"}
         </Button>
 

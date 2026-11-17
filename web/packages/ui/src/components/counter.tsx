@@ -41,7 +41,9 @@ export function Counter({
     return () => controls.stop();
   }, [inView, from, to, duration]);
 
-  const formatted = formatter ? formatter(value) : defaultFormatter(value, decimals);
+  const formatted = formatter
+    ? formatter(value)
+    : defaultFormatter(value, decimals);
 
   return (
     <span ref={ref} className={className}>

@@ -67,6 +67,12 @@ elif sys.argv[1]=='--import':
  (root/'imported').touch()
 else:sys.exit(23)
 ''')
+        (tools / 'nix-collect-garbage').write_text('''#!/usr/bin/env python3
+import os,sys
+from pathlib import Path
+with (Path(os.environ['FAKE_ROOT'])/'calls').open('a') as trace:trace.write('gc\\n')
+sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
+''')
         for path in tools.iterdir():
             path.chmod(0o755)
         self.environment = patch.dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
@@ -93,6 +99,32 @@ else:sys.exit(23)
         self.assertEqual(self.calls().count('nix build'), 1)
         self.assertEqual(self.calls().count('store --import'), 3)
         self.assertEqual(self.calls().count('nix path-info'), 3)
+
+    def test_build_prunes_older_result_roots_before_building(self):
+        closure = self.root / 'closure'
+        closure.mkdir()
+        results = self.root / 'ci-results'
+        runs = []
+        for age, name in enumerate(['run-1', 'run-2', 'run-3', 'run-4']):
+            run = results / name
+            run.mkdir(parents=True)
+            (run / 'result').symlink_to(closure)
+            os.utime(run, (1_000 + age, 1_000 + age))
+            runs.append(run)
+
+        nix_ci.build(results / 'current', self.revision)
+
+        pruned = [run.name for run in runs if not (run / 'result').is_symlink()]
+        self.assertEqual(pruned, ['run-1', 'run-2'])
+        self.assertTrue((runs[2] / 'result').is_symlink())
+        self.assertTrue((runs[3] / 'result').is_symlink())
+        self.assertLess(self.calls().index('gc'), self.calls().index('nix build'))
+
+    def test_failed_store_collection_does_not_block_the_build(self):
+        with patch.dict(os.environ, FAKE_GC_FAILURE='1'):
+            report = nix_ci.build(self.directory, self.revision)
+        self.assertEqual(report['outputs'], self.paths)
+        self.assertEqual(self.calls().count('nix build'), 1)
 
     def test_bad_revision_checksum_and_package_definition_stop_before_import(self):
         report = nix_ci.build(self.directory, self.revision)
@@ -156,7 +188,7 @@ else:sys.exit(23)
             self.assertIn('needs: [nix-build]', consumer)
             self.assertIn('actions/download-artifact@', consumer)
             self.assertIn('nix_ci.py import', consumer)
-            self.assertIn("read_only: 'true'", consumer)
+            self.assertIn("read_only: \"true\"", consumer)
             self.assertNotIn('secrets.', consumer)
             self.assertLess(consumer.index('nix_ci.py import'), consumer.index('nix run -L'))
         self.assertIn('needs.nix-build.outputs.matrix', toolchains)

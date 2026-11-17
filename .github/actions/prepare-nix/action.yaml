@@ -22,7 +22,8 @@ runs:
       # Stay on the Determinate installer: the nix-quick-install switch (Nix
       # 2.34.7) makes the nix2container multi-arch image publish fail with a
       # layer digest mismatch. See the tagged image workflow.
-      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
+      uses:
+        >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
         DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
       with:
         source-tag: v3.13.0
@@ -30,6 +31,16 @@ runs:
           fallback = true # So we always work even if the cache is down
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
+
+    - name: Expose Nix to later job steps
+      # The installer adds these through its own GITHUB_PATH write, but a
+      # runtime that drops composite-nested PATH additions at the job
+      # boundary leaves later `run:` steps without `nix`. Idempotent on
+      # runners where the installer's write already propagated.
+      shell: bash
+      run: |
+        echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
 
     - name: Configure public read-only cache
       if: ${{ inputs.read_only == 'true' }}

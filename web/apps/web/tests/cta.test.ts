@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import { SEE_PRICING, TALK_TO_US, closingSecondaryCta } from "../lib/cta";
 
 test("closing band points at pricing from everywhere else", () => {

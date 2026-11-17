@@ -296,7 +296,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
+            .ok_or_else(|| make_input_err!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         let mut requested_blobs = Vec::with_capacity(request.blob_digests.len());
@@ -327,7 +327,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
+            .ok_or_else(|| make_input_err!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -349,7 +349,7 @@ impl CasServer {
                     let digest = request
                         .digest
                         .clone()
-                        .err_tip(|| "Digest not found in request")?;
+                        .ok_or_else(|| make_input_err!("Digest not found in request"))?;
                     let digest_info = DigestInfo::try_from(digest.clone())?;
                     let size_bytes = usize::try_from(digest_info.size_bytes())
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
@@ -400,7 +400,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
+            .ok_or_else(|| make_input_err!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -500,7 +500,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
+            .ok_or_else(|| make_input_err!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
@@ -515,7 +515,7 @@ impl CasServer {
         }
         let root_digest: DigestInfo = request
             .root_digest
-            .err_tip(|| "Expected root_digest to exist in GetTreeRequest")?
+            .ok_or_else(|| make_input_err!("Expected root_digest to exist in GetTreeRequest"))?
             .try_into()
             .err_tip(|| "In GetTreeRequest::root_digest")?;
 
@@ -593,7 +593,7 @@ impl CasServer {
         let store = self
             .stores
             .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?
+            .ok_or_else(|| make_input_err!("'instance_name' not configured for '{instance_name}'"))?
             .clone();
         let chunking_instance = self
             .chunking_instances
@@ -753,7 +753,7 @@ impl CasServer {
 
         let blob_digest: DigestInfo = request
             .blob_digest
-            .err_tip(|| "Expected blob_digest to exist in SplitBlobRequest")?
+            .ok_or_else(|| make_input_err!("Expected blob_digest to exist in SplitBlobRequest"))?
             .try_into()
             .err_tip(|| "In SplitBlobRequest::blob_digest")?;
 
@@ -933,7 +933,7 @@ impl CasServer {
 
         let blob_digest: DigestInfo = request
             .blob_digest
-            .err_tip(|| "Expected blob_digest to exist in SpliceBlobRequest")?
+            .ok_or_else(|| make_input_err!("Expected blob_digest to exist in SpliceBlobRequest"))?
             .try_into()
             .err_tip(|| "In SpliceBlobRequest::blob_digest")?;
 

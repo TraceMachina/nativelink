@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import statistics
 import subprocess
 import tempfile
@@ -93,6 +94,17 @@ def configuration(lane, environ):
     return flags, " ".join(endpoints)
 
 
+def configure_pr(output):
+    # Use the same CAS, instance and worker properties as the retained client.
+    # The credential helper reads the key from the build step's environment;
+    # neither this rc file nor command arguments contain the key.
+    flags, _ = configuration('cluster', os.environ)
+    flags = [flag for flag in flags if flag not in (
+        '--remote_upload_local_results=true', '--build_metadata=BENCHMARK_LANE=cluster')]
+    flags += ['--remote_upload_local_results=false', '--build_metadata=BENCHMARK_LANE=pr-rbe']
+    output.write_text(''.join('common ' + shlex.quote(flag) + '\n' for flag in flags))
+
+
 def execute(command, environ):
     # Stream useful compiler errors, redact exact credentials defensively, and
     # never persist console output or a subprocess exception containing argv.
@@ -145,13 +157,44 @@ def run(args):
     return status
 
 
+def results_link(prefix, invocation):
+    """Invocation URL in the build-results UI, or None when unconfigured."""
+    if not prefix or not invocation:
+        return None
+    parsed = urlsplit(prefix)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Expected an http(s) build results prefix")
+    return prefix.rstrip("/") + "/" + invocation
+
+
+# The hops between --bes_backend and the UI page. Kept hostname-free: the
+# cluster endpoints come from repository variables and are not echoed here,
+# only the clickable build-results links derived from the public prefix.
+BEP_PIPELINE = (
+    ("Bazel client", "publishes Build Event Protocol records to `--bes_backend`"),
+    ("NativeLink `bep_server`", "accepts `PublishBuildEvent` and fans events out to Redis"),
+    ("Redis `BEP` channel", "transports events from ingest to consumer"),
+    ("ETL consumer", "batches events into the `bep_v2` Postgres schema"),
+    ("API", "serves `/bep/v2/*` from Postgres"),
+    ("Build-results UI", "renders the invocation pages linked above"),
+)
+
+
 def summarize(path):
     result = json.loads(path.read_text())
+    prefix = os.environ.get("NL_RESULTS_URL")
     print("## NativeLink cluster CI\n")
     print(f"Source: `{result['revision']}`\n")
     print(f"Setup plus all iterations: {result['total_seconds']:.2f}s\n")
-    print("| Iteration | Build/test (s) | Total reuse | Local hits | Disk hits | Remote hits | Cached test targets | Result |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    with_links = bool(prefix)
+    columns = ["Iteration", "Build/test (s)", "Total reuse", "Local hits", "Disk hits",
+               "Remote hits", "Cached test targets", "Result"]
+    align = ["---", "---:", "---:", "---:", "---:", "---:", "---:", "---"]
+    if with_links:
+        columns.append("Build results")
+        align.append("---")
+    print("| " + " | ".join(columns) + " |")
+    print("| " + " | ".join(align) + " |")
     for run in result['runs']:
         cache, tests = run['cache'], run['tests']
         ratio = cache['total_reuse_percent']
@@ -159,8 +202,20 @@ def summarize(path):
         counts = [str(cache[name]) if cache[name] is not None else 'Unknown'
                   for name in ('local_action_hits', 'disk_hits', 'remote_hits')]
         status = 'failed' if run['exit_code'] else 'passed'
-        print(f"| {run['iteration']} | {run['seconds']:.2f} | {percentage} | "
-              f"{' | '.join(counts)} | {tests['cached']}/{tests['total']} | {status} |")
+        row = (f"| {run['iteration']} | {run['seconds']:.2f} | {percentage} | "
+               f"{' | '.join(counts)} | {tests['cached']}/{tests['total']} | {status}")
+        if with_links:
+            link = results_link(prefix, run.get('invocation_id'))
+            cell = f'[invocation]({link})' if link else 'Not captured'
+            row += f" | {cell}"
+        print(row + " |")
+    print("\n### Where this telemetry goes\n")
+    print("| Hop | What it does |")
+    print("| --- | --- |")
+    for component, purpose in BEP_PIPELINE:
+        print(f"| {component} | {purpose} |")
+    if not with_links:
+        print("\nBuild-results links are unavailable because the results URL is unset.")
 
 
 def compare(directory):
@@ -211,6 +266,8 @@ if __name__ == "__main__":
     runner.add_argument("--lane", choices=("cluster",), required=True)
     runner.add_argument("--repetitions", type=int, choices=range(1, 21), default=3)
     runner.add_argument("--output", type=Path, required=True)
+    pr = sub.add_parser('configure-pr')
+    pr.add_argument('--output', type=Path, required=True)
     reporter = sub.add_parser("compare")
     reporter.add_argument("directory", type=Path)
     summary = sub.add_parser("summarize")
@@ -218,7 +275,9 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     if arguments.command == "run":
         raise SystemExit(run(arguments))
-    if arguments.command == "summarize":
+    if arguments.command == 'configure-pr':
+        configure_pr(arguments.output)
+    elif arguments.command == "summarize":
         summarize(arguments.path)
     else:
         compare(arguments.directory)

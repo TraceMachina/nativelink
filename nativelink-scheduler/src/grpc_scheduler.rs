@@ -288,6 +288,11 @@ impl GrpcScheduler {
                 .digest_function()
                 .proto_digest_func()
                 .into(),
+            // Hints only (REAPI v2.9), and not carried in `ActionInfo`, so a
+            // forwarded request does not ask the upstream to inline outputs.
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {

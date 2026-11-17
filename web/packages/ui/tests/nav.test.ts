@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import { isCurrentNavHref, leavesSite, normalizeNavPath } from "../src/lib/nav";
 
 test("normalizeNavPath strips query, hash, and trailing slashes", () => {
@@ -23,7 +23,9 @@ test("section links match themselves and nested routes", () => {
 });
 
 test("external and missing paths never match", () => {
-  expect(isCurrentNavHref("https://enterprise.nativelink.com", "/")).toBe(false);
+  expect(isCurrentNavHref("https://enterprise.nativelink.com", "/")).toBe(
+    false,
+  );
   expect(isCurrentNavHref("/docs", undefined)).toBe(false);
   expect(isCurrentNavHref("mailto:hello@nativelink.com", "/")).toBe(false);
 });

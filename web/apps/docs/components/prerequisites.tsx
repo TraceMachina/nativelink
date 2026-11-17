@@ -32,7 +32,9 @@ export function Prerequisites({ children, className }: PrerequisitesProps) {
       <p className="my-0 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-brand">
         Before you start
       </p>
-      <div className="mt-1 text-sm text-muted-foreground [&>p]:my-0">{children}</div>
+      <div className="mt-1 text-sm text-muted-foreground [&>p]:my-0">
+        {children}
+      </div>
     </div>
   );
 }

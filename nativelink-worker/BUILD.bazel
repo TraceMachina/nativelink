@@ -101,7 +101,7 @@ rust_test_suite(
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:hyper-1.7.0",
+        "@crates//:hyper",
         "@crates//:pathdiff",
         "@crates//:pin-project-lite",
         "@crates//:pretty_assertions",

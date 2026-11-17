@@ -27,10 +27,10 @@
   },
   "private": true,
   "scripts": {
-    "build": "bun scripts/gen-llms.ts && next build",
+    "build": "node --experimental-strip-types scripts/gen-llms.ts && next build",
     "clean": "rm -rf .next .turbo",
-    "dev": "bun scripts/gen-llms.ts && next dev --port 3000",
-    "gen:llms": "bun scripts/gen-llms.ts",
+    "dev": "node --experimental-strip-types scripts/gen-llms.ts && next dev --port 3000",
+    "gen:llms": "node --experimental-strip-types scripts/gen-llms.ts",
     "lint": "biome check .",
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit"

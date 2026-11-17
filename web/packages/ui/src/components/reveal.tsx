@@ -10,7 +10,12 @@ interface RevealProps {
   children: React.ReactNode;
 }
 
-export function Reveal({ delay = 0, y = 12, className, children }: RevealProps) {
+export function Reveal({
+  delay = 0,
+  y = 12,
+  className,
+  children,
+}: RevealProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y }}

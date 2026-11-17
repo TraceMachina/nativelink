@@ -58,6 +58,26 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
         Ok(None)
     }
+    /// What a matching pass needs of a queued action beyond its info, in
+    /// one read of the record. Empty where the implementation does not
+    /// track it.
+    async fn dispatch_facts(&self) -> Result<DispatchFacts, Error> {
+        Ok(DispatchFacts::default())
+    }
+}
+
+/// The facts a matching pass reads of a queued action, together, so a pass
+/// over the queue borrows each record once.
+#[derive(Debug, Default, Clone)]
+pub struct DispatchFacts {
+    /// Workers a retry of this action should not go back to while another
+    /// can take it: the ones it failed or timed out on.
+    pub avoid_worker_ids: Vec<WorkerId>,
+    /// Nodes a retry of this action should keep off while another can take
+    /// it: the nodes of the workers it failed on, as they advertised them.
+    pub avoid_node_names: Vec<String>,
+    /// When the action last changed stage: since when it has been queued.
+    pub queued_since: Option<SystemTime>,
 }
 
 /// The direction in which the results are ordered.
@@ -134,8 +154,11 @@ pub enum UpdateOperationType {
     /// Notification that the operation has been completed.
     UpdateWithError(Error),
 
-    /// Notification that the worker disconnected.
-    UpdateWithDisconnect,
+    /// Notification that the worker disconnected. Carries the reservation
+    /// to requeue with when the loss may have been this action's memory
+    /// (RFC-0018); the state manager decides whether the evidence is
+    /// enough.
+    UpdateWithDisconnect(Option<LossEscalation>),
 
     /// Notification that the execution stage has completed and it's just IO happening now.
     ExecutionComplete,
@@ -171,6 +194,16 @@ pub struct Escalation {
     pub cpu: Option<(String, u64)>,
 }
 
+/// What a lost worker's action could be requeued with, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LossEscalation {
+    /// The next reservation, on the same ladder a memory kill climbs.
+    pub escalation: Escalation,
+    /// The worker reported this action above its reservation before it
+    /// was lost; without that, only a repeated loss escalates.
+    pub sampled_over: bool,
+}
+
 #[async_trait]
 pub trait WorkerStateManager: Sync + Send + MetricsComponent {
     /// Update that state of an operation.
@@ -183,6 +216,21 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error>;
+
+    /// `update_operation` from a worker whose node is known (its `node_name`
+    /// property): a failure the worker is answerable for is remembered
+    /// against the node too, so a retry keeps off the whole node, on every
+    /// scheduler replica. Implementations that do not track it take the
+    /// plain update.
+    async fn update_operation_on_node(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        _worker_node: Option<&str>,
+        update: UpdateOperationType,
+    ) -> Result<(), Error> {
+        self.update_operation(operation_id, worker_id, update).await
+    }
 
     /// Whether the operation is still executing on this worker. False once
     /// it has finished, been requeued or reassigned, or no longer exists.

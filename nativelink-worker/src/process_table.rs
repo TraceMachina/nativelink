@@ -44,7 +44,9 @@ pub type ProcessTable = Arc<[(ProcEntry, Option<u64>)]>;
 /// interval, which on a busy shared host saturates dozens of cores. Samplers
 /// instead reuse a snapshot younger than `max_age`, one interval, so the
 /// host is scanned at most once per interval however many actions run.
-/// Member memory and CPU time are still read fresh on every sample; only
+/// Member CPU time is still read fresh on every sample, and member memory
+/// as [`ExactMemoryGate`](crate::running_actions_manager::ExactMemoryGate)
+/// decides; only
 /// membership can lag, by at most one interval, as it already could between
 /// two samples.
 /// Kills keep their own live scan
@@ -94,6 +96,25 @@ pub fn live_process_table() -> Vec<(ProcEntry, Option<u64>)> {
 /// the process cannot be read.
 pub fn read_process_memory_kb(pid: u32) -> Option<u64> {
     platform::read_process_memory_kb(pid)
+}
+
+/// Whether [`read_process_memory_kb`] costs more than reading a counter.
+/// Only on Linux: `smaps_rollup` walks the page tables of every mapping,
+/// about 3 ms per resident GiB, where macOS and Windows read figures the
+/// kernel keeps. Only there does the sampler read
+/// [`read_process_memory_bound_kb`] first to skip the exact figure.
+pub const EXACT_MEMORY_READ_WALKS_PAGES: bool = cfg!(target_os = "linux");
+
+/// A figure for `pid`, in KiB, that [`read_process_memory_kb`] never
+/// exceeds, read from a counter. On Linux `RSS` from `statm`, which counts
+/// every resident page in full where `Pss` counts a shared one in part;
+/// elsewhere the exact figure, itself a counter read. `None` when the
+/// process cannot be read.
+pub fn read_process_memory_bound_kb(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    return platform::read_process_resident_kb(pid);
+    #[cfg(not(target_os = "linux"))]
+    return platform::read_process_memory_kb(pid);
 }
 
 /// The CPU ticks `pid` has used so far, read now rather than from a
@@ -173,6 +194,20 @@ mod platform {
         }
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
         parse_kb_field(&status, "VmRSS:")
+    }
+
+    /// The resident pages `statm` reports, in KiB. Kernels 6.2 to 6.15
+    /// read these counters without folding in each CPU's pending updates,
+    /// so there the figure can trail by up to a batch of pages per CPU,
+    /// tens of MiB on a large host.
+    pub(super) fn read_process_resident_kb(pid: u32) -> Option<u64> {
+        let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        // SAFETY: `sysconf` takes an int and returns a long, with no memory
+        // safety considerations.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page_kb = u64::try_from(page_size).ok().filter(|&size| size > 0)? / 1024;
+        Some(pages.saturating_mul(page_kb))
     }
 
     pub(super) fn read_process_cpu_ticks(pid: u32) -> Option<u64> {

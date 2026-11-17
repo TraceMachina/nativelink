@@ -34,8 +34,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
-    GoingAwayRequest, KeepAliveRequest, RunningOperations, StartExecute, UpdateForWorker,
-    WorkerLoad, execute_declined, execute_result,
+    GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, StartExecute,
+    UpdateForWorker, WorkerLoad, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -96,16 +96,23 @@ const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
 const CONNECTION_RETRY_MAX_DELAY_S: f32 = 30.0;
 
 /// Delay before the `attempt`th consecutive reconnect (0 = first retry),
-/// between half and one and a half times the exponential figure.
-fn reconnect_delay(attempt: u32) -> Duration {
+/// between half and one and a half times the exponential figure. `jitter`
+/// is taken modulo 1000.
+fn reconnect_delay(attempt: u32, jitter: u32) -> Duration {
     let exponent = i32::try_from(attempt.min(16)).unwrap_or(16);
     let base = (CONNECTION_RETRY_DELAY_S * 2f32.powi(exponent)).min(CONNECTION_RETRY_MAX_DELAY_S);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let jitter = 0.5 + (nanos % 1_000) as f32 / 1_000.0;
+    let jitter = 0.5 + (jitter % 1_000) as f32 / 1_000.0;
     Duration::from_secs_f32(base * jitter)
 }
+
+/// The reconnect jitter's default source: the wall clock's nanoseconds.
+fn wall_clock_jitter() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos())
+}
+
+type JitterFn = Box<dyn Fn() -> u32 + Send + Sync>;
 
 /// Default endpoint timeout. If this value gets modified the documentation in
 /// `cas_server.rs` must also be updated.
@@ -437,6 +444,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     ) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let running_actions_manager = self.running_actions_manager.clone();
         let timeout = self
             .config
             .worker_api_endpoint
@@ -468,9 +476,23 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
                 let operation_ids = running_operations.lock().iter().cloned().collect();
+                // Each running action's sampled peak, so a scheduler that
+                // loses this worker can tell which action outgrew its
+                // reservation (RFC-0018).
+                let memory = running_actions_manager
+                    .memory_peaks()
+                    .into_iter()
+                    .map(|(operation_id, peak_memory_kb)| OperationMemory {
+                        operation_id,
+                        peak_memory_kb,
+                    })
+                    .collect();
                 let request = KeepAliveRequest {
                     load,
-                    running_operations: Some(RunningOperations { operation_ids }),
+                    running_operations: Some(RunningOperations {
+                        operation_ids,
+                        memory,
+                    }),
                 };
                 if let Err(e) = grpc_client.keep_alive(request).await {
                     error!(?e, "Failed to send KeepAlive in LocalWorker");
@@ -950,6 +972,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
+    jitter_fn: JitterFn,
     metrics: Arc<Metrics>,
     registration: Arc<WorkerRegistration>,
 }
@@ -1351,52 +1374,55 @@ pub async fn new_local_worker(
         running_actions_manager,
         Box::new(move || {
             let config = config.clone();
-            Box::pin(async move {
-                let timeout = config
-                    .worker_api_endpoint
-                    .timeout
-                    .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-                let timeout_duration = Duration::from_secs_f32(timeout);
-                let tls_config =
-                    tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
-                        .err_tip(|| "Parsing local worker TLS configuration")?;
-                let endpoint =
-                    tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                        .map_err(|e| {
-                            Error::from_std_err(Code::InvalidArgument, &e)
-                                .append("Invalid URI for worker endpoint")
-                        })?
-                        .connect_timeout(timeout_duration)
-                        .timeout(timeout_duration)
-                        // Probes under and between the messages, so a
-                        // connection that has gone dead underneath fails
-                        // here instead of hanging every message on it.
-                        .tcp_keepalive(Some(seconds_or(
-                            config.worker_api_endpoint.tcp_keepalive_s,
-                            DEFAULT_TCP_KEEPALIVE,
-                        )))
-                        .http2_keep_alive_interval(seconds_or(
-                            config.worker_api_endpoint.http2_keepalive_interval_s,
-                            DEFAULT_HTTP2_KEEPALIVE_INTERVAL,
-                        ))
-                        .keep_alive_timeout(seconds_or(
-                            config.worker_api_endpoint.http2_keepalive_timeout_s,
-                            DEFAULT_HTTP2_KEEPALIVE_TIMEOUT,
-                        ))
-                        .keep_alive_while_idle(true);
-
-                let transport = endpoint.connect().await.map_err(|e| {
-                    Error::from_std_err(Code::Internal, &e).append(format!(
-                        "Could not connect to endpoint {}",
-                        config.worker_api_endpoint.uri
-                    ))
-                })?;
-                Ok(WorkerApiClient::new(transport).into())
-            })
+            Box::pin(async move { connect_to_scheduler(&config).await })
         }),
         Box::new(move |d| Box::pin(time::sleep(d))),
     );
     Ok(local_worker)
+}
+
+/// Connects to the scheduler's worker API the way every worker does: the
+/// endpoint, TLS and keepalives from `worker_api_endpoint`.
+pub async fn connect_to_scheduler(
+    config: &LocalWorkerConfig,
+) -> Result<WorkerApiClientWrapper, Error> {
+    let timeout = config
+        .worker_api_endpoint
+        .timeout
+        .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
+    let timeout_duration = Duration::from_secs_f32(timeout);
+    let tls_config = tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
+        .err_tip(|| "Parsing local worker TLS configuration")?;
+    let endpoint = tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
+        .map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e).append("Invalid URI for worker endpoint")
+        })?
+        .connect_timeout(timeout_duration)
+        .timeout(timeout_duration)
+        // Probes under and between the messages, so a
+        // connection that has gone dead underneath fails
+        // here instead of hanging every message on it.
+        .tcp_keepalive(Some(seconds_or(
+            config.worker_api_endpoint.tcp_keepalive_s,
+            DEFAULT_TCP_KEEPALIVE,
+        )))
+        .http2_keep_alive_interval(seconds_or(
+            config.worker_api_endpoint.http2_keepalive_interval_s,
+            DEFAULT_HTTP2_KEEPALIVE_INTERVAL,
+        ))
+        .keep_alive_timeout(seconds_or(
+            config.worker_api_endpoint.http2_keepalive_timeout_s,
+            DEFAULT_HTTP2_KEEPALIVE_TIMEOUT,
+        ))
+        .keep_alive_while_idle(true);
+
+    let transport = endpoint.connect().await.map_err(|e| {
+        Error::from_std_err(Code::Internal, &e).append(format!(
+            "Could not connect to endpoint {}",
+            config.worker_api_endpoint.uri
+        ))
+    })?;
+    Ok(WorkerApiClient::new(transport).into())
 }
 
 impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T, U> {
@@ -1415,9 +1441,18 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             running_actions_manager,
             connection_factory,
             sleep_fn: Some(sleep_fn),
+            jitter_fn: Box::new(wall_clock_jitter),
             metrics,
             registration,
         }
+    }
+
+    /// Takes the reconnect jitter from `jitter_fn` instead of the wall
+    /// clock, for tests that need the same backoff every run.
+    #[must_use]
+    pub fn with_jitter_fn(mut self, jitter_fn: JitterFn) -> Self {
+        self.jitter_fn = jitter_fn;
+        self
     }
 
     /// The registration flag this worker flips, for a health registry.
@@ -1546,9 +1581,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let attempts = AtomicU32::new(0);
         let attempts_ref = &attempts;
+        let jitter_fn = &self.jitter_fn;
         let error_handler = Box::pin(move |err| async move {
             let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
-            let delay = reconnect_delay(attempt);
+            let delay = reconnect_delay(attempt, jitter_fn());
             error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
             (sleep_fn_pin)(delay).await;
         });

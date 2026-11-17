@@ -223,14 +223,14 @@ spec:
         - name: prometheus
           image: prom/prometheus:v2.50.0
           args:
-            - '--config.file=/etc/prometheus/prometheus.yml'
-            - '--storage.tsdb.path=/prometheus'
-            - '--web.console.libraries=/etc/prometheus/console_libraries'
-            - '--web.console.templates=/etc/prometheus/consoles'
-            - '--web.enable-lifecycle'
-            - '--web.enable-otlp-receiver'
-            - '--storage.tsdb.retention.time=30d'
-            - '--storage.tsdb.out-of-order-time-window=30m'
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.console.libraries=/etc/prometheus/console_libraries"
+            - "--web.console.templates=/etc/prometheus/consoles"
+            - "--web.enable-lifecycle"
+            - "--web.enable-otlp-receiver"
+            - "--storage.tsdb.retention.time=30d"
+            - "--storage.tsdb.out-of-order-time-window=30m"
           ports:
             - containerPort: 9090
               name: web

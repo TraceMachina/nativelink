@@ -32,7 +32,7 @@
 // showing what they look like.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs lint:navigation
+//   pnpm run --filter @nativelink/docs lint:navigation
 // or directly:
 //   node scripts/lint-navigation.mjs
 //
@@ -136,7 +136,8 @@ function main() {
 
     if (primary > 1) {
       const detail =
-        "one of these is the path and the rest want " + '`kind="aside"`, or the reader picks blind';
+        "one of these is the path and the rest want " +
+        '`kind="aside"`, or the reader picks blind';
       problems.push({
         rel,
         message: `${primary} primary <NextStep> elements: ${detail}`,
@@ -163,7 +164,9 @@ function main() {
   }
 
   if (problems.length === 0) {
-    console.log(`lint:navigation: ${checked} pages, no dead ends, no misplaced prerequisites.`);
+    console.log(
+      `lint:navigation: ${checked} pages, no dead ends, no misplaced prerequisites.`,
+    );
     return;
   }
 

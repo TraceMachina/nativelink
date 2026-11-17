@@ -236,7 +236,11 @@ with the headroom included. Without it the kill comes from the pod's cgroup limi
 and on cgroup v2 that kill takes the worker and every action on it, not just
 the one that grew. The sample is the group's proportional set size (on
 macOS the physical footprint, on Windows the private commit charge), so a
-parent's pages shared with its forked children count once. Actions run
+parent's pages shared with its forked children count once. On Linux that
+figure walks the action's page tables, so a sample reads it only when the
+group's resident set size, a counter it never exceeds, has reached 90% of
+the limit, moved 10% since the last reading, or that reading is 2 seconds
+old; between those it reuses the last reading. Actions run
 through a persistent worker are not covered: that process outlives the action
 and serves others, so only the pod's limit bounds it. With enforcement on, the
 worker reads an action's properties from the scheduler's dispatch rather than

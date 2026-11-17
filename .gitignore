@@ -30,5 +30,6 @@ buck-out/
 nativelink_config.schema.json
 .gstack/
 .worktrees/
+node_modules/
 
 /ci-metadata.bazelrc
