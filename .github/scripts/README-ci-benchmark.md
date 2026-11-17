@@ -2,8 +2,9 @@
 
 **CI / NativeLink** runs `bazel test //...` on the retained cluster client for
 branch pushes and manual runs. Pull requests run the same suite with the
-project-pinned Bazel version on a hosted Linux runner, using the public read-only
-cache without cluster credentials. Both paths include Clippy and rustfmt.
+project-pinned Bazel version on a hosted Linux runner. Repository PRs use remote
+execution; fork PRs use the public read-only cache and local execution without
+cluster credentials. Both paths include Clippy and rustfmt.
 For branch builds, GitHub's hosted job checks out the dispatch helpers, obtains short-lived
 credentials, dispatches the workload and publishes aggregate results. Nix shell
 preparation, repository downloads, the action disk cache, expanded repositories,
@@ -48,6 +49,61 @@ promote its exact commit to a repository branch such as `ci-approved/pr-123`;
 that push runs the same cluster CI against the reviewed commit. Do not promote
 unreviewed changes. The cluster job only accepts push/manual events; pull request
 events select the separate hosted job.
+
+## Before merging a pull request
+
+`CI / Trusted build status` publishes `ci/trusted-builds` on the current PR
+head. For changes outside `web/` and `.github/styles/`, success requires both
+`CI / NativeLink` and `CI / Nix` to pass on that exact commit in the upstream
+repository's push/manual lane. The retained-client jobs must actually pass;
+a skipped job, a green local-only PR run, or results for an earlier commit do
+not qualify. Nix's downstream installation and toolchain checks must pass too.
+Newer failed or pending runs supersede earlier successes.
+
+Repository branch pushes already start these builds. For a fork PR, a
+maintainer must review the code first, including workflows and build scripts,
+then promote the reviewed commit. From a trusted checkout, using your own
+authenticated `gh` session, replace the values below with the PR number and
+the **full commit SHA you reviewed**:
+
+```sh
+pr=123
+reviewed_sha=FULL_REVIEWED_COMMIT_SHA
+current_sha="$(gh api "repos/TraceMachina/nativelink/pulls/$pr" --jq .head.sha)"
+test "$reviewed_sha" = "$current_sha" || { echo "PR changed; review its current commit"; exit 1; }
+gh api --method POST repos/TraceMachina/nativelink/git/refs \
+  -f "ref=refs/heads/ci-approved/pr-$pr-$reviewed_sha" \
+  -f "sha=$reviewed_sha"
+```
+
+Creating this branch authorizes the reviewed code to run with the existing
+trusted CI credentials and retained client. The command creates a new branch;
+it never force-updates one. If the branch already exists, inspect or re-run its
+builds instead. Do not use a workflow's `GITHUB_TOKEN` for promotion: its pushes
+do not trigger the branch workflows. Ordinary fork workflow approval alone
+does not authorize cluster access.
+
+The status refreshes when branch builds start or finish and when a PR changes.
+A new PR commit needs new successful builds. Missing builds remain pending,
+and API errors clear any previous success before the reporter exits. Web/style
+only changes receive an explicit exemption matching the build workflows' path
+filters; renames out of source directories and incomplete file lists do not.
+
+**Rollout:** after this workflow lands and reports its first status, add
+`ci/trusted-builds` to the required checks for `main`, keeping the existing
+requirements and the up-to-date branch policy. Select GitHub Actions as its
+expected source. Require the published commit status, not the reporter job:
+that job only reads metadata and publishes the result. Repository rules are
+configured separately from workflow files; merging this change alone does not
+make the status mandatory. See GitHub's
+[required status check guidance](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+
+The reporter runs only trusted base/default-branch code with read access to
+Actions and PR metadata and write access to commit statuses. It never checks
+out fork code, executes artifacts, promotes a commit automatically, or receives
+cluster credentials.
+
+## Fork workflow approval
 
 The repository's Actions approval policy is `all_external_contributors`.
 Ordinary fork PR workflows from all outside contributors require approval from
