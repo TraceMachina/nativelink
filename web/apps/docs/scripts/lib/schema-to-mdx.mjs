@@ -173,6 +173,7 @@ function normalizeProseText(text) {
     )
     .replace(/\bThe the value\b/g, "The value")
     .replace(/\bset to -1 to disable\b/g, "set to `-1` to disable")
+    .replace(/\bDefaults to -1\b/g, "Defaults to `-1`")
     .replace(/TODO\(.+\)/, "")
     .replace(/([.!?]) {2,}(?=[A-Z`])/g, "$1 ");
 }
