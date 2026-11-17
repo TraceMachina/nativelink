@@ -635,6 +635,17 @@ changes`. This is a fairly free-form section that doesn't have any explicit
     `v1.x.y`). It will rebuild, re-sign, and attach the assets to that existing
     release.
 
+12. Check that the quickstart snippets still work. The README and docs
+    snippets don't hard-code a version: they look up the newest release when
+    a reader runs them, so publishing the release is what updates them. Once
+    the images are published, run the Linux snippet from the "Prebuilt
+    images" section of the README and confirm the server starts on the new
+    tag. If the release moved or renamed an example config the snippets
+    download, fix the snippets on `main`. Don't add a hard-coded version to
+    the README or docs; use the `NATIVELINK_VERSION` lookup the snippets
+    use, or `vX.Y.Z` in prose. Production guidance stays the same: pin an
+    exact tag, never a version resolved at deploy time.
+
 ## Conduct
 
 NativeLink Code of Conduct is available in the
