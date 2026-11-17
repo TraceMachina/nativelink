@@ -1431,9 +1431,16 @@ async fn a_hung_keepalive_waits_for_the_scheduler_to_close_the_stream() -> Resul
     })
     .await
     .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
-    assert!(logs_contain(
-        "Worker disconnected from scheduler, reconnecting"
-    ));
+    logs_assert(|lines: &[&str]| {
+        if lines.iter().any(|line| {
+            line.contains("Worker disconnected from scheduler, reconnecting")
+                && line.contains("ERROR")
+        }) {
+            Ok(())
+        } else {
+            Err("a disconnect after registration must log at ERROR".to_string())
+        }
+    });
     Ok(())
 }
 
@@ -2153,5 +2160,45 @@ async fn reconnect_backoff_takes_its_jitter_from_the_jitter_fn() -> Result<(), E
         delays[..2],
         [Duration::from_millis(250), Duration::from_millis(500)]
     );
+    Ok(())
+}
+
+/// A worker that starts before its scheduler is reachable retries; those
+/// startup misses are warnings, not errors.
+#[nativelink_test]
+async fn startup_scheduler_connect_failure_logs_a_warning() -> Result<(), Error> {
+    use utils::local_worker_test_utils::MockWorkerApiClient;
+    use utils::mock_running_actions_manager::MockRunningActionsManager;
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = std::sync::Mutex::new(Some(done_tx));
+    let worker = nativelink_worker::local_worker::LocalWorker::<MockWorkerApiClient, _>::new_with_connection_factory_and_actions_manager(
+        Arc::new(LocalWorkerConfig::default()),
+        Arc::new(MockRunningActionsManager::new()),
+        Box::new(|| Box::pin(async { Err(make_err!(Code::Unavailable, "no scheduler")) })),
+        Box::new(move |_delay| {
+            let done = done_tx.lock().unwrap().take();
+            if let Some(done) = done {
+                done.send(()).unwrap();
+            }
+            // Yield, so the reconnect loop lets this test run.
+            Box::pin(tokio::task::yield_now())
+        }),
+    );
+    let (shutdown, _) = tokio::sync::broadcast::channel(1);
+    let run = nativelink_util::spawn!("startup_warn_test_worker", worker.run(shutdown.subscribe()));
+    done_rx.await.unwrap();
+    drop(run);
+    logs_assert(|lines: &[&str]| {
+        let attempt = lines.iter().find(|line| {
+            line.contains("Scheduler connection attempt failed, retrying")
+                && line.contains("failure=\"connect\"")
+        });
+        match attempt {
+            Some(line) if line.contains("WARN") => Ok(()),
+            Some(line) => Err(format!("startup connect failure must be a warning: {line}")),
+            None => Err("no startup connect failure was logged".to_string()),
+        }
+    });
     Ok(())
 }
