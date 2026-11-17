@@ -882,7 +882,7 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2026_01_12())
+        .behavior_version(BehaviorVersion::v2026_11_10())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
