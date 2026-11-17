@@ -1203,10 +1203,11 @@ async fn small_fetch_budget_allows_shared_subtree_construction() -> Result<(), E
                     make_cas_store(memory_store).await,
                 )
                 .await?;
-                let work = tempfile::tempdir()?;
-                let first = work.path().join("first");
-                let second = work.path().join("second");
-                let third = work.path().join("third");
+                let work = PathBuf::from(make_temp_path("small_budget_work"));
+                tokio::fs::create_dir_all(&work).await?;
+                let first = work.join("first");
+                let second = work.join("second");
+                let third = work.join("third");
                 // Different roots contend for the same descendant flight.
                 // A fetch permit retained by an ancestor would block at 1.
                 futures::try_join!(
@@ -1223,11 +1224,11 @@ async fn small_fetch_budget_allows_shared_subtree_construction() -> Result<(), E
                 }
                 assert!(
                     cache
-                        .get_or_create(wrapper_digest, &work.path().join("hot"))
+                        .get_or_create(wrapper_digest, &work.join("hot"))
                         .await?
                 );
                 assert_eq!(
-                    tokio::fs::read(work.path().join("hot/shared/mid/leaf/a.txt")).await?,
+                    tokio::fs::read(work.join("hot/shared/mid/leaf/a.txt")).await?,
                     content
                 );
                 assert_eq!(cache.stats().await.in_use_entries, 0);

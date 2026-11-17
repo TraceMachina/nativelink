@@ -167,6 +167,7 @@ fn run_case(case: String) -> Result<(), Error> {
             let depth = parts[2].parse::<usize>()?;
             let stack_bytes = parts[3].parse::<usize>()?;
             let fetches = parts[4].parse::<usize>()?;
+            eprintln!("CASE {case} SETUP_BEGIN");
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
@@ -226,14 +227,13 @@ fn isolated_input_stack() -> Result<(), Error> {
             {
                 for temperature in ["cold", "hot"] {
                     let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}:{fetches}");
-                    let output = Command::new(std::env::current_exe()?)
+                    eprintln!("CASE {case} BEGIN");
+                    let status = Command::new(std::env::current_exe()?)
                         .args(["--exact", "isolated_input_stack", "--nocapture"])
                         .env(CHILD_ENV, &case)
-                        .output()?;
-                    eprintln!("CASE {case} EXIT {}", output.status);
-                    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-                    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-                    if !output.status.success() {
+                        .status()?;
+                    eprintln!("CASE {case} EXIT {status}");
+                    if !status.success() {
                         failures.push(case);
                     }
                 }
