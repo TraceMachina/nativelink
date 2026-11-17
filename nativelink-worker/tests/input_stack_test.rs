@@ -15,6 +15,7 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use nativelink_config::stores::{
@@ -30,7 +31,8 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::{Store, StoreLike};
 use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
-use nativelink_worker::running_actions_manager::download_to_directory;
+use nativelink_worker::running_actions_manager::download_to_directory_bounded;
+use tokio::sync::Semaphore;
 
 const CHILD_ENV: &str = "NL_INPUT_STACK_CASE";
 const CONTENTS: &[u8] = b"deep input stack probe";
@@ -41,12 +43,13 @@ struct InputTree {
     cache: Option<DirectoryCache>,
     digest: DigestInfo,
     depth: usize,
+    downloads: Semaphore,
     // Keep the filesystem alive until the stores have been dropped.
     _root: tempfile::TempDir,
 }
 
 impl InputTree {
-    async fn new(mode: &str, depth: usize) -> Result<Self, Error> {
+    async fn new(mode: &str, depth: usize, fetches: usize) -> Result<Self, Error> {
         let root = tempfile::tempdir()?;
         let fast_spec = FilesystemSpec {
             content_path: root.path().join("content").to_string_lossy().into_owned(),
@@ -106,6 +109,7 @@ impl InputTree {
                     DirectoryCacheConfig {
                         cache_root: root.path().join("cache"),
                         experimental_subtree_caching: mode == "subtree",
+                        max_concurrent_fetches: fetches,
                         ..Default::default()
                     },
                     cas.clone(),
@@ -120,6 +124,7 @@ impl InputTree {
             cache,
             digest,
             depth,
+            downloads: Semaphore::new(fetches),
         })
     }
 
@@ -128,13 +133,14 @@ impl InputTree {
             assert_eq!(cache.get_or_create(self.digest, destination).await?, hot);
         } else {
             tokio::fs::create_dir_all(destination).await?;
-            download_to_directory(
+            download_to_directory_bounded(
                 self.cas.as_ref(),
                 self.fast.as_pin(),
                 &self.digest,
                 destination
                     .to_str()
                     .ok_or_else(|| make_input_err!("non-UTF8 test path"))?,
+                &self.downloads,
             )
             .await?;
         }
@@ -160,16 +166,22 @@ fn run_case(case: String) -> Result<(), Error> {
             let hot = parts[1] == "hot";
             let depth = parts[2].parse::<usize>()?;
             let stack_bytes = parts[3].parse::<usize>()?;
+            let fetches = parts[4].parse::<usize>()?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            let tree = runtime.block_on(Box::pin(InputTree::new(mode, depth)))?;
+            let tree = runtime.block_on(Box::pin(InputTree::new(mode, depth, fetches)))?;
             let destinations = tempfile::tempdir()?;
             if hot {
                 eprintln!("CASE {case} PREWARM_BEGIN stack_bytes=33554432");
-                runtime.block_on(Box::pin(
-                    tree.materialize(&destinations.path().join("warm"), false),
-                ))?;
+                runtime.block_on(Box::pin(async {
+                    tokio::time::timeout(
+                        Duration::from_secs(30),
+                        tree.materialize(&destinations.path().join("warm"), false),
+                    )
+                    .await
+                    .map_err(|_| make_input_err!("prewarm timed out: {case}"))?
+                }))?;
                 eprintln!("CASE {case} PREWARM_OK");
             }
             eprintln!("CASE {case} SETUP_OK");
@@ -179,8 +191,12 @@ fn run_case(case: String) -> Result<(), Error> {
                 .spawn(move || -> Result<(), Error> {
                     eprintln!("CASE {case} MATERIALIZE_BEGIN");
                     runtime.block_on(Box::pin(async move {
-                        tree.materialize(&destinations.path().join("probe"), hot)
-                            .await?;
+                        tokio::time::timeout(
+                            Duration::from_secs(30),
+                            tree.materialize(&destinations.path().join("probe"), hot),
+                        )
+                        .await
+                        .map_err(|_| make_input_err!("materialization timed out: {case}"))??;
                         eprintln!("CASE {case} MATERIALIZE_OK");
                         drop(tree);
                         drop(destinations);
@@ -204,9 +220,12 @@ fn isolated_input_stack() -> Result<(), Error> {
     let mut failures = Vec::new();
     for depth in [8, 128] {
         for stack_bytes in [2 * 1024 * 1024, 16 * 1024 * 1024] {
-            for mode in ["none", "default", "subtree"] {
+            for (mode, fetches) in ["none", "default", "subtree"]
+                .into_iter()
+                .flat_map(|mode| [1, 2, 64].into_iter().map(move |fetches| (mode, fetches)))
+            {
                 for temperature in ["cold", "hot"] {
-                    let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}");
+                    let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}:{fetches}");
                     let output = Command::new(std::env::current_exe()?)
                         .args(["--exact", "isolated_input_stack", "--nocapture"])
                         .env(CHILD_ENV, &case)

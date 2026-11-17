@@ -1732,6 +1732,217 @@ mod tests {
         .await
     }
 
+    async fn filesystem_cancellation_case(subtree: bool, cancel_root: bool) -> Result<(), Error> {
+        let temp_dir = TempDir::new()?;
+        let (store, slow) = make_fast_slow_store(&temp_dir).await;
+        let file = upload_blob(&slow, 10, b"cancel regression").await;
+        let mut branch_digest = upload_blob(
+            &slow,
+            11,
+            &ProtoDirectory {
+                files: vec![FileNode {
+                    name: "file".into(),
+                    digest: Some(file.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        for (tag, name) in [(12, "leaf"), (13, "middle")] {
+            branch_digest = upload_blob(
+                &slow,
+                tag,
+                &ProtoDirectory {
+                    directories: vec![DirectoryNode {
+                        name: name.into(),
+                        digest: Some(branch_digest.into()),
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .await;
+        }
+        let missing_data = ProtoDirectory {
+            files: vec![FileNode {
+                name: "recovered".into(),
+                digest: Some(file.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let missing = DigestInfo::new([14; 32], missing_data.len() as u64);
+        let digest = upload_blob(
+            &slow,
+            15,
+            &ProtoDirectory {
+                directories: vec![
+                    DirectoryNode {
+                        name: "branch".into(),
+                        digest: Some(branch_digest.into()),
+                    },
+                    DirectoryNode {
+                        name: "missing".into(),
+                        digest: Some(missing.into()),
+                    },
+                ],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: cache_root.clone(),
+                experimental_subtree_caching: subtree,
+                max_concurrent_fetches: 1,
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        let destination = temp_dir.path().join("cancelled");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let mut root = Box::pin(cache.get_or_create_entry(
+            digest,
+            &destination,
+            None,
+            true,
+            None,
+            DirectoryWork {
+                sender,
+                scope: None,
+            },
+        ));
+
+        // Drive production construction against real disk, but retain control
+        // of queued jobs so cancellation cannot finish before we inspect cleanup.
+        let mut branch = tokio::select! {
+            result = &mut root => panic!("root finished before queuing children: {result:?}"),
+            job = receiver.recv() => job.expect("branch job"),
+        };
+        let missing_job = tokio::select! {
+            result = &mut root => panic!("root finished before queuing failure: {result:?}"),
+            job = receiver.recv() => job.expect("missing job"),
+        };
+        let mut entries = fs::read_dir(&cache_root).await?;
+        let scratch = entries.next_entry().await?.expect("root scratch").path();
+        assert!(
+            scratch
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(TEMP_PREFIX)
+        );
+        assert!(entries.next_entry().await?.is_none());
+        let marker = scratch.join("cleanup-marker");
+        fs::write(&marker, b"parent still owns this tree").await?;
+        let mut middle = tokio::select! {
+            () = &mut branch => panic!("branch finished before queuing middle"),
+            job = receiver.recv() => job.expect("middle job"),
+        };
+        let leaf = tokio::select! {
+            () = &mut middle => panic!("middle finished before queuing leaf"),
+            job = receiver.recv() => job.expect("leaf job"),
+        };
+
+        if cancel_root {
+            drop(root);
+            drop(missing_job);
+            branch.await;
+            middle.await;
+            leaf.await;
+        } else {
+            missing_job.await;
+            tokio::select! {
+                biased;
+                result = &mut root => panic!("parent cleaned up before branch stopped: {result:?}"),
+                () = &mut branch => {},
+            }
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(200), root.as_mut(),)
+                    .await
+                    .is_err(),
+                "parent completed while a cancelled descendant was still alive"
+            );
+            assert_eq!(fs::read(&marker).await?, b"parent still owns this tree");
+            middle.await;
+            assert!(futures::poll!(root.as_mut()).is_pending());
+            assert!(
+                marker.exists(),
+                "parent cleaned up before queued leaf stopped"
+            );
+            leaf.await;
+            assert!(root.await.is_err());
+            assert!(
+                !scratch.exists(),
+                "failed root must remove its scratch tree"
+            );
+        }
+        drop(receiver);
+
+        // Root cancellation uses background scratch cleanup. Wait for its real
+        // filesystem effects, not just for the cancelled futures to disappear.
+        loop {
+            let mut entries = fs::read_dir(&cache_root).await?;
+            let mut has_scratch = false;
+            while let Some(entry) = entries.next_entry().await? {
+                has_scratch |= entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+            }
+            if !has_scratch {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(cache.stats().await.in_use_entries, 0);
+        slow.as_store_driver_pin()
+            .update_oneshot(missing.into(), missing_data.into())
+            .await?;
+        let retry = temp_dir.path().join("retry");
+        assert!(!cache.get_or_create(digest, &retry).await?);
+        assert_eq!(
+            fs::read(retry.join("branch/middle/leaf/file")).await?,
+            b"cancel regression"
+        );
+        assert_eq!(
+            fs::read(retry.join("missing/recovered")).await?,
+            b"cancel regression"
+        );
+        assert_eq!(cache.stats().await.in_use_entries, 0);
+        assert!(cache.construction_locks.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn filesystem_parent_cleanup_waits_for_cancelled_descendants() -> Result<(), Error> {
+        for subtree in [false, true] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                filesystem_cancellation_case(subtree, false),
+            )
+            .await
+            .expect("cancellation or retry deadlocked")?;
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn filesystem_root_cancellation_cleans_up_and_retries() -> Result<(), Error> {
+        for subtree in [false, true] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                filesystem_cancellation_case(subtree, true),
+            )
+            .await
+            .expect("root cancellation or retry deadlocked")?;
+        }
+        Ok(())
+    }
+
     /// Builds a `FastSlowStore` whose fast tier is a real `FilesystemStore`
     /// and whose slow tier is a `MemoryStore` — the same shape the worker
     /// wires up. Returns the `FastSlowStore` plus the slow `Store` handle so
