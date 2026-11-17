@@ -49,7 +49,7 @@ rust_library(
         "@crates//:async-lock",
         "@crates//:bytes",
         "@crates//:futures",
-        "@crates//:humantime",
+        "@crates//:jiff",
         "@crates//:lru",
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",

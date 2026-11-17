@@ -20,7 +20,7 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use humantime::format_duration;
+use jiff::Span;
 use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
@@ -1209,7 +1209,7 @@ impl Display for ActionState {
             self.stage.name(),
             self.last_transition_timestamp.elapsed().map_or_else(
                 |_| "<unknown duration>".to_string(),
-                |d| { format_duration(d).to_string() }
+                |d| { format!("{}", Span::try_from(d).unwrap_or_default()) }
             ),
             self.client_operation_id,
             self.action_digest
