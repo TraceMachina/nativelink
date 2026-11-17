@@ -1694,12 +1694,42 @@ mod tests {
         let descendant_job = child.register();
 
         drop(child_job);
-        assert!(futures::poll!(root.wait()).is_pending());
-        assert!(futures::poll!(child.wait()).is_pending());
+        assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+        assert!(futures::poll!(Box::pin(child.wait())).is_pending());
 
         drop(descendant_job);
         root.wait().await;
         child.wait().await;
+    }
+
+    #[nativelink_test]
+    async fn work_scope_waits_for_queued_task_to_stop() -> Result<(), Error> {
+        drive_directory_work(|work| {
+            Box::pin(async move {
+                let root = DirectoryWorkScope::new(None);
+                let child = DirectoryWorkScope::new(Some(root.clone()));
+                let child_job = root.register();
+                let descendant_job = child.register();
+                let (started, started_rx) = oneshot::channel();
+                let (release, release_rx) = oneshot::channel::<()>();
+                work.sender
+                    .send(Box::pin(async move {
+                        let _guard = descendant_job;
+                        drop(started.send(()));
+                        drop(release_rx.await);
+                    }))
+                    .map_err(|_| make_err!(Code::Internal, "directory work queue closed"))?;
+                started_rx
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "queued task did not start"))?;
+                drop(child_job);
+                assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+                drop(release);
+                root.wait().await;
+                Ok(())
+            })
+        })
+        .await
     }
 
     /// Builds a `FastSlowStore` whose fast tier is a real `FilesystemStore`
