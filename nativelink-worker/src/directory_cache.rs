@@ -1715,7 +1715,7 @@ mod tests {
                 work.sender
                     .send(Box::pin(async move {
                         let _guard = descendant_job;
-                        drop(started.send(()));
+                        let _ = started.send(());
                         drop(release_rx.await);
                     }))
                     .map_err(|_| make_err!(Code::Internal, "directory work queue closed"))?;
