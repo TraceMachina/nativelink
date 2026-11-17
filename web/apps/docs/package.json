@@ -44,6 +44,7 @@
     "lint:links": "node scripts/lint-links.mjs",
     "lint:navigation": "node scripts/lint-navigation.mjs",
     "lint:snippets": "node scripts/lint-snippets.mjs",
+    "lint:release-refs": "node scripts/check-release-refs.mjs",
     "start": "next start --port 3001",
     "typecheck": "tsc --noEmit"
   },
