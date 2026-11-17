@@ -55,7 +55,7 @@ const CONSTRUCT_DIRECTORY_CONCURRENCY: usize = 64;
 /// Default for `DirectoryCacheConfig::max_concurrent_fetches`, preserving
 /// the historical cache-wide fetch bound.
 const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 64;
-use tokio::sync::{Mutex, RwLock, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore, mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
 
 /// Prefix for in-progress construction trees under `cache_root`. Cache-entry
@@ -69,14 +69,69 @@ const TOMBSTONE_PREFIX: &str = ".del-";
 /// Minimum interval between summary log lines, in nanoseconds (one minute).
 const SUMMARY_LOG_INTERVAL_NANOS: u64 = 60_000_000_000;
 
-type DirectoryWork<'a> = mpsc::UnboundedSender<BoxFuture<'a, ()>>;
+#[derive(Clone)]
+struct DirectoryWork<'a> {
+    sender: mpsc::UnboundedSender<BoxFuture<'a, ()>>,
+    scope: Option<Arc<DirectoryWorkScope>>,
+}
+
+// Count every queued task in each ancestor scope, so cancelling a task does
+// not let its parent clean up while that task's descendants are still alive.
+struct DirectoryWorkScope {
+    parent: Option<Arc<Self>>,
+    pending: AtomicUsize,
+    idle: Notify,
+}
+
+impl DirectoryWorkScope {
+    fn new(parent: Option<Arc<Self>>) -> Arc<Self> {
+        Arc::new(Self {
+            parent,
+            pending: AtomicUsize::new(0),
+            idle: Notify::new(),
+        })
+    }
+
+    fn register(self: &Arc<Self>) -> DirectoryWorkGuard {
+        let mut scope = Some(self.as_ref());
+        while let Some(current) = scope {
+            current.pending.fetch_add(1, Ordering::SeqCst);
+            scope = current.parent.as_deref();
+        }
+        DirectoryWorkGuard(self.clone())
+    }
+
+    async fn wait(&self) {
+        while self.pending.load(Ordering::SeqCst) != 0 {
+            self.idle.notified().await;
+        }
+    }
+}
+
+struct DirectoryWorkGuard(Arc<DirectoryWorkScope>);
+
+impl Drop for DirectoryWorkGuard {
+    fn drop(&mut self) {
+        let mut scope = Some(self.0.as_ref());
+        while let Some(current) = scope {
+            if current.pending.fetch_sub(1, Ordering::SeqCst) == 1 {
+                current.idle.notify_one();
+            }
+            scope = current.parent.as_deref();
+        }
+    }
+}
+
 type DirectoryProtos = Arc<HashMap<DigestInfo, ProtoDirectory>>;
 
 async fn drive_directory_work<'a, T>(
     start: impl FnOnce(DirectoryWork<'a>) -> BoxFuture<'a, Result<T, Error>>,
 ) -> Result<T, Error> {
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    let mut root = start(sender);
+    let mut root = start(DirectoryWork {
+        sender,
+        scope: None,
+    });
     let mut pending = FuturesUnordered::new();
     loop {
         tokio::select! {
@@ -1026,6 +1081,11 @@ impl DirectoryCache {
         'a: 'b,
     {
         Box::pin(async move {
+            let scope = DirectoryWorkScope::new(work.scope.clone());
+            let work = DirectoryWork {
+                sender: work.sender,
+                scope: Some(scope.clone()),
+            };
             debug!(?digest, ?dest_path, "Constructing directory");
             // The root is reserved by `get_or_create_entry`; child digests are
             // reserved before their recursive futures are queued below.
@@ -1085,10 +1145,13 @@ impl DirectoryCache {
                 let dir_node = dir_node.clone();
                 let protos = protos.clone();
                 let work = work.clone();
+                let scope = scope.clone();
                 node_futures.push(Box::pin(async move {
                     let (mut response, result) = oneshot::channel();
                     let child_work = work.clone();
-                    work.send(Box::pin(async move {
+                    let guard = scope.register();
+                    work.sender.send(Box::pin(async move {
+                        let _guard = guard;
                         tokio::select! {
                             biased;
                             () = response.closed() => {},
@@ -1106,10 +1169,14 @@ impl DirectoryCache {
                     self.create_symlink(dest_path, symlink).await.map(|()| 0)
                 }));
             }
-            total_size += futures::stream::iter(node_futures)
+            let children = futures::stream::iter(node_futures)
                 .buffer_unordered(CONSTRUCT_DIRECTORY_CONCURRENCY)
                 .try_fold(0u64, |acc, size| async move { Ok(acc + size) })
-                .await?;
+                .await;
+            // An error drops sibling receivers; wait until their queued work
+            // and all descendants have actually stopped before cleanup.
+            scope.wait().await;
+            total_size += children?;
 
             Ok(total_size)
         })
@@ -1618,6 +1685,22 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[nativelink_test]
+    async fn work_scope_waits_for_cancelled_descendants() {
+        let root = DirectoryWorkScope::new(None);
+        let child = DirectoryWorkScope::new(Some(root.clone()));
+        let child_job = root.register();
+        let descendant_job = child.register();
+
+        drop(child_job);
+        assert!(futures::poll!(root.wait()).is_pending());
+        assert!(futures::poll!(child.wait()).is_pending());
+
+        drop(descendant_job);
+        root.wait().await;
+        child.wait().await;
+    }
 
     /// Builds a `FastSlowStore` whose fast tier is a real `FilesystemStore`
     /// and whose slow tier is a `MemoryStore` — the same shape the worker
