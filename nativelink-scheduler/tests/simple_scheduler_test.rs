@@ -3409,6 +3409,98 @@ async fn wait_execution_rejoin_past_the_client_timeout_finds_the_action_live() -
     Ok(())
 }
 
+/// RFC-0064 `action-retention-tied-to-real-listeners/05`: once the action
+/// has completed, a `WaitExecution` by the client's id gets the result for
+/// the retention window and nothing after it, the same on both backends.
+#[nativelink_test]
+async fn wait_execution_after_completion_answers_for_the_retention_window() -> Result<(), Error> {
+    const RETAIN_S: u64 = 60;
+    for backend in Backend::ALL {
+        for (after_s, kept) in [
+            (0, true),
+            (RETAIN_S - 1, true),
+            (RETAIN_S + 1, false),
+            (RETAIN_S * 10, false),
+        ] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    retain_completed_for_s: u32::try_from(RETAIN_S).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let worker_id = WorkerId("worker_id".to_string());
+            let mut rx_from_worker =
+                setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default())
+                    .await?;
+            let mut action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([97u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            let Some(update_for_worker::Update::StartAction(start_execute)) =
+                rx_from_worker.recv().await.unwrap().update
+            else {
+                panic!("{backend:?}: expected StartAction");
+            };
+            let result = ActionResult {
+                exit_code: 3,
+                ..ActionResult::default()
+            };
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &OperationId::from(start_execute.operation_id),
+                    UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                        result.clone(),
+                    )),
+                )
+                .await?;
+            while !matches!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Completed(_)
+            ) {}
+            drop(action_listener);
+
+            MockClock::advance(Duration::from_secs(after_s));
+            let found = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await;
+            match (found, kept) {
+                (Some(rejoined), true) => {
+                    let stage = rejoined.as_state().await?.0.stage.clone();
+                    assert_eq!(
+                        stage,
+                        ActionStage::Completed(result),
+                        "{backend:?}, {after_s} s after completion"
+                    );
+                }
+                (None, false) => {}
+                (found, kept) => panic!(
+                    "{backend:?}, {after_s} s after completion: expected kept={kept}, found={}",
+                    found.is_some()
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn logs_when_no_workers_match() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
