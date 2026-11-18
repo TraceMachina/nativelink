@@ -27,6 +27,7 @@ fn class(name: &str, cpu_count: u64, memory_kb: u64, disk_kb: u64) -> SizeClassS
         cpu_count,
         memory_kb,
         disk_kb,
+        gpu_count: 0,
     }
 }
 

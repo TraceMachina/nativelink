@@ -266,6 +266,19 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
+A class may also carry `gpu_count`, written to `gpu_property_name` on the
+scale the workers advertise: whole devices, or shares of one where a fleet
+counts a device in parts. Workers do not measure what an action used of a
+device, so a GPU reservation is stated and never learned. It is not part of
+the sketch and plays no part in choosing a class for a measured action.
+While the hints file sizes actions, an entry states it directly with
+`gpu_count` or through the class it names. In either mode the class the
+cold-start rules name for an action supplies it, and goes on supplying it
+after the action's CPU and memory have been learned. A learning scheduler
+does not seed a `gpu_count` from the hints file and logs a warning when the
+file states one. A value the client sent is never lowered, and a class rule
+fills the property only when it is absent.
+
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The
 **512 MiB default** holds roughly 55,000 target keys plus mnemonic and command

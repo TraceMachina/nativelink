@@ -834,6 +834,10 @@ fn default_disk_property_name_for_hints() -> String {
     "disk_kb".to_string()
 }
 
+fn default_gpu_property_name_for_hints() -> String {
+    "gpu_count".to_string()
+}
+
 /// A named point on the fleet's size ladder. List them ascending; each
 /// should dominate the one before on every dimension it names. A zero
 /// leaves that dimension alone.
@@ -855,6 +859,17 @@ pub struct SizeClassSpec {
     /// Value for `disk_property_name`, in KiB.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub disk_kb: u64,
+
+    /// Value for `gpu_property_name`, on the scale the workers advertise:
+    /// whole devices, or shares of one where a fleet counts a device in
+    /// parts. Unlike the dimensions above it is never measured, so it is
+    /// not part of what the scheduler learns and plays no part in choosing
+    /// a class for a measured action. It reaches an action two ways: a
+    /// hints-file entry that names this class, or one of the rules that
+    /// pick a class for an action (`class_by_mnemonic`, `class_by_timeout`,
+    /// `default_class`).
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub gpu_count: u64,
 }
 
 /// A class for actions whose timeout is at least `min_timeout_s`. Bazel's
@@ -1005,6 +1020,25 @@ pub struct HistoricalResourceSpec {
         deserialize_with = "convert_string_with_shellexpand"
     )]
     pub disk_property_name: String,
+
+    /// Platform property name used for GPU minimums, on the scale the
+    /// workers advertise. Declared as `minimum` on the nested scheduler,
+    /// like the CPU name.
+    ///
+    /// A GPU reservation is stated, never learned: workers do not measure
+    /// what an action used of a device. It comes from a hints-file entry
+    /// carrying `gpu_count` (or naming a class that does) while the file is
+    /// what sizes actions, and otherwise from the class the cold-start
+    /// rules name for the action, which is applied even when the other
+    /// dimensions were learned. A value the client sent is never lowered,
+    /// and a class rule fills the property only when it is absent. With
+    /// `learn_from_workers`, a `gpu_count` in the hints file is not seeded.
+    /// Default: `gpu_count`
+    #[serde(
+        default = "default_gpu_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub gpu_property_name: String,
 
     /// The fleet's size ladder. A hint may name a `class` instead of
     /// numbers, and the cold-start policy below picks one for actions no
