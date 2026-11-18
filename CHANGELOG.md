@@ -3,6 +3,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0](https://github.com/TraceMachina/nativelink/compare/v1.8.3..v1.9.0) - 2026-11-18
+
+### ⛰️  Features
+
+- External store providers: the `external` store spec and a provider registry in `nativelink-store`, so a distribution that links additional store implementations can register them at startup; the stock binary refuses an `external` spec naming the unknown provider and the registered set
+- The server became the `nativelink` library (`nativelink::run()`), with the binary as a thin wrapper, so an embedding distribution registers its store providers and runs the stock server unchanged
+
 ## [1.8.3](https://github.com/TraceMachina/nativelink/compare/v1.8.2..v1.8.3) - 2026-10-28
 
 
