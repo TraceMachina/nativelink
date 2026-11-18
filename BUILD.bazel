@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(
@@ -10,11 +10,15 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-rust_binary(
-    name = "nativelink",
+# The server as a library, so a distribution that registers extensions
+# (external store providers, say) links this and wraps `nativelink::run`.
+rust_library(
+    name = "nativelink_lib",
     srcs = [
-        "src/bin/nativelink.rs",
+        "src/lib.rs",
     ],
+    crate_name = "nativelink",
+    visibility = ["//visibility:public"],
     deps = [
         "//nativelink-config",
         "//nativelink-error",
@@ -37,6 +41,16 @@ rust_binary(
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:tracing",
+    ],
+)
+
+rust_binary(
+    name = "nativelink",
+    srcs = [
+        "src/bin/nativelink.rs",
+    ],
+    deps = [
+        ":nativelink_lib",
     ],
 )
 
