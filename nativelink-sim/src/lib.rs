@@ -40,5 +40,5 @@ pub use clock::SimClock;
 pub use nativelink_redis_tester::Fault;
 pub use net::Link;
 pub use scenario::{Expect, Report, Scenario, Step};
-pub use trace::{Event, Outcome, Record, Stage};
+pub use trace::{Event, Outcome, Record, Rejoin, Stage};
 pub use world::{Backend, WorkerSpec};
