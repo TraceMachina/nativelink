@@ -28,14 +28,17 @@ repository.
   <Tab value="Linux (Docker)">
 
 ```bash
-# Grab a known-good basic configuration
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+# Look up the newest release tag, such as vX.Y.Z
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 
-# Run the official image
+# Grab a known-good basic configuration, then run the official image
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 The image is multi-arch: x86_64 and ARM64 both run natively (use
@@ -47,9 +50,12 @@ listening on `localhost:50051`.
   <Tab value="macOS / Linux (Nix)">
 
 ```bash
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/basic_cas.json5
-
-nix run github:TraceMachina/nativelink/v1.6.5 ./basic_cas.json5
+# Look up the newest release tag, such as vX.Y.Z
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
+nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} ./basic_cas.json5
 ```
 
 Slower than the prebuilt image because it builds from source, but works on
@@ -71,14 +77,22 @@ runs natively on Apple Silicon.
   <Tab value="Windows (Docker)">
 
 ```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5" `
-  -OutFile "basic_cas.json5"
+# Look up the newest release tag, such as vX.Y.Z
+$NATIVELINK_VERSION = (Invoke-RestMethod `
+  "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
-docker run `
-  -v ${PWD}/basic_cas.json5:/config `
-  -p 50051:50051 `
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+if (-not $NATIVELINK_VERSION) {
+  Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
+} else {
+  Invoke-WebRequest -ErrorAction Stop `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
+    -OutFile "basic_cas.json5"
+
+  docker run `
+    -v ${PWD}/basic_cas.json5:/config `
+    -p 50051:50051 `
+    "ghcr.io/tracemachina/nativelink:$NATIVELINK_VERSION" config
+}
 ```
 
 The image is a Linux image published for x86_64 and ARM64, so Docker
@@ -88,6 +102,12 @@ instructions above works too.
   </Tab>
 
 </Tabs>
+
+<Callout type="info" title="Pin a version in production">
+  These commands look up the newest release each time they run, which keeps
+  a first try current. Production is different: pin an exact tag and upgrade
+  on purpose. See [Container registry](/getting-started/shared-cache#container-registry).
+</Callout>
 
 ## Verify it's running [#verify-its-running]
 

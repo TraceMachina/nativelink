@@ -98,13 +98,27 @@ each independently.
 
 ## Container registry [#container-registry]
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release and pull it:
 
 ```bash
-docker pull ghcr.io/tracemachina/nativelink:v1.6.5
+# Look up the newest release tag, such as vX.Y.Z
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+docker pull ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} &&
+echo "${NATIVELINK_VERSION}"
 ```
+
+<Callout type="warn" title="Pin an exact tag in production">
+  Looking up the newest release is fine for trying NativeLink out. We don't
+  recommend it for production: a deploy that resolves "latest" can pick up a
+  new release, with new defaults or breaking changes, without anyone
+  choosing to upgrade. Write the exact tag that command printed into your
+  deployment manifests, and move to a newer one deliberately with
+  [Upgrade versions](/how-to/upgrade-versions).
+</Callout>
 
 The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 page lists every published tag.
