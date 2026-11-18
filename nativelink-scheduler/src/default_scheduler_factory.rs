@@ -308,11 +308,7 @@ async fn simple_scheduler_factory(
                 // Same normalisation SimpleScheduler applies, so the
                 // keepalive stops being kept exactly when the timeout that
                 // reads it comes due.
-                if spec.client_action_timeout_s == 0 {
-                    crate::simple_scheduler::DEFAULT_CLIENT_ACTION_TIMEOUT_S
-                } else {
-                    spec.client_action_timeout_s
-                },
+                client_action_timeout_s(spec.client_action_timeout_s),
                 spec.enable_active_action_count_metric,
             )
             .await
@@ -335,6 +331,17 @@ async fn simple_scheduler_factory(
 pub const fn retain_completed_for_s(configured: u32) -> u32 {
     if configured == 0 {
         DEFAULT_RETAIN_COMPLETED_FOR_S
+    } else {
+        configured
+    }
+}
+
+/// The client action timeout a configured value means: 0 is the default.
+/// The Redis db takes it as the keepalive key's TTL, where 0 would be an
+/// `EXPIRE 0` that deletes the keepalive as it is written.
+pub const fn client_action_timeout_s(configured: u64) -> u64 {
+    if configured == 0 {
+        crate::simple_scheduler::DEFAULT_CLIENT_ACTION_TIMEOUT_S
     } else {
         configured
     }

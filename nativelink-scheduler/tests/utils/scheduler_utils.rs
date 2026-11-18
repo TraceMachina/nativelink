@@ -28,7 +28,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     UpdateForWorker, update_for_worker,
 };
 use nativelink_redis_tester::FakeRedisBackend;
-use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
+use nativelink_scheduler::default_scheduler_factory::{
+    client_action_timeout_s, memory_awaited_action_db_factory, retain_completed_for_s,
+};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -38,6 +40,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use mock_instant::thread_local::MockClock;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::origin_event::OriginMetadata;
@@ -293,6 +296,9 @@ pub(crate) async fn scheduler_on(
         }
         Backend::FakeRedis => {
             let fake_redis: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+            // Keys expire on the test's clock, as records do on the memory
+            // backend.
+            fake_redis.set_clock(MockClock::time);
             let port = fake_redis.clone().run().await;
             let store = RedisStore::new_standard(RedisSpec {
                 addresses: vec![format!("redis://127.0.0.1:{port}")],
@@ -306,8 +312,8 @@ pub(crate) async fn scheduler_on(
                 task_change_notify.clone(),
                 MockInstantWrapped::default,
                 OperationId::default,
-                spec.retain_completed_for_s,
-                spec.client_action_timeout_s,
+                retain_completed_for_s(spec.retain_completed_for_s),
+                client_action_timeout_s(spec.client_action_timeout_s),
                 false,
             )
             .await?;

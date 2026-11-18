@@ -3096,12 +3096,14 @@ name = "nativelink-redis-tester"
 version = "1.8.6"
 dependencies = [
  "either",
+ "nativelink-macro",
  "nativelink-util",
  "redis",
  "redis-protocol",
  "redis-test",
  "tokio",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
