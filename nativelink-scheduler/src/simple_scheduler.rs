@@ -1465,11 +1465,27 @@ impl SimpleScheduler {
                                     )
                                     .await;
                             }
-                            if report.retired + report.requeued + report.failed > 0 {
+                            for (worker_id, operation_id) in &report.results_written {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, true)
+                                    .await;
+                            }
+                            for (worker_id, operation_id) in &report.results_stale {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, false)
+                                    .await;
+                            }
+                            if report.retired
+                                + report.requeued
+                                + report.failed
+                                + report.results_written.len() as u64
+                                > 0
+                            {
                                 info!(
                                     retired = report.retired,
                                     requeued = report.requeued,
                                     failed = report.failed,
+                                    results_written = report.results_written.len(),
                                     "Executing sweep"
                                 );
                             }

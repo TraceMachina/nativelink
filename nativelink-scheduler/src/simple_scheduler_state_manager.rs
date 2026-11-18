@@ -60,6 +60,17 @@ pub struct SweptAttempt {
     pub detail: String,
 }
 
+/// What the worker scheduler knows of an executing operation's worker.
+#[derive(Debug, Clone)]
+pub enum OnWorker {
+    /// The worker runs it.
+    Running,
+    /// The worker no longer runs it, and no result of it is held.
+    NotRunning,
+    /// The worker sent this result and the store refused it.
+    ResultHeld(Box<ActionStage>),
+}
+
 /// What one executing sweep did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExecutingSweepReport {
@@ -74,6 +85,11 @@ pub struct ExecutingSweepReport {
     pub ages: AgeBuckets,
     /// The attempts it retired or requeued.
     pub ended: Vec<SweptAttempt>,
+    /// Held results it wrote, which completed their action.
+    pub results_written: Vec<(WorkerId, OperationId)>,
+    /// Held results the record had moved past (another worker took the
+    /// action, or it ended); there is nothing left to write them to.
+    pub results_stale: Vec<(WorkerId, OperationId)>,
 }
 
 /// Why the scheduler times out an executing action.
@@ -675,15 +691,18 @@ where
     ///   moment between the store write of an assignment and the dispatch
     ///   that follows it. `lost_since` carries the first sighting between
     ///   sweeps and is pruned of actions no longer in that state.
+    /// - an action whose result the worker sent and the store refused, and
+    ///   which this scheduler still holds, gets that result written, so the
+    ///   action completes as it would have and is not run again.
     ///
     /// `running_on_worker` answers `None` for a worker this scheduler is not
-    /// connected to: a peer's worker, or one already gone, which the
-    /// timeout path handles. A record the listing names but cannot read is
-    /// skipped, so one bad entry does not stop the sweep.
+    /// connected to and holds no result of: a peer's worker, or one already
+    /// gone, which the timeout path handles. A record the listing names but
+    /// cannot read is skipped, so one bad entry does not stop the sweep.
     pub async fn sweep_executing_actions(
         &self,
         running_on_worker: &(
-             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<bool>> + Send + Sync
+             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<OnWorker>> + Send + Sync
          ),
         lost_since: &mut HashMap<OperationId, SystemTime>,
         lost_grace: Duration,
@@ -767,7 +786,43 @@ where
             {
                 continue;
             }
-            if running_on_worker(worker_id.clone(), operation_id.clone()).await == Some(false) {
+            let on_worker = running_on_worker(worker_id.clone(), operation_id.clone()).await;
+            if let Some(OnWorker::ResultHeld(stage)) = on_worker {
+                // The record is still the attempt the result came from, so
+                // the result completes it now as it would have then. A
+                // conflict means it has moved on, and the result with it.
+                match self
+                    .inner_update_operation(
+                        &operation_id,
+                        Some(worker_id),
+                        None,
+                        UpdateOperationType::UpdateWithActionStage(*stage),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        info!(
+                            %operation_id,
+                            ?worker_id,
+                            "Wrote a result the store had refused; the action is not run again"
+                        );
+                        report
+                            .results_written
+                            .push((worker_id.clone(), operation_id.clone()));
+                    }
+                    Err(err) if err.code == Code::Aborted => {
+                        report
+                            .results_stale
+                            .push((worker_id.clone(), operation_id.clone()));
+                    }
+                    Err(err) => {
+                        warn!(%operation_id, ?err, "Could not write a held result; the next sweep tries again");
+                        report.failed += 1;
+                    }
+                }
+                continue;
+            }
+            if matches!(on_worker, Some(OnWorker::NotRunning)) {
                 let first_seen = *lost_since.get(&operation_id).unwrap_or(&now);
                 if now
                     .duration_since(first_seen)

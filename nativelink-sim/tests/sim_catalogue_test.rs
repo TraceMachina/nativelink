@@ -327,6 +327,30 @@ fn clock_jumps_an_hour() -> Result<(), Error> {
     Ok(())
 }
 
+/// Refused for the update's whole budget, the result was thrown away: the
+/// executing sweep found the record still Executing on a worker that no
+/// longer ran it and requeued the action, which ran a second time and spent
+/// one of its retries. The scheduler now keeps the refused result and the
+/// sweep writes it, so the action runs once.
+#[test]
+fn result_write_refused_past_the_update_budget() -> Result<(), Error> {
+    let reports = Scenario::new("result-write-refused-past-budget", 29)
+        // Production's interval; the derived default leaves the sweep off.
+        .spec(|spec| spec.executing_sweep_interval_s = 30)
+        .workers(1, WorkerSpec::default())
+        .at(0, Step::execute("c1", Action::new(1).run_ms(3_000)))
+        .at(
+            2_990,
+            Step::redis_fail("EVALSHA", Fault::Error("refused".into()), 5),
+        )
+        .settle(Duration::from_mins(3))
+        .run()?;
+    for r in &reports {
+        assert_eq!(executions(r, "a1"), 1, "{:?}", r.backend);
+    }
+    Ok(())
+}
+
 /// The review expected the refused result to spend an attempt (I7). It
 /// spends nothing: a full server's `OOM` is retried within the update's
 /// budget, so three refusals cost three backoffs and the result lands.
