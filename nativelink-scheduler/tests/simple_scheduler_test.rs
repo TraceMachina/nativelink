@@ -3501,6 +3501,61 @@ async fn wait_execution_after_completion_answers_for_the_retention_window() -> R
     Ok(())
 }
 
+/// RFC-0064 `action-retention-tied-to-real-listeners/04`: the client
+/// keepalive key carries the client timeout as its TTL and every refresh
+/// renews it, so a keepalive never outlives the decision it informs and a
+/// waiting client's never runs out.
+#[nativelink_test]
+async fn the_client_keepalive_key_expires_with_the_client_timeout() -> Result<(), Error> {
+    for timeout_s in [30, 3_600] {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(
+            Backend::FakeRedis,
+            &SimpleSpec {
+                client_action_timeout_s: timeout_s,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let fake = fake_redis.expect("the fake Redis backend");
+        let mut action_listener = setup_action(
+            &scheduler,
+            DigestInfo::new([96u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let keepalive = || {
+            let (key, seconds) = fake
+                .expiries
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key.starts_with("ck_"))
+                .map(|(key, seconds)| (key.clone(), *seconds))
+                .expect("the client's keepalive was written");
+            let left = fake.time_to_live(&key);
+            (key, seconds, left)
+        };
+
+        // A waiting client refreshes its keepalive once it is ten seconds
+        // old; the listener does that on its way to waiting for a change.
+        let full = Duration::from_secs(timeout_s);
+        for refresh in 0..2 {
+            MockClock::advance(Duration::from_secs(11));
+            drop(tokio::time::timeout(Duration::from_millis(200), action_listener.changed()).await);
+            let (key, seconds, left) = keepalive();
+            assert_eq!(seconds, i64::try_from(timeout_s).unwrap(), "{key}, refresh {refresh}");
+            assert_eq!(left, Some(full), "{key}: refresh {refresh} renews the whole TTL");
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn logs_when_no_workers_match() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
