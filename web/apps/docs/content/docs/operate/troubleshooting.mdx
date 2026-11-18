@@ -27,6 +27,7 @@ than the diagnosis, go to [Runbooks](/operate/runbooks).
 | --- | --- | --- |
 | Build hangs, no action ever starts, no error | Platform property *value* mismatch | [Actions queue forever](#actions-queue-forever-and-workers-sit-idle) |
 | `Unknown platform property '<name>'` immediately | Property *name* missing from the scheduler's `supported_platform_properties` | [The name/value asymmetry](#actions-queue-forever-and-workers-sit-idle) |
+| An action re-runs that should have hit, and nothing explains why | Misses are not logged at the default level | [Debugging action-cache misses](/operate/observability#debugging-action-cache-misses) |
 | `FAILED_PRECONDITION` mentioning fast or slow store | Workers do not share CAS storage | [Actions fail with a CAS miss](#actions-fail-with-a-cas-miss) |
 | `not found in filesystem store ... evicted due to cache pressure` | `max_bytes` too small | [Actions fail with a CAS miss](#actions-fail-with-a-cas-miss) |
 | Action fails with exit code 9 | Child process killed by a signal, usually the OOM killer | [Runbooks: OOM](/operate/runbooks#a-worker-is-oom-killed) |

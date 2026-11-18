@@ -21,14 +21,28 @@ use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, event, request_event, response_event, stream_event,
 };
+use opentelemetry::Context;
+use opentelemetry::baggage::BaggageExt;
 use prost::Message;
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tracing::Level;
+
+use crate::common::DigestInfo;
+use crate::digest_hasher::DigestHasherFunc;
 
 static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
 
 /// Custom OpenTelemetry baggage key used to carry Bazel `RequestMetadata`.
 pub const BAZEL_METADATA_KEY: &str = "bazel.metadata";
+
+/// Tracing target for action-cache miss diagnostics.
+///
+/// Misses are the common case on a cold cache, so these events are emitted at
+/// `DEBUG` and are dropped by the default `RUST_LOG=info` filter. Enable them
+/// on their own, without raising every other module, with
+/// `RUST_LOG=info,nativelink::cache_miss=debug`.
+pub const CACHE_MISS_TARGET: &str = "nativelink::cache_miss";
 
 #[must_use]
 pub fn request_metadata_to_baggage(metadata: &RequestMetadata) -> String {
@@ -40,6 +54,56 @@ pub fn request_metadata_from_baggage(value: &str) -> Result<RequestMetadata, Err
         .decode(value.as_bytes())
         .map_err(Error::from)?;
     RequestMetadata::decode(&*decoded).map_err(Error::from)
+}
+
+/// Bazel `RequestMetadata` carried in the current OpenTelemetry context, if
+/// the client sent the `requestmetadata-bin` header and the middleware put it
+/// into baggage under [`BAZEL_METADATA_KEY`].
+#[must_use]
+pub fn bazel_request_metadata_from_current_context() -> Option<RequestMetadata> {
+    Context::current()
+        .baggage()
+        .get(BAZEL_METADATA_KEY)
+        .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())
+}
+
+/// Records an action-cache lookup that found nothing.
+///
+/// Emitted at `DEBUG` on [`CACHE_MISS_TARGET`] with the instance name, digest
+/// function and action digest, plus whatever Bazel `RequestMetadata` the
+/// client sent (tool invocation id, target, mnemonic, configuration), so a
+/// miss can be joined back to the build that produced it. Cheap when the
+/// target is disabled: the baggage decode only runs behind
+/// `tracing::enabled!`.
+pub fn record_action_cache_miss(
+    source: &'static str,
+    instance_name: &str,
+    digest_function: DigestHasherFunc,
+    action_digest: DigestInfo,
+) {
+    if !tracing::enabled!(target: CACHE_MISS_TARGET, Level::DEBUG) {
+        return;
+    }
+    let metadata = bazel_request_metadata_from_current_context().unwrap_or_default();
+    let tool_name = metadata
+        .tool_details
+        .as_ref()
+        .map(|details| details.tool_name.as_str())
+        .unwrap_or_default();
+    tracing::debug!(
+        target: CACHE_MISS_TARGET,
+        source,
+        instance_name,
+        digest_function = ?digest_function,
+        action_digest = %action_digest,
+        tool_name,
+        tool_invocation_id = %metadata.tool_invocation_id,
+        correlated_invocations_id = %metadata.correlated_invocations_id,
+        target_id = %metadata.target_id,
+        action_mnemonic = %metadata.action_mnemonic,
+        configuration_id = %metadata.configuration_id,
+        "Action cache miss"
+    );
 }
 
 /// Returns a unique ID for the given event.

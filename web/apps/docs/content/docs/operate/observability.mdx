@@ -109,7 +109,7 @@ The rest of the surface is small enough to state in full:
 | `OTEL_EXPORTER_OTLP_CLIENT_KEY` | unset | Path to the PEM private key for that certificate. |
 | `OTEL_EXPORTER_OTLP_COMPRESSION` | unset | `gzip` or `zstd` on the gRPC exporters; the shipped Kubernetes manifests set `zstd`. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often metrics flush. NativeLink sets no interval, so the SDK default of one minute applies. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference#the-reaction-time-budget); lower it to 10000 before you scale on anything. |
-| `RUST_LOG` | `info` | Applies to the stdout layer **and** to all three OTLP layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled. |
+| `RUST_LOG` | `info` | Applies to the stdout layer **and** to all three OTLP layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled. The one target worth raising on its own is `nativelink::cache_miss`; see [Debugging action-cache misses](#debugging-action-cache-misses). |
 | `NL_LOG` | `pretty` | Stdout log format. `compact` and `json` are recognised; any other value silently falls back to `pretty`. |
 
 The complete list, including the variables the config file expands and the ones
@@ -303,6 +303,55 @@ wrapper's default `allow_remove: false`; it does not prove the entry is absent.
 Enable removal only for disposable tiers as described under
 [cache composition](/how-to/stores/compose-stores#cache_metrics--measure-one-layer).
 
+## Debugging action-cache misses [#debugging-action-cache-misses]
+
+Hit rate tells you the miss rate moved. It does not tell you which action
+missed or why. For that there is a dedicated log target, off by default
+because a miss is the common case on a cold cache:
+
+```bash
+RUST_LOG=info,nativelink::cache_miss=debug nativelink /path/to/config.json5
+```
+
+That directive raises only the miss target. Everything else stays at `info`,
+so the per-request dump the AC service's own span produces at `debug` is
+not turned on with it. The same filter feeds the OTLP log layer, so the lines
+also reach your collector when it is enabled.
+
+Four things write to the target, and together they answer the question a
+miss raises:
+
+| Line | Emitted by | What it tells you |
+| --- | --- | --- |
+| `Action cache miss` with `source="ac_server"` | The AC service, on a `GetActionResult` that found nothing | A cache-only client asked and the entry was not there |
+| `Action cache miss` with `source="cache_lookup_scheduler"` | The scheduler, before it queues an action for execution | A remote-execution client's lookup missed and the action will run |
+| `Not writing action result to the action cache` | The worker, when `upload_ac_results_strategy` says not to | The next lookup will miss because the result was never written; the line carries the exit code and the strategy |
+| `Action result incomplete: an output is not in the CAS` | A `completeness_checking` store | The entry existed but an output blob was evicted; the line names the missing digest |
+
+Every miss line carries the instance name, the digest function and the
+action digest. If the client sent Bazel's request metadata header, which
+Bazel does by default, it also carries the tool name, the invocation id,
+the correlated invocations id, the target, the mnemonic and the
+configuration id, so a miss can be joined back to the build that produced
+it:
+
+```text
+DEBUG nativelink::cache_miss: Action cache miss source="ac_server" instance_name="main"
+  digest_function=Sha256 action_digest=3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b-142
+  tool_name="bazel" tool_invocation_id=2f1c9b8e-... correlated_invocations_id=
+  target_id=//src:main action_mnemonic=CppCompile configuration_id=4e1a...
+```
+
+Two limits worth knowing. A `grpc` store in front of another NativeLink
+hands the lookup to that process before the miss branch runs, so the line
+appears in the upstream process's log, not this one. And the target records
+what the server saw; whether the client's digest should have matched an
+earlier one is a question for the client's execution log, which
+[Verify your cache](/getting-started/verify-your-cache#getting-more-detail-than-the-summary-line)
+covers.
+
+<SourceLink file="nativelink-util/src/origin_event.rs" symbol="record_action_cache_miss" />
+
 ## Which metrics exist [#which-metrics-exist]
 
 The authority is the [metrics reference](/reference/metrics), which is
@@ -481,6 +530,7 @@ not your pipeline.
 | No metrics anywhere, process healthy | Nothing is pushing; check `otelcol_receiver_accepted_metric_points` on `:8888` | Verify the endpoint and that it is set on the process you are looking for |
 | Metrics appear a minute late | `OTEL_METRIC_EXPORT_INTERVAL` defaults to 60 s | Set `10000` |
 | `nativelink_execution_*` present, `nativelink_cache_*` missing | No store is wrapped | [Turn on cache metrics](#turn-on-cache-metrics) |
+| Builds re-execute actions you expected to hit, hit rate says nothing | Misses are not logged at the default level | [Debugging action-cache misses](#debugging-action-cache-misses) |
 | Metrics exist under names with no `nativelink_` prefix | They came through an OTLP receiver that adds no namespace (the shipped collector's `otlphttp/prometheus` pipeline does this alongside the scrape path) | [Skip the collector](#what-happens-if-you-skip-the-collector) |
 | No execution or worker metrics, cache metrics fine | The collector endpoint is set on the CAS but not on the scheduler process | Set `NL_OTEL_ENDPOINT` on the scheduler; those families are emitted from it alone |
 | `nativelink_worker_*` or `nativelink_rpc_*` series missing entirely | The binary is older than the release these families were added in | Upgrade to v1.6.5; the [metrics reference](/reference/metrics#every-instrument-at-a-glance) is generated from the version it names |

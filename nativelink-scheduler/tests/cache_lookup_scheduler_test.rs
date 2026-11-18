@@ -27,7 +27,9 @@ use nativelink_config::stores::MemorySpec;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
-use nativelink_proto::build::bazel::remote::execution::v2::ActionResult as ProtoActionResult;
+use nativelink_proto::build::bazel::remote::execution::v2::{
+    ActionResult as ProtoActionResult, RequestMetadata,
+};
 use nativelink_scheduler::cache_lookup_scheduler::CacheLookupScheduler;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_store::memory_store::MemoryStore;
@@ -38,9 +40,13 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
+use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
 use nativelink_util::store_trait::{
     RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tokio::sync::watch;
@@ -158,6 +164,61 @@ async fn different_invocations_share_completed_cache_results() -> Result<(), Err
         assert_eq!(state.action_digest, action_info.digest());
         assert_eq!(state.stage, ActionStage::CompletedFromCache(result.clone()));
     }
+    // A hit must never be reported as a miss.
+    assert!(!logs_contain("Action cache miss"));
+    Ok(())
+}
+
+/// An empty AC is the ordinary miss: the action is forwarded for execution,
+/// and the miss is recorded on the cache-miss target with the lookup key and
+/// the Bazel request metadata the client sent, so an operator can join it
+/// back to the build.
+#[nativelink_test]
+async fn add_action_cache_miss_logs_event() -> Result<(), Error> {
+    let context = make_cache_scheduler()?;
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::new([42; 32], 123));
+    let (_forward_watch_channel_tx, forward_watch_channel_rx) =
+        watch::channel(Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest: action_info.unique_qualifier.digest(),
+            last_transition_timestamp: SystemTime::now(),
+        }));
+    let request_metadata = RequestMetadata {
+        tool_invocation_id: "inv-1".to_string(),
+        target_id: "//pkg:t".to_string(),
+        action_mnemonic: "CppCompile".to_string(),
+        ..Default::default()
+    };
+    let otel_context = Context::current_with_baggage(vec![KeyValue::new(
+        BAZEL_METADATA_KEY,
+        request_metadata_to_baggage(&request_metadata),
+    )]);
+    let client_operation_id = OperationId::default();
+    let (add_result, _) = join!(
+        context
+            .cache_scheduler
+            .add_action(client_operation_id.clone(), action_info.clone())
+            .with_context(otel_context),
+        context
+            .mock_scheduler
+            .expect_add_action(Ok(Box::new(TokioWatchActionStateResult::new(
+                client_operation_id,
+                action_info.clone(),
+                forward_watch_channel_rx
+            ))))
+    );
+    add_result?;
+
+    assert!(logs_contain("Action cache miss"));
+    assert!(logs_contain("source=\"cache_lookup_scheduler\""));
+    assert!(logs_contain(&format!(
+        "action_digest={}",
+        action_info.unique_qualifier.digest()
+    )));
+    assert!(logs_contain("tool_invocation_id=inv-1"));
+    assert!(logs_contain("target_id=//pkg:t"));
+    assert!(logs_contain("action_mnemonic=CppCompile"));
     Ok(())
 }
 
@@ -227,6 +288,11 @@ async fn ac_fault_falls_through_to_execution() -> Result<(), Error> {
         ))))
     );
     add_result.expect("AC backend fault must fall through to execution, not fail the client");
+    // A backend fault is not a miss: it is warned about, not recorded as one.
+    assert!(!logs_contain("Action cache miss"));
+    assert!(logs_contain(
+        "Cache lookup failed; falling through to execution"
+    ));
     Ok(())
 }
 

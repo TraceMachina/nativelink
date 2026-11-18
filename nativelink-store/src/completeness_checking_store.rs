@@ -28,13 +28,25 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
+use nativelink_util::origin_event::CACHE_MISS_TARGET;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
+use tracing::debug;
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
+
+/// Renders a store key for the cache-miss target the way the other miss
+/// lines render digests (`hash-size`), without the `Digest: ` prefix that
+/// `StoreKey`'s `Display` adds.
+fn key_for_log(key: &StoreKey<'_>) -> String {
+    match key {
+        StoreKey::Digest(digest) => digest.to_string(),
+        StoreKey::Str(s) => s.to_string(),
+    }
+}
 
 /// Given a proto action result, return all relevant digests and
 /// output directories that need to be checked.
@@ -277,14 +289,25 @@ impl CompletenessCheckingStore {
                     .err_tip(
                         || "Error calling has_with_results() inside CompletenessCheckingStore::has",
                     )?;
-                let missed_indexes = has_results
-                    .iter()
-                    .zip(indexes)
-                    .filter_map(|(r, index)| r.map_or_else(|| Some(index), |_| None));
                 {
                     let mut state = state_mux.lock();
-                    for index in missed_indexes {
-                        state.results[index] = None;
+                    for ((has_result, digest), index) in
+                        has_results.iter().zip(&digests).zip(indexes)
+                    {
+                        if has_result.is_some() {
+                            continue;
+                        }
+                        // `take()` only yields `Some` on the first missing
+                        // output for an action result, so this logs once per
+                        // incomplete entry rather than once per missing blob.
+                        if state.results[index].take().is_some() {
+                            debug!(
+                                target: CACHE_MISS_TARGET,
+                                action_result = %key_for_log(&action_result_digests[index]),
+                                missing_digest = %key_for_log(digest),
+                                "Action result incomplete: an output is not in the CAS"
+                            );
+                        }
                     }
                 }
             }
@@ -319,6 +342,12 @@ impl CompletenessCheckingStore {
                             if err.code != Code::NotFound {
                                 return Err(err);
                             }
+                            debug!(
+                                target: CACHE_MISS_TARGET,
+                                action_result = %key_for_log(&action_result_digests[i]),
+                                ?err,
+                                "Action result not found in the action cache, or its output tree could not be read"
+                            );
                             state_mux.lock().results[i] = None;
                         }
                         None => {
