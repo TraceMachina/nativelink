@@ -91,10 +91,12 @@ fn observe(rpc: &'static str) -> Seen {
 }
 
 /// Holds an action queued forever: the first `changed` hands out the queued
-/// state, later ones never resolve, as a scheduler with no free worker.
+/// state, later ones never resolve, as a scheduler with no free worker. With
+/// `lost` the later ones fail instead, as a scheduler that went away.
 struct QueuedForever {
     state: Arc<ActionState>,
     reported: bool,
+    lost: bool,
 }
 
 #[async_trait]
@@ -107,6 +109,9 @@ impl ActionStateResult for QueuedForever {
         if !self.reported {
             self.reported = true;
             return Ok((self.state.clone(), None));
+        }
+        if self.lost {
+            return Err(make_err!(Code::Internal, "the scheduler went away"));
         }
         futures::future::pending().await
     }
@@ -122,6 +127,8 @@ impl ActionStateResult for QueuedForever {
 struct RecordingScheduler {
     seen: Mutex<Vec<Seen>>,
     queued: Mutex<Option<Arc<ActionState>>>,
+    /// Ends every operation's stream with an error after its queued state.
+    lose_after_queued: bool,
 }
 
 impl RootMetricsComponent for RecordingScheduler {}
@@ -144,6 +151,7 @@ impl ClientStateManager for RecordingScheduler {
         Ok(Box::new(QueuedForever {
             state,
             reported: false,
+            lost: self.lose_after_queued,
         }))
     }
 
@@ -161,6 +169,7 @@ impl ClientStateManager for RecordingScheduler {
         let result: Box<dyn ActionStateResult> = Box::new(QueuedForever {
             state,
             reported: false,
+            lost: self.lose_after_queued,
         });
         Ok(stream::once(async move { result }).boxed())
     }
@@ -368,5 +377,84 @@ async fn grpc_scheduler_forwards_the_client_and_resolves_its_operation() -> Resu
         assert_eq!(call.identity.as_deref(), Some(IDENTITY), "{call:?}");
         assert_eq!(call.authorization.as_deref(), Some(TOKEN), "{call:?}");
     }
+    Ok(())
+}
+
+/// TRA-2102: when the upstream scheduler goes away mid-operation, the client
+/// of the forwarding server is told `Unavailable`, which it retries, not
+/// `Internal`, which it does not.
+#[nativelink_test]
+async fn grpc_scheduler_reports_a_lost_upstream_as_unavailable() -> Result<(), Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "main_cas",
+        store_factory(
+            &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action_digest = serialize_and_upload_message(
+        &Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(command_digest.into()),
+            ..Default::default()
+        },
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let upstream = Arc::new(RecordingScheduler {
+        lose_after_queued: true,
+        ..RecordingScheduler::default()
+    });
+    let port = serve_upstream(&store_manager, upstream).await?;
+    let scheduler = Arc::new(GrpcScheduler::new(&GrpcSpec {
+        endpoint: GrpcEndpoint {
+            address: format!("http://127.0.0.1:{port}"),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 0,
+            tcp_keepalive_s: 0,
+            http2_keepalive_interval_s: 0,
+            http2_keepalive_timeout_s: 0,
+        },
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 0,
+        forward_headers: vec![],
+    })?);
+    let front = make_execution_server(&store_manager, scheduler)?;
+
+    let mut execute_stream = front
+        .execute(Request::new(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: digest_function::Value::Sha256.into(),
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        }))
+        .await?
+        .into_inner();
+    let queued = execute_stream
+        .next()
+        .await
+        .expect("Execute streams the queued operation")?;
+    assert!(!queued.done);
+
+    let lost = execute_stream
+        .next()
+        .await
+        .expect("the stream reports the loss before it ends");
+    let status = lost.expect_err("the upstream went away");
+    assert_eq!(status.code(), Code::Unavailable, "{status:?}");
     Ok(())
 }
