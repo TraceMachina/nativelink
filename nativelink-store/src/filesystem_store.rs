@@ -31,6 +31,7 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
+use jiff::Timestamp;
 use nativelink_config::stores::FilesystemSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -901,8 +902,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
         } else {
             warn!(
                 %file_name,
-                atime = %humantime::format_rfc3339(atime),
-                anchor_time = %humantime::format_rfc3339(*anchor_time),
+                atime = %Timestamp::try_from(atime)?,
+                anchor_time = %Timestamp::try_from(*anchor_time)?,
                 "File access time newer than FilesystemStore start time",
             );
             Duration::ZERO
