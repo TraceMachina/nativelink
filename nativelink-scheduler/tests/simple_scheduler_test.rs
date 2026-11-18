@@ -39,6 +39,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
     KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
+use nativelink_redis_tester::FakeRedisBackend;
 use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -48,6 +49,7 @@ use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_fa
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::redis_store::RedisSubscriptionManager;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
     INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId,
@@ -3560,6 +3562,197 @@ async fn the_client_keepalive_key_expires_with_the_client_timeout() -> Result<()
                 "{key}: refresh {refresh} renews the whole TTL"
             );
         }
+    }
+    Ok(())
+}
+
+/// How many actions a listing of the queued stage returns, read as the
+/// matcher reads it: no client behind it.
+async fn queued_count(scheduler: &SimpleScheduler) -> Result<usize, Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        })
+        .await?;
+    let mut count = 0;
+    while queued.next().await.is_some() {
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Lists the queued stage with no client behind the listing, as the matcher
+/// and the admin listings do, and waits briefly on each result's change: an
+/// internal subscriber's `changed()` is where a keepalive could be written.
+async fn read_queued_as_the_scheduler_does(scheduler: &SimpleScheduler) -> Result<(), Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        })
+        .await?;
+    while let Some(mut result) = queued.next().await {
+        drop(tokio::time::timeout(Duration::from_millis(5), result.changed()).await);
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/01`: a client waiting
+/// passively by `WaitExecution` keeps its queued action for as long as it
+/// waits, past the client timeout; an action nobody waits on is retired one
+/// timeout and one sweep after its client left.
+#[nativelink_test]
+async fn a_passive_wait_execution_keeps_its_action_and_an_abandoned_one_goes() -> Result<(), Error>
+{
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                client_action_timeout_s: TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        // A is submitted and then waited on by name only, as a client does
+        // after its Execute stream broke.
+        let submitted = setup_action(
+            &scheduler,
+            DigestInfo::new([95u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let a_id = submitted.as_state().await?.0.client_operation_id.clone();
+        drop(submitted);
+        let mut a = scheduler
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(a_id),
+                ..Default::default()
+            })
+            .await?
+            .next()
+            .await
+            .expect("A is found by name");
+        // B is submitted and abandoned.
+        drop(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([94u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?,
+        );
+
+        let mut b_retired_at = None;
+        for second in 1..=120u64 {
+            MockClock::advance(Duration::from_secs(1));
+            // A's listener is polled as the server's response stream polls it.
+            if let Ok(changed) = tokio::time::timeout(Duration::from_millis(20), a.changed()).await
+            {
+                let stage = changed?.0.stage.clone();
+                assert!(
+                    !stage.is_finished(),
+                    "{backend:?}: A ended at {second} s: {stage:?}"
+                );
+            }
+            scheduler.do_try_match_for_test().await?;
+            scheduler.sweep_abandoned_queued_actions_for_test().await?;
+            if b_retired_at.is_none() && queued_count(&scheduler).await? == 1 {
+                b_retired_at = Some(second);
+            }
+        }
+        let retired_at = b_retired_at.expect("B is retired");
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at),
+            "{backend:?}: B retired at {retired_at} s"
+        );
+        assert_eq!(
+            queued_count(&scheduler).await?,
+            1,
+            "{backend:?}: A is still queued"
+        );
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/03`: the scheduler's
+/// own readers (queued listings, matching passes, the abandoned-queue sweep)
+/// never refresh a client's keepalive. An abandoned action is retired at the
+/// same second however often they read it, and on Redis its keepalive key
+/// is never rewritten after the client left.
+#[nativelink_test]
+async fn internal_readers_never_keep_an_abandoned_action_alive() -> Result<(), Error> {
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        let mut retired_at = Vec::new();
+        for reads_per_second in [0, 1, 60] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    client_action_timeout_s: TIMEOUT_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            drop(
+                setup_action(
+                    &scheduler,
+                    DigestInfo::new([93u8; 32], 512),
+                    HashMap::new(),
+                    make_system_time(1),
+                )
+                .await?,
+            );
+            let keepalive_key = |fake: &FakeRedisBackend<RedisSubscriptionManager>| {
+                let table = fake.table.lock().unwrap();
+                table
+                    .iter()
+                    .find(|(key, _)| key.starts_with("ck_"))
+                    .map(|(key, value)| (key.clone(), format!("{value:?}")))
+            };
+            let written_when_client_left = fake_redis.as_ref().and_then(keepalive_key);
+
+            let mut retired = None;
+            for second in 1..=60u64 {
+                MockClock::advance(Duration::from_secs(1));
+                for _ in 0..reads_per_second {
+                    read_queued_as_the_scheduler_does(&scheduler).await?;
+                    scheduler.do_try_match_for_test().await?;
+                }
+                if let Some(fake) = &fake_redis {
+                    let now = keepalive_key(fake);
+                    assert!(
+                        now.is_none() || now == written_when_client_left,
+                        "{reads_per_second} reads/s at {second} s: a reader rewrote the keepalive"
+                    );
+                }
+                scheduler.sweep_abandoned_queued_actions_for_test().await?;
+                if retired.is_none() && queued_count(&scheduler).await? == 0 {
+                    retired = Some(second);
+                }
+            }
+            retired_at.push(retired.expect("the abandoned action is retired"));
+        }
+        assert!(
+            retired_at.iter().all(|at| *at == retired_at[0]),
+            "{backend:?}: retired at {retired_at:?} s for 0, 1 and 60 reads a second"
+        );
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at[0]),
+            "{backend:?}: retired at {} s",
+            retired_at[0]
+        );
     }
     Ok(())
 }
