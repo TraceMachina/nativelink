@@ -233,7 +233,7 @@ pub struct Scenario {
     name: String,
     seed: u64,
     backends: Vec<Backend>,
-    /// Applied in order to the default `SimpleSpec`; the spec itself is not
+    /// Applied in order to `SimpleSpec::from_config_defaults()`; the spec is not
     /// `Clone`.
     spec_edits: Vec<SpecEdit>,
     steps: Vec<(u64, Step)>,
@@ -298,7 +298,10 @@ impl Scenario {
     }
 
     fn make_spec(&self) -> SimpleSpec {
-        let mut spec = SimpleSpec::default();
+        // An empty config section's spec, so the simulated scheduler runs
+        // the executing sweep and the fallback matching pass as production
+        // does; `Default` alone leaves both off.
+        let mut spec = SimpleSpec::from_config_defaults();
         for edit in &self.spec_edits {
             edit(&mut spec);
         }
