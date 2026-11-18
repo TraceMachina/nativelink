@@ -430,6 +430,86 @@ async fn setup_directory_structure(
     })
 }
 
+// REv2 GetTree: "If part of the tree is missing from the CAS, the server will
+// return the portion present and omit the rest." Only a missing root is an
+// error, and it is `NOT_FOUND`.
+#[nativelink_test]
+async fn get_tree_omits_missing_subdirectories() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let present = Directory {
+        node_properties: Some(NodeProperties {
+            properties: vec![],
+            mtime: Some(Timestamp {
+                seconds: 1,
+                nanos: 0,
+            }),
+            unix_mode: None,
+        }),
+        ..Default::default()
+    };
+    let present_digest = serialize_and_upload_message(
+        &present,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    // Never uploaded.
+    let missing_digest = DigestInfo::new([0xee; 32], 77);
+    let root = Directory {
+        directories: vec![
+            DirectoryNode {
+                name: "missing".to_string(),
+                digest: Some(missing_digest.into()),
+            },
+            DirectoryNode {
+                name: "present".to_string(),
+                digest: Some(present_digest.into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let root_digest = serialize_and_upload_message(
+        &root,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let get_tree = |root_digest: DigestInfo| {
+        cas_server.get_tree(Request::new(GetTreeRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            page_size: 0,
+            page_token: String::new(),
+            root_digest: Some(root_digest.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+    };
+
+    let responses = get_tree(root_digest)
+        .await?
+        .into_inner()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        responses,
+        vec![GetTreeResponse {
+            directories: vec![root, present],
+            next_page_token: String::new(),
+        }]
+    );
+
+    let Err(status) = get_tree(missing_digest).await else {
+        panic!("a missing root must fail");
+    };
+    assert_eq!(status.code(), Code::NotFound);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;

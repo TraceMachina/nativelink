@@ -545,12 +545,17 @@ impl CasServer {
 
         while !deque.is_empty() {
             let digest: DigestInfo = deque.pop_front().err_tip(|| "In VecDeque::pop_front")?;
-            let directory = get_and_decode_digest::<Directory>(&store, digest.into())
-                .await
-                .err_tip(|| "Converting digest to Directory")?;
             if digest == page_token_digest {
                 page_token_matched = true;
             }
+            let directory = match get_and_decode_digest::<Directory>(&store, digest.into()).await {
+                Ok(directory) => directory,
+                // REv2 GetTree: "If part of the tree is missing from the CAS,
+                // the server will return the portion present and omit the
+                // rest." Only a missing root is an error (NOT_FOUND).
+                Err(err) if err.code == Code::NotFound && digest != root_digest => continue,
+                Err(err) => return Err(err).err_tip(|| "Converting digest to Directory"),
+            };
             for directory in &directory.directories {
                 let digest: DigestInfo = directory
                     .digest
