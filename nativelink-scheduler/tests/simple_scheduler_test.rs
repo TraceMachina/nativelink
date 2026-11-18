@@ -3549,8 +3549,16 @@ async fn the_client_keepalive_key_expires_with_the_client_timeout() -> Result<()
             MockClock::advance(Duration::from_secs(11));
             drop(tokio::time::timeout(Duration::from_millis(200), action_listener.changed()).await);
             let (key, seconds, left) = keepalive();
-            assert_eq!(seconds, i64::try_from(timeout_s).unwrap(), "{key}, refresh {refresh}");
-            assert_eq!(left, Some(full), "{key}: refresh {refresh} renews the whole TTL");
+            assert_eq!(
+                seconds,
+                i64::try_from(timeout_s).unwrap(),
+                "{key}, refresh {refresh}"
+            );
+            assert_eq!(
+                left,
+                Some(full),
+                "{key}: refresh {refresh} renews the whole TTL"
+            );
         }
     }
     Ok(())

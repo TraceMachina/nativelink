@@ -242,7 +242,10 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             self.remove_key(key);
             return;
         }
-        self.expiries.lock().unwrap().insert(key.to_string(), seconds);
+        self.expiries
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), seconds);
         let deadline = self.now() + Duration::from_secs(seconds.unsigned_abs());
         self.deadlines
             .lock()
