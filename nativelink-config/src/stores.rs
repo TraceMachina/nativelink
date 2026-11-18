@@ -666,6 +666,32 @@ pub enum StoreSpec {
     /// ```
     ///
     ExperimentalMongo(ExperimentalMongoSpec),
+
+    /// A store implementation registered at startup by the binary that
+    /// embeds `NativeLink`, selected by `provider` name. The stock open
+    /// source `nativelink` binary registers no external providers, so
+    /// using this spec there fails at startup with an error naming the
+    /// unknown provider and the (empty) registered set. Distributions
+    /// that link additional store implementations, such as the
+    /// enterprise multi-cloud replication store, register their
+    /// providers before the server starts.
+    ///
+    /// The `config` value is passed to the registered provider verbatim
+    /// and is not validated by `NativeLink`'s configuration tooling. That
+    /// also means any stores nested inside `config` are opaque to
+    /// config-wide processing such as `grpc` store adjustments; the
+    /// provider is responsible for constructing and validating its own
+    /// configuration.
+    ///
+    /// **Example JSON Config:**
+    /// ```json
+    /// "external": {
+    ///   "provider": "multi_cloud",
+    ///   "config": {}
+    /// }
+    /// ```
+    ///
+    External(ExternalSpec),
 }
 
 impl StoreSpec {
@@ -697,6 +723,8 @@ impl StoreSpec {
                 spec.upper_store.visit_grpc_specs(visitor);
             }
             Self::Grpc(spec) => visitor(spec),
+            // An external store's `config` is opaque to NativeLink's
+            // config tooling, so stores nested inside it are not visited.
             Self::Memory(_)
             | Self::ExperimentalCloudObjectStore(_)
             | Self::OntapS3ExistenceCache(_)
@@ -704,7 +732,8 @@ impl StoreSpec {
             | Self::RefStore(_)
             | Self::RedisStore(_)
             | Self::Noop(_)
-            | Self::ExperimentalMongo(_) => {}
+            | Self::ExperimentalMongo(_)
+            | Self::External(_) => {}
         }
     }
 
@@ -736,6 +765,8 @@ impl StoreSpec {
                 spec.upper_store.visit_grpc_specs_mut(visitor);
             }
             Self::Grpc(spec) => visitor(spec),
+            // An external store's `config` is opaque to NativeLink's
+            // config tooling, so stores nested inside it are not visited.
             Self::Memory(_)
             | Self::ExperimentalCloudObjectStore(_)
             | Self::OntapS3ExistenceCache(_)
@@ -743,7 +774,8 @@ impl StoreSpec {
             | Self::RefStore(_)
             | Self::RedisStore(_)
             | Self::Noop(_)
-            | Self::ExperimentalMongo(_) => {}
+            | Self::ExperimentalMongo(_)
+            | Self::External(_) => {}
         }
     }
 }
@@ -771,6 +803,28 @@ pub struct ShardConfig {
 pub struct ShardSpec {
     /// Stores to shard the data to.
     pub stores: Vec<ShardConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExternalSpec {
+    /// Name of the externally registered store provider that constructs
+    /// this store. The embedding binary must register the provider before
+    /// the server starts; startup fails otherwise, naming this provider
+    /// and listing the providers that are registered.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub provider: String,
+
+    /// Provider-defined configuration, passed to the registered provider
+    /// verbatim. Defaults to an empty object. `NativeLink` does not
+    /// validate this value; the provider does.
+    #[serde(default = "empty_external_config")]
+    pub config: serde_json::Value,
+}
+
+fn empty_external_config() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
