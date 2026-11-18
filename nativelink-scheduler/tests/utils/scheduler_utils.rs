@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use mock_instant::thread_local::MockClock;
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_config::stores::RedisSpec;
 use nativelink_error::{Code, Error};
@@ -40,7 +41,6 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use mock_instant::thread_local::MockClock;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::origin_event::OriginMetadata;

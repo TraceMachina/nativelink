@@ -25,7 +25,7 @@
 use core::time::Duration;
 
 use nativelink_error::{Code, Error};
-use nativelink_sim::{Action, Event, Outcome, Report, Rejoin, Scenario, Step, WorkerSpec};
+use nativelink_sim::{Action, Event, Outcome, Rejoin, Report, Scenario, Step, WorkerSpec};
 
 /// A two-minute action, so every rejoin lands while it runs.
 const RUN_MS: u64 = 120_000;
@@ -41,7 +41,12 @@ fn resubmits(report: &Report, op: &str) -> usize {
 /// The client gets the result: no timeout, no second run, no resubmit.
 fn assert_finished_once(reports: &[Report]) {
     for r in reports {
-        assert_eq!(r.outcomes()["c1"], Some(Outcome::Exited(0)), "{:?}", r.backend);
+        assert_eq!(
+            r.outcomes()["c1"],
+            Some(Outcome::Exited(0)),
+            "{:?}",
+            r.backend
+        );
         assert_ne!(
             r.outcomes()["c1"],
             Some(Outcome::Failed(Code::DeadlineExceeded as i32)),

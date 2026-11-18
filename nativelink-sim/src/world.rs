@@ -37,7 +37,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::{Operation, operation};
 use nativelink_redis_tester::FakeRedisBackend;
-use nativelink_scheduler::default_scheduler_factory::{client_action_timeout_s, retain_completed_for_s};
+use nativelink_scheduler::default_scheduler_factory::{
+    client_action_timeout_s, retain_completed_for_s,
+};
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_scheduler::memory_awaited_action_db::{MemoryAwaitedActionDb, OperationIdFn};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
