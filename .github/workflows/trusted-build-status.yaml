@@ -1,18 +1,18 @@
 ---
 name: CI / Trusted build status
 
-# Metadata only: never check out PR code or download build artifacts here.
+# Metadata and dispatch only: never check out PR code or build artifacts here.
 on:
   pull_request_target:
     branches: [main]
     types: [opened, reopened, synchronize, edited, ready_for_review]
   workflow_run:
     workflows: [CI / NativeLink, CI / Nix]
-    types: [requested, in_progress, completed]
+    types: [in_progress, completed]
 
 permissions:
-  contents: read
-  actions: read
+  contents: write # create an immutable branch for an allowlisted fork revision
+  actions: write # dispatch the two existing branch workflows
   pull-requests: read
   statuses: write
 
@@ -27,7 +27,8 @@ jobs:
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
       (github.event_name == 'pull_request_target' ||
-       (github.event.workflow_run.head_repository.full_name == github.repository &&
+       ((github.event.action == 'completed' || github.event.workflow_run.run_attempt > 1) &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
         contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)))
     name: Report trusted build results
     runs-on: ubuntu-24.04
@@ -38,9 +39,10 @@ jobs:
         with:
           # GITHUB_SHA is the trusted base/default branch for both events.
           ref: ${{ github.sha }}
+          sparse-checkout: .github
           persist-credentials: false
 
-      - name: Update the PR commit status
+      - name: Dispatch missing trusted builds and update the PR status
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/scripts/ci_trusted_builds.py
