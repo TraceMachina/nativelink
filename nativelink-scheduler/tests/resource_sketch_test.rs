@@ -28,6 +28,7 @@ fn class(name: &str, cpu_count: u64, memory_kb: u64, disk_kb: u64) -> SizeClassS
         memory_kb,
         disk_kb,
         gpu_count: 0,
+        gpu_memory_kb: 0,
     }
 }
 
@@ -38,6 +39,26 @@ const fn policy(headroom_percent: u64, classes: Vec<SizeClassSpec>) -> Policy {
         reserve_cpu: true,
         reserve_memory: true,
         reserve_disk: true,
+        reserve_gpu_memory: true,
+    }
+}
+
+/// A class standing for a slice of a GPU: its share of a device and the
+/// device memory the slice has.
+fn slice(name: &str, memory_kb: u64, gpu_count: u64, gpu_memory_kb: u64) -> SizeClassSpec {
+    SizeClassSpec {
+        gpu_count,
+        gpu_memory_kb,
+        ..class(name, 4000, memory_kb, 0)
+    }
+}
+
+/// An attempt that held `gpu_kb` of device memory beside `memory_kb` of
+/// the host's.
+fn on_gpu(memory_kb: u64, gpu_kb: u64, now_s: u64) -> Observation {
+    Observation {
+        peak_gpu_memory_kb: gpu_kb,
+        ..memory(memory_kb, now_s)
     }
 }
 
@@ -272,6 +293,7 @@ fn a_snapshot_round_trips_and_ages_out() {
             peak_memory_kb: 123_456,
             cpu_millicores: Some(2500),
             peak_disk_kb: 77,
+            peak_gpu_memory_kb: 4_000_000,
             killed_at_kb: Some(100_000),
             killed: true,
             now_s: now,
@@ -595,4 +617,147 @@ fn snapshot_decode_rejects_entry_counts_above_the_budget() {
     bytes[4] = 3;
     bytes[17..25].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(Snapshot::decode(&bytes, usize::MAX).is_err());
+}
+
+/// Device memory is reserved at the most any run in the window held, with
+/// the headroom: an action that runs out of it is ended outright, so the
+/// reservation does not sit below a run that was seen.
+#[test]
+fn device_memory_is_reserved_at_the_window_maximum() {
+    let sketch = sketch(policy(20, vec![]), small_budget());
+    let key = target("//sim:render_test", "CudaTest");
+    for gpu_kb in [3_000_000, 5_000_000, 4_000_000] {
+        sketch.observe(key.clone(), &on_gpu(1_000_000, gpu_kb, NOW));
+    }
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
+    assert_eq!(shaped.gpu_memory_kb, 6_000_000);
+    assert_eq!(shaped.gpu_count, 0, "no class, so no share is stated");
+
+    // An attempt nothing measured on a device says nothing about one.
+    sketch.observe(key.clone(), &memory(1_000_000, NOW));
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
+    assert_eq!(shaped.gpu_memory_kb, 6_000_000);
+}
+
+/// A class that names device memory is a slice of a GPU. An action measured
+/// on a device takes the smallest slice that holds what it held, with the
+/// slice's share; one that was not takes a class that is not a slice. Past
+/// the largest slice no class stands in: the measured number is reserved
+/// as it is.
+#[test]
+fn a_slice_is_chosen_by_measured_device_memory_and_only_by_it() {
+    let ladder = vec![
+        class("s", 1000, 4_000_000, 0),
+        class("m", 2000, 16_000_000, 0),
+        slice("slice-10", 16_000_000, 14, 10_485_760),
+        slice("slice-20", 32_000_000, 28, 20_971_520),
+    ];
+    let sketch = sketch(policy(0, ladder), small_budget());
+    let shaped = |key: &SketchKey| sketch.shape(&sketch.lookup(key, NOW).unwrap());
+
+    // Never on a device: sized among the classes that are not slices, even
+    // where a slice would hold its memory.
+    let cpu_only = target("//pkg:link", "CppLink");
+    sketch.observe(cpu_only.clone(), &memory(10_000_000, NOW));
+    let got = shaped(&cpu_only);
+    assert_eq!(got.class.as_deref(), Some("m"));
+    assert_eq!((got.gpu_memory_kb, got.gpu_count), (0, 0));
+
+    // On a device: the smallest slice that holds it, and that slice's
+    // memory and share. Its small host memory does not put it in "s".
+    let small = target("//sim:physics_test", "CudaTest");
+    sketch.observe(small.clone(), &on_gpu(3_000_000, 7_000_000, NOW));
+    let got = shaped(&small);
+    assert_eq!(got.class.as_deref(), Some("slice-10"));
+    assert_eq!((got.gpu_memory_kb, got.gpu_count), (10_485_760, 14));
+    assert_eq!(got.memory_kb, 16_000_000);
+
+    let larger = target("//sim:render_test", "CudaTest");
+    sketch.observe(larger.clone(), &on_gpu(3_000_000, 15_000_000, NOW));
+    let got = shaped(&larger);
+    assert_eq!(got.class.as_deref(), Some("slice-20"));
+    assert_eq!((got.gpu_memory_kb, got.gpu_count), (20_971_520, 28));
+
+    // More than the largest slice has: no slice stands in for it.
+    let whole = target("//sim:train_test", "CudaTest");
+    sketch.observe(whole.clone(), &on_gpu(3_000_000, 30_000_000, NOW));
+    let got = shaped(&whole);
+    assert_eq!(got.class, None);
+    assert_eq!((got.gpu_memory_kb, got.gpu_count), (30_000_000, 0));
+    assert_eq!(got.memory_kb, 3_000_000, "the raw numbers stand");
+}
+
+/// A fleet that does not reserve device memory drops the measurement, as it
+/// does a measurement on any dimension it does not reserve.
+#[test]
+fn device_memory_is_dropped_when_the_fleet_does_not_reserve_it() {
+    let mut policy = policy(0, vec![]);
+    policy.reserve_gpu_memory = false;
+    let sketch = sketch(policy, small_budget());
+    let key = target("//sim:render_test", "CudaTest");
+    sketch.observe(key.clone(), &on_gpu(1_000_000, 5_000_000, NOW));
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
+    assert_eq!(shaped.gpu_memory_kb, 0);
+    assert_eq!(shaped.memory_kb, 1_000_000);
+}
+
+/// A snapshot written before device memory was kept still loads, with
+/// none, so an upgrade does not cost a fleet the history it sizes by. A
+/// version this build has never heard of is still refused.
+#[test]
+fn a_snapshot_from_before_device_memory_still_loads() {
+    let key = "CppLink";
+    let peak_kb = 5_000_000u64;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"NLHS");
+    bytes.push(3);
+    bytes.extend_from_slice(&SAMPLER_GENERATION.to_le_bytes());
+    bytes.extend_from_slice(&NOW.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    // One mnemonic key.
+    bytes.push(1);
+    bytes.extend_from_slice(&u32::try_from(key.len()).unwrap().to_le_bytes());
+    bytes.extend_from_slice(key.as_bytes());
+    // One sample.
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    // The current half: one memory bucket, no cpu or disk buckets, then the
+    // three maxima version 3 carried.
+    bytes.push(1);
+    bytes.push(u8::try_from(Hist::bucket(peak_kb)).unwrap());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(&[0, 0]);
+    for max in [peak_kb, 0, 0] {
+        bytes.extend_from_slice(&max.to_le_bytes());
+    }
+    // The previous half, empty.
+    bytes.extend_from_slice(&[0, 0, 0]);
+    bytes.extend_from_slice(&[0u8; 24]);
+    // killed_at_kb, killed_at_s, last_seen_s, period, and not seeded.
+    for value in [0, 0, NOW, NOW / (7 * 86_400 / 2)] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.push(0);
+
+    assert_eq!(Snapshot::compatible_written_at(&bytes).unwrap(), NOW);
+    let decoded = Snapshot::decode(&bytes, usize::MAX).unwrap();
+    let (_, entry) = &decoded.entries[0];
+    assert_eq!(entry.max_memory_kb(), peak_kb);
+    assert_eq!(entry.max_gpu_memory_kb(), 0);
+
+    // It loads into a sketch, and what that sketch writes next carries the
+    // device memory field.
+    let fresh = sketch(policy(0, vec![]), small_budget());
+    assert_eq!(fresh.load(decoded, NOW).unwrap(), 1);
+    let rewritten = Snapshot::decode(&fresh.encode_snapshot(NOW), usize::MAX).unwrap();
+    assert_eq!(rewritten.entries[0].1.max_memory_kb(), peak_kb);
+
+    for version in [2u8, 5] {
+        let mut other = bytes.clone();
+        other[4] = version;
+        assert!(Snapshot::decode(&other, usize::MAX).is_err(), "{version}");
+        assert!(
+            Snapshot::compatible_written_at(&other).is_err(),
+            "{version}"
+        );
+    }
 }

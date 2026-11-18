@@ -88,6 +88,7 @@ fn base_spec(hints_file: String, cold_start: Option<ColdStartSpec>) -> Historica
         memory_property_name: "memory_kb".to_string(),
         disk_property_name: "disk_kb".to_string(),
         gpu_property_name: "gpu_count".to_string(),
+        gpu_memory_property_name: "gpu_memory_kb".to_string(),
         classes: vec![],
         default_class: None,
         class_by_mnemonic: HashMap::new(),
@@ -119,6 +120,7 @@ fn class(name: &str, cpu_count: u64, memory_kb: u64, disk_kb: u64) -> SizeClassS
         memory_kb,
         disk_kb,
         gpu_count: 0,
+        gpu_memory_kb: 0,
     }
 }
 
@@ -1245,6 +1247,169 @@ async fn the_gpu_property_name_is_configurable() -> Result<(), Error> {
     assert_eq!(
         properties,
         HashMap::from([("gpu".to_string(), "50".to_string())])
+    );
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+/// A class standing for a slice of a GPU: its share of a device and the
+/// device memory the slice has.
+fn slice_class(name: &str, memory_kb: u64, gpu_count: u64, gpu_memory_kb: u64) -> SizeClassSpec {
+    SizeClassSpec {
+        gpu_memory_kb,
+        ..gpu_class(name, 4000, memory_kb, gpu_count)
+    }
+}
+
+fn observe_on_gpu(scheduler: &HistoricalResourceScheduler, target: &str, gpu_memory_kb: u64) {
+    scheduler.sketch().observe(
+        SketchKey::for_attempt(Some(target), Some("CudaTest"), "unused"),
+        &Observation {
+            peak_memory_kb: 2_000_000,
+            peak_gpu_memory_kb: gpu_memory_kb,
+            now_s: now_s(),
+            ..Observation::default()
+        },
+    );
+}
+
+/// What a wrapper measured an action holding on its device sizes the next
+/// run: the smallest slice that holds it, as that slice's device memory and
+/// share of a device. The client states the least it could run on and the
+/// hint raises it; a share or a memory the client set higher stands.
+#[nativelink_test]
+async fn a_measured_action_takes_the_slice_its_device_memory_fits() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        slice_class("slice-10", 16_000_000, 14, 10_485_760),
+        slice_class("slice-20", 32_000_000, 28, 20_971_520),
+    ];
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let sized = |target: &'static str, action| {
+        properties_after_add(
+            &scheduler,
+            &mock_scheduler,
+            action,
+            Some((target, "CudaTest")),
+        )
+    };
+
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = sized("//sim:physics_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "10485760");
+    assert_eq!(properties["gpu_count"], "14");
+    assert_eq!(properties["memory_kb"], "16000000");
+
+    // A later run held more: the next slice up.
+    observe_on_gpu(&scheduler, "//sim:physics_test", 15_000_000);
+    let properties = sized("//sim:physics_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "20971520");
+    assert_eq!(properties["gpu_count"], "28");
+
+    // The client asked for the smallest share and is raised to the slice's;
+    // one that asked for a whole device keeps it.
+    let mut least = (*base).clone();
+    least
+        .platform_properties
+        .insert("gpu_count".to_string(), "14".to_string());
+    assert_eq!(
+        sized("//sim:physics_test", Arc::new(least)).await?["gpu_count"],
+        "28"
+    );
+    let mut whole = (*base).clone();
+    whole
+        .platform_properties
+        .insert("gpu_count".to_string(), "100".to_string());
+    assert_eq!(
+        sized("//sim:physics_test", Arc::new(whole)).await?["gpu_count"],
+        "100"
+    );
+
+    // Past the largest slice the measured number stands, so only a worker
+    // advertising that much device memory is asked, and no share is
+    // invented for it.
+    observe_on_gpu(&scheduler, "//sim:train_test", 30_000_000);
+    let properties = sized("//sim:train_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "30000000");
+    assert!(!properties.contains_key("gpu_count"), "{properties:?}");
+
+    // An action nothing measured on a device gets no device memory.
+    scheduler.sketch().observe(
+        SketchKey::for_attempt(Some("//pkg:link"), Some("CppLink"), "unused"),
+        &Observation {
+            peak_memory_kb: 3_000_000,
+            now_s: now_s(),
+            ..Observation::default()
+        },
+    );
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base,
+        Some(("//pkg:link", "CppLink")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "4000000");
+    assert!(!properties.contains_key("gpu_memory_kb"), "{properties:?}");
+
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A fleet whose ladder names no device memory reserves none: no worker
+/// there advertises it, and a minimum no worker advertises is an action
+/// that never runs. The measurement is dropped like any other on a
+/// dimension the fleet does not reserve.
+#[nativelink_test]
+async fn a_fleet_without_slices_does_not_reserve_measured_device_memory() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        class("m", 2000, 16_000_000, 0),
+    ];
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:physics_test", "CudaTest")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "4000000");
+    assert!(!properties.contains_key("gpu_memory_kb"), "{properties:?}");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// While the hints file sizes actions, an entry states device memory like
+/// any other number, under the configured property name.
+#[nativelink_test]
+async fn a_file_hint_states_device_memory() -> Result<(), Error> {
+    let path = write_hints_file(
+        r#"[ { "target_id": "//sim:render_test", "gpu_count": 28, "gpu_memory_kb": 20971520 } ]"#,
+    );
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    spec.gpu_memory_property_name = "gpu_ram".to_string();
+    let (mock, scheduler) = make_scheduler_with_spec(&spec);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:render_test", "TestRunner")),
+    )
+    .await?;
+    assert_eq!(
+        properties,
+        HashMap::from([
+            ("gpu_count".to_string(), "28".to_string()),
+            ("gpu_ram".to_string(), "20971520".to_string()),
+        ])
     );
     fs::remove_file(path)?;
     Ok(())

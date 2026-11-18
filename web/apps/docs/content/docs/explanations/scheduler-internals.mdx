@@ -268,16 +268,31 @@ kill at the top class fails the action.
 
 A class may also carry `gpu_count`, written to `gpu_property_name` on the
 scale the workers advertise: whole devices, or shares of one where a fleet
-counts a device in parts. Workers do not measure what an action used of a
-device, so a GPU reservation is stated and never learned. It is not part of
-the sketch and plays no part in choosing a class for a measured action.
-While the hints file sizes actions, an entry states it directly with
-`gpu_count` or through the class it names. In either mode the class the
-cold-start rules name for an action supplies it, and goes on supplying it
-after the action's CPU and memory have been learned. A learning scheduler
-does not seed a `gpu_count` from the hints file and logs a warning when the
-file states one. A value the client sent is never lowered, and a class rule
-fills the property only when it is absent.
+counts a device in parts. A share is stated and never measured, so it plays
+no part in choosing a class for a measured action. While the hints file
+sizes actions, an entry states it directly with `gpu_count` or through the
+class it names. In either mode the class the cold-start rules name for an
+action supplies it, and goes on supplying it after the action's CPU and
+memory have been learned. A learning scheduler does not seed a `gpu_count`
+from the hints file and logs a warning when the file states one. A value
+the client sent is never lowered, and a class rule fills the property only
+when it is absent.
+
+Device memory is the part of a GPU that is learned, where something
+measures it. A worker reads no device itself: whatever wraps an action
+reports the peak it held as `peak_gpu_memory_kb` in the side channel file,
+the worker carries that figure in its usage report, and the sketch keeps the
+largest one of each half-window. The reservation, written to
+`gpu_memory_property_name`, is the most any run in the window held plus
+`headroom_percent`; a maximum and not a percentile, because an action that
+runs out of device memory is ended outright. A class that names
+`gpu_memory_kb` stands for a slice of a GPU. An action measured on a device
+takes the smallest such class that holds what it held, with that class's
+`gpu_count`, and an action that was not measured on one takes a class that
+names no device memory. Past the largest slice no class stands in: the
+measured number is reserved as it is, so only a worker advertising that
+much is asked. A ladder that names no device memory reserves none.
+Snapshots that predate the dimension still load.
 
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The

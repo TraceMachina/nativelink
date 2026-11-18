@@ -111,6 +111,9 @@ struct HistoricalResourceHint {
     /// Stated, never measured: see `gpu_property_name`.
     #[serde(default)]
     gpu_count: Option<u64>,
+    /// Device memory, in KiB: see `gpu_memory_property_name`.
+    #[serde(default)]
+    gpu_memory_kb: Option<u64>,
     #[serde(default)]
     class: Option<String>,
     #[serde(default)]
@@ -220,19 +223,23 @@ struct Numbers {
     memory_kb: u64,
     disk_kb: u64,
     gpu_count: u64,
+    gpu_memory_kb: u64,
 }
 
 impl Numbers {
-    /// The dimensions a worker measures, which are the ones the sketch
-    /// holds. A GPU share is stated in a hint or a class and never learned.
-    // TODO(marcussorealheis) Learn the GPU dimension: have the worker report
-    // what an action used of a device, keep it in the sketch beside memory
-    // and disk, and choose a class by it. The worker would take the figure
-    // from a sampler outside this crate, since reading a device is the
-    // deployment's business and not the scheduler's.
+    /// The dimensions a seed can put in the sketch: cpu, memory and disk.
+    /// A share of a device is stated and never learned, and device memory
+    /// is learned only from a measurement, since a seed's would stand as a
+    /// maximum no real sample could bring back down.
+    // TODO(marcussorealheis) The device memory an action held reaches the
+    // sketch from whatever wraps the action (the side channel file's
+    // `peak_gpu_memory_kb`). A sampler reading the device directly, many
+    // times a second, is to replace a wrapper that polls a command-line
+    // tool; nothing here changes when it does.
     const fn measured(self) -> Self {
         Self {
             gpu_count: 0,
+            gpu_memory_kb: 0,
             ..self
         }
     }
@@ -245,6 +252,7 @@ impl From<&SizeClassSpec> for Numbers {
             memory_kb: class.memory_kb,
             disk_kb: class.disk_kb,
             gpu_count: class.gpu_count,
+            gpu_memory_kb: class.gpu_memory_kb,
         }
     }
 }
@@ -255,7 +263,10 @@ impl From<&Shaped> for Numbers {
             cpu_count: shaped.cpu_count,
             memory_kb: shaped.memory_kb,
             disk_kb: shaped.disk_kb,
-            gpu_count: 0,
+            // Set only when the entry was measured on a device and fits a
+            // class that stands for a slice of one.
+            gpu_count: shaped.gpu_count,
+            gpu_memory_kb: shaped.gpu_memory_kb,
         }
     }
 }
@@ -266,11 +277,16 @@ impl From<&Shaped> for Numbers {
 /// unsatisfiable, so a number on a dimension the fleet does not reserve is
 /// dropped when the hint is shaped. A configuration with neither a ladder
 /// nor a cold start reserves whatever was measured, as it always did.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one switch per dimension the fleet reserves; a set of them would not read better"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reserved {
     cpu: bool,
     memory: bool,
     disk: bool,
+    gpu_memory: bool,
 }
 
 impl Reserved {
@@ -285,12 +301,14 @@ impl Reserved {
                 cpu: true,
                 memory: true,
                 disk: true,
+                gpu_memory: true,
             };
         }
         Self {
             cpu: cold.cpu_count > 0 || spec.classes.iter().any(|c| c.cpu_count > 0),
             memory: cold.memory_kb > 0 || spec.classes.iter().any(|c| c.memory_kb > 0),
             disk: cold.disk_kb > 0 || spec.classes.iter().any(|c| c.disk_kb > 0),
+            gpu_memory: spec.classes.iter().any(|c| c.gpu_memory_kb > 0),
         }
     }
 }
@@ -353,6 +371,11 @@ impl FileHints {
                 // on a dimension the fleet does not reserve, and this is a
                 // number someone wrote down for a fleet that has the device.
                 gpu_count: hint.gpu_count.unwrap_or(class.gpu_count),
+                gpu_memory_kb: if self.reserved.gpu_memory {
+                    hint.gpu_memory_kb.unwrap_or(class.gpu_memory_kb)
+                } else {
+                    0
+                },
             };
             for key in hint.keys() {
                 next.insert(key, numbers);
@@ -434,6 +457,7 @@ pub struct HistoricalResourceScheduler {
     memory_property_name: String,
     disk_property_name: String,
     gpu_property_name: String,
+    gpu_memory_property_name: String,
     cold_start: Numbers,
     classes: Vec<SizeClassSpec>,
     default_class: Option<String>,
@@ -472,6 +496,7 @@ impl HistoricalResourceScheduler {
                 reserve_cpu: reserved.cpu,
                 reserve_memory: reserved.memory,
                 reserve_disk: reserved.disk,
+                reserve_gpu_memory: reserved.gpu_memory,
             },
             if spec.learn_from_workers {
                 Budget::from_bytes(spec.memory_budget_bytes)
@@ -503,6 +528,7 @@ impl HistoricalResourceScheduler {
             memory_property_name: spec.memory_property_name.clone(),
             disk_property_name: spec.disk_property_name.clone(),
             gpu_property_name: spec.gpu_property_name.clone(),
+            gpu_memory_property_name: spec.gpu_memory_property_name.clone(),
             cold_start: spec
                 .cold_start
                 .as_ref()
@@ -513,6 +539,7 @@ impl HistoricalResourceScheduler {
                     // A reservation for every untagged action is not
                     // something a device can be: only a class carries one.
                     gpu_count: 0,
+                    gpu_memory_kb: 0,
                 }),
             classes: spec.classes.clone(),
             default_class: spec.default_class.clone(),
@@ -900,6 +927,7 @@ impl HistoricalResourceScheduler {
             memory_kb: hint.memory_kb().unwrap_or(from_class.memory_kb),
             disk_kb: hint.disk_kb.unwrap_or(from_class.disk_kb),
             gpu_count: hint.gpu_count.unwrap_or(from_class.gpu_count),
+            gpu_memory_kb: hint.gpu_memory_kb.unwrap_or(from_class.gpu_memory_kb),
         }
     }
 
@@ -910,6 +938,11 @@ impl HistoricalResourceScheduler {
             &mut action_info.platform_properties,
             &self.gpu_property_name,
             numbers.gpu_count,
+        );
+        apply_minimum_platform_property(
+            &mut action_info.platform_properties,
+            &self.gpu_memory_property_name,
+            numbers.gpu_memory_kb,
         );
         apply_minimum_platform_property(
             &mut action_info.platform_properties,
@@ -1008,6 +1041,11 @@ impl HistoricalResourceScheduler {
         );
         apply_default_platform_property(
             &mut action_info.platform_properties,
+            &self.gpu_memory_property_name,
+            numbers.gpu_memory_kb,
+        );
+        apply_default_platform_property(
+            &mut action_info.platform_properties,
             &self.cpu_property_name,
             numbers.cpu_count,
         );
@@ -1043,6 +1081,7 @@ impl HistoricalResourceScheduler {
         known_properties.insert(self.memory_property_name.clone());
         known_properties.insert(self.disk_property_name.clone());
         known_properties.insert(self.gpu_property_name.clone());
+        known_properties.insert(self.gpu_memory_property_name.clone());
         let final_known_properties: Vec<String> = known_properties.into_iter().collect();
         self.known_properties
             .lock()
