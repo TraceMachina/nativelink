@@ -1404,7 +1404,8 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
 
     // The worker keeps heartbeating and still holds the action; before the
     // ceiling nothing happens.
-    let still_running = |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::Running)).boxed();
+    let still_running =
+        |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::Running)).boxed();
     let mut lost_since = HashMap::new();
     MockClock::advance(Duration::from_mins(5));
     registry
@@ -1461,7 +1462,8 @@ async fn executing_sweep_requeues_an_action_its_worker_no_longer_runs() -> Resul
     let state_mgr = state_manager(registry.clone());
     queue_and_assign(&state_mgr, &worker_id).await?;
 
-    let not_running = |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::NotRunning)).boxed();
+    let not_running =
+        |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::NotRunning)).boxed();
     let grace = Duration::from_mins(1);
     let mut lost_since = HashMap::new();
 
@@ -1536,7 +1538,8 @@ async fn executing_sweep_lost_result_counts_against_max_job_retries() -> Result<
     let state_mgr = state_manager_with_retries(registry.clone(), 0);
     let (_operation_id, client) = queue_and_assign_with_client(&state_mgr, &worker_id).await?;
 
-    let not_running = |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::NotRunning)).boxed();
+    let not_running =
+        |_: WorkerId, _: OperationId| future::ready(Some(OnWorker::NotRunning)).boxed();
     let grace = Duration::from_mins(1);
     let mut lost_since = HashMap::new();
     for seconds in [120, 181] {
