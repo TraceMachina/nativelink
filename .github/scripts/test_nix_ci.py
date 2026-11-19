@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -179,7 +180,8 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
 
     def test_workflow_consumers_wait_for_and_import_the_shared_package(self):
         workflow = Path('.github/workflows/nix.yaml').read_text()
-        self.assertEqual(workflow.count('cluster_ci.py --task nix'), 1)
+        # Once for the package the jobs below import, once on the AWS deployment.
+        self.assertEqual(workflow.count('cluster_ci.py --task nix'), 2)
         self.assertNotIn('  pull_request:', workflow)
         self.assertNotIn('  generate-rbe-commands:', workflow)
         installation = workflow.split('  installation:', 1)[1].split('  integration:', 1)[0]
@@ -192,6 +194,42 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
             self.assertNotIn('secrets.', consumer)
             self.assertLess(consumer.index('nix_ci.py import'), consumer.index('nix run -L'))
         self.assertIn('needs.nix-build.outputs.matrix', toolchains)
+
+    def test_aws_nix_lane_is_optional_and_nothing_reads_what_it_built(self):
+        workflow = Path('.github/workflows/nix.yaml').read_text()
+        primary, rest = workflow.split('  nix-build:', 1)[1].split('  nix-build-aws:', 1)
+        aws_job, after = rest.split('  nix-cargo:', 1)
+        # The primary job is unchanged: it neither waits for nor depends on AWS.
+        for setting in ('NL_EKS_CLUSTER', 'configure-aws-credentials', 'cluster-ci-aws', 'continue-on-error'):
+            self.assertNotIn(setting, primary.split('\n  # The same build on the AWS deployment')[0])
+        self.assertIn('environment: cluster-ci-aws', aws_job)
+        self.assertIn('continue-on-error: true', aws_job)
+        self.assertIn("vars.NL_AWS_LANE == 'true'", aws_job)
+        # Reviewed code only: a pushed branch is built by the primary job.
+        self.assertIn("github.ref == 'refs/heads/main'", aws_job)
+        self.assertNotIn('startsWith(github.ref', aws_job)
+        # The Nix client by its own name, and only short-lived credentials.
+        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_NIX_POD }}', aws_job)
+        self.assertIn('id-token: write', aws_job)
+        self.assertRegex(aws_job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
+        for stored_key in ('aws-access-key-id', 'aws-secret-access-key', 'AWS_SECRET_ACCESS_KEY', 'NL_GCP_'):
+            self.assertNotIn(stored_key, aws_job)
+        # The log of this public repository shows a variable and masks a
+        # secret, so what locates the deployment is read from secrets.
+        for located in ('NL_AWS_DISPATCH_ROLE_ARN', 'NL_GKE_SERVER', 'NL_GKE_CA_DATA'):
+            self.assertIn('${{ secrets.%s }}' % located, aws_job)
+        self.assertIn('mask-aws-account-id: true', aws_job)
+        # The result is read with a new token after the build, so the
+        # credentials must outlast the job.
+        session = int(re.search(r'role-duration-seconds: (\d+)', aws_job).group(1))
+        limit = int(re.search(r'timeout-minutes: (\d+)', aws_job).group(1))
+        self.assertGreater(session, limit * 60)
+        # Nothing waits for it or imports its closure; only its report is kept.
+        self.assertNotIn('nix-build-aws', after)
+        self.assertNotIn('outputs:', aws_job)
+        self.assertNotIn('name: nix-ci-package', aws_job)
+        self.assertIn('name: nix-ci-aws', aws_job)
+        self.assertIn('nix-ci/nix.json', aws_job)
 
 
 if __name__ == '__main__':
