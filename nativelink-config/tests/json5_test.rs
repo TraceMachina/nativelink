@@ -26,8 +26,6 @@ use nativelink_config::cas_server::CasConfig;
 /// it has become a complete deployment config and should be removed from this
 /// list so it is held to the same standard as the rest.
 const PARSE_ONLY_FRAGMENTS: &[&str] = &[
-    // Legacy map-form service config; declares no stores or schedulers.
-    "legacy_service_config.json5",
     // Generated store catalog; carries placeholder `ref_store` names.
     "stores-config.json5",
 ];
