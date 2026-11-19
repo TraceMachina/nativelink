@@ -100,7 +100,7 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
         self.assertEqual(self.calls().count('store --import'), 3)
         self.assertEqual(self.calls().count('nix path-info'), 3)
 
-    def test_build_prunes_older_result_roots_before_building(self):
+    def test_build_prunes_older_runs_and_every_stale_archive_before_building(self):
         closure = self.root / 'closure'
         closure.mkdir()
         results = self.root / 'ci-results'
@@ -109,15 +109,21 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
             run = results / name
             run.mkdir(parents=True)
             (run / 'result').symlink_to(closure)
+            (run / 'closure.nar.gz').write_bytes(b'archived closure')
+            (run / 'nix.json').write_text('{}')
             os.utime(run, (1_000 + age, 1_000 + age))
             runs.append(run)
 
         nix_ci.build(results / 'current', self.revision)
 
-        pruned = [run.name for run in runs if not (run / 'result').is_symlink()]
-        self.assertEqual(pruned, ['run-1', 'run-2'])
-        self.assertTrue((runs[2] / 'result').is_symlink())
-        self.assertTrue((runs[3] / 'result').is_symlink())
+        removed = [run.name for run in runs if not run.exists()]
+        self.assertEqual(removed, ['run-1', 'run-2'])
+        for kept in (runs[2], runs[3]):
+            self.assertTrue((kept / 'result').is_symlink(),
+                            'retained result roots keep recent closures warm')
+            self.assertFalse((kept / 'closure.nar.gz').exists(),
+                             'archives are only read from the uploaded artifact')
+        self.assertTrue((results / 'current' / 'closure.nar.gz').exists())
         self.assertLess(self.calls().index('gc'), self.calls().index('nix build'))
 
     def test_failed_store_collection_does_not_block_the_build(self):
