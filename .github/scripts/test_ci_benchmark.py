@@ -212,7 +212,12 @@ class BenchmarkTest(unittest.TestCase):
         self.assertIn("vars.NL_AWS_LANE == 'true'", aws_job)
         self.assertIn("startsWith(github.ref, 'refs/heads/')", aws_job)
         self.assertIn('id-token: write', aws_job)
-        self.assertIn('role-to-assume: ${{ vars.NL_AWS_DISPATCH_ROLE_ARN }}', aws_job)
+        # The log of this public repository shows a variable and masks a
+        # secret, so what locates the deployment is read from secrets.
+        for located in ('NL_AWS_DISPATCH_ROLE_ARN', 'NL_GKE_SERVER', 'NL_GKE_CA_DATA'):
+            self.assertIn('${{ secrets.%s }}' % located, aws_job)
+            self.assertNotIn('vars.%s ' % located, aws_job)
+        self.assertIn('mask-aws-account-id: true', aws_job)
         self.assertRegex(aws_job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
         # The result is read with a new token after the build, so the
         # credentials must outlast the job.

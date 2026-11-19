@@ -225,14 +225,14 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    # Job-level rather than step-level: the runner echoes a step's env block
-    # into the log header, and these cluster coordinates do not belong in
-    # console output.
+    # The cluster's address, its certificate and the role are environment
+    # secrets: the runner echoes a job's env block into every step's log
+    # header, and it masks a secret wherever it is printed.
     env:
       NL_EKS_CLUSTER: ${{ vars.NL_EKS_CLUSTER }}
       NL_AWS_REGION: ${{ vars.NL_AWS_REGION }}
-      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+      NL_GKE_SERVER: ${{ secrets.NL_GKE_SERVER }}
+      NL_GKE_CA_DATA: ${{ secrets.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
       NL_GKE_POD: ${{ vars.NL_GKE_POD }}
     steps:
@@ -266,8 +266,9 @@ jobs:
         uses: >- # v6.3.0
           aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
-          role-to-assume: ${{ vars.NL_AWS_DISPATCH_ROLE_ARN }}
+          role-to-assume: ${{ secrets.NL_AWS_DISPATCH_ROLE_ARN }}
           aws-region: ${{ vars.NL_AWS_REGION }}
+          mask-aws-account-id: true
           role-duration-seconds: 14400
 
       - name: Run on the retained cluster client
