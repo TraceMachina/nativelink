@@ -27,12 +27,12 @@ repository.
 
   <Tab value="Linux (Docker)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab a known-good basic
+configuration, then run the official image:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
-
-# Grab a known-good basic configuration, then run the official image
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
 curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run \
@@ -49,8 +49,10 @@ listening on `localhost:50051`.
 
   <Tab value="macOS / Linux (Nix)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run that release from its flake:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -76,15 +78,17 @@ runs natively on Apple Silicon.
 
   <Tab value="Windows (Docker)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run the official image:
+
 ```powershell
-# Look up the newest release tag, such as vX.Y.Z
 $NATIVELINK_VERSION = (Invoke-RestMethod `
   "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
 if (-not $NATIVELINK_VERSION) {
   Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
 } else {
-  Invoke-WebRequest -ErrorAction Stop `
+  Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
     -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
