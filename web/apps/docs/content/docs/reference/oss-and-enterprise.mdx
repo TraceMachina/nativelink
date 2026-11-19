@@ -222,10 +222,11 @@ the crate, so:
 nativelink --version
 ```
 
-prints the crate version (`1.6.5` at the time of writing) and exits. The
-container image is tagged with the same version prefixed by `v`
-(`ghcr.io/tracemachina/nativelink:v1.6.5`); pin that tag in production rather
-than a floating one. See
+prints the crate version and exits. The container image is tagged with the
+same version prefixed by `v`, as in `ghcr.io/tracemachina/nativelink:vX.Y.Z`.
+We don't recommend deploying whatever release is newest at deploy time: in
+production, pin an exact tag and upgrade deliberately (see
+[Container registry](/getting-started/shared-cache#container-registry)). See
 [CLI and environment](/reference/cli-and-env) for the complete flag surface,
 which is `--help` and `--version` and nothing else, and
 [Upgrade versions](/how-to/upgrade-versions) for moving between them.
