@@ -73,7 +73,9 @@ impl OriginEventPublisher {
                     // that forwards to a separate scheduler holds no sender
                     // past startup, so this is reached at once there.
                     if received == 0 {
-                        info!("Origin event publisher has no senders left; stopping");
+                        info!(
+                            "No scheduler in this process holds an origin event sender, so there is nothing to publish; the origin event publisher is stopping"
+                        );
                         return;
                     }
                     self.handle_batch(&mut batch).await;
