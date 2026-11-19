@@ -527,21 +527,23 @@ where
         result
     }
 
-    /// Drops the digest from the local index only. This does not delete the
-    /// S3 object. The returned boolean stays `false` so `removed=true` cannot
-    /// be read as durable-object repair.
+    /// Drops the digest from the local index, then forwards to the inner
+    /// store's `remove`, which deletes the S3 object.
     async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         let digest = key.borrow().into_digest();
         self.digests.write().await.remove(&digest);
-        Ok(false)
+        self.inner_store.as_store_driver_pin().remove(key).await
     }
 
-    /// Same metadata-only invalidation as [`Self::remove`]. Durable S3 objects
-    /// are never deleted through this wrapper.
+    /// Drops the digest from the local index, then forwards to the inner
+    /// store's `remove_cached`, which keeps the durable S3 object.
     async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         let digest = key.borrow().into_digest();
         self.digests.write().await.remove(&digest);
-        Ok(false)
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

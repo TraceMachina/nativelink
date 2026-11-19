@@ -543,10 +543,10 @@ async fn test_empty_bucket_handling() -> Result<(), Error> {
     Ok(())
 }
 
-/// `remove` / `remove_cached` drop the local index entry only. They must not
-/// delete the durable object, and `removed=true` is never returned.
+/// `remove` drops the index entry and forwards removal to the inner store.
+/// `remove_cached` drops the index entry and keeps the durable copy.
 #[nativelink_test]
-async fn remove_drops_index_entry_without_deleting_durable_object() -> Result<(), Error> {
+async fn remove_drops_index_entry_and_forwards_to_inner_store() -> Result<(), Error> {
     const VALUE: &str = "123";
     let temp_dir = tempdir().expect("Failed to create temporary directory");
     let cache_path = temp_dir
@@ -583,23 +583,16 @@ async fn remove_drops_index_entry_without_deleting_durable_object() -> Result<()
     assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
 
     assert!(
-        !store.as_store_driver_pin().remove(digest.into()).await?,
-        "metadata-only invalidation must not report durable repair"
+        store.as_store_driver_pin().remove(digest.into()).await?,
+        "remove reports the inner store's deletion"
     );
-    assert_eq!(
-        store.has(digest).await?,
-        None,
-        "index miss is treated as missing until the next sync"
-    );
+    assert_eq!(store.has(digest).await?, None);
     assert_eq!(
         Store::new(inner.clone()).has(digest).await?,
-        Some(VALUE.len() as u64),
-        "durable copy is not deleted"
+        None,
+        "remove deletes the inner copy"
     );
 
-    Store::new(inner.clone())
-        .update_oneshot(digest, VALUE.into())
-        .await?;
     store.update_oneshot(digest, VALUE.into()).await?;
     assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
     assert!(
