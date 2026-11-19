@@ -197,7 +197,9 @@ Seven things a docs change has to satisfy:
   `{/* lint-snippets: ignore */}` above it.
 - **No hard-coded release pins.** Snippets in `README.md` and the docs look
   up the newest release into `NATIVELINK_VERSION` instead of naming one, and
-  production guidance says to pin an exact tag. `lint:release-refs` checks
+  production guidance says to pin an exact tag. Those shell snippets carry no
+  `#` comment lines, because `zsh` runs a pasted comment as a command; the
+  explanation goes in the prose around them. `lint:release-refs` checks
   this with no network access, and runs on PRs.
   `node web/apps/docs/scripts/check-release-refs.mjs --resolve` also fetches
   every config URL, image tag and flake ref against the latest release, which
