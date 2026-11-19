@@ -97,8 +97,10 @@ don't resolve "latest" at deploy time. See
 
 **Linux and macOS**
 
+Look up the newest release tag, such as `vX.Y.Z`, download the example
+configuration into the current directory, and start the server:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
     https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -113,21 +115,21 @@ docker run --rm -it \
 
 **Windows**
 
+The same steps in PowerShell: look up the newest release tag, download the
+configuration file into the current directory, and run the Docker container
+with that file mounted:
+
 ```powershell
-# Look up the newest release tag, such as vX.Y.Z
 $NATIVELINK_VERSION = (Invoke-RestMethod `
     "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
 if (-not $NATIVELINK_VERSION) {
     Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
 } else {
-    # Download the configuration file
-    Invoke-WebRequest -ErrorAction Stop `
+    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
         -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
         -OutFile "basic_cas.json5"
 
-    # Run the Docker container
-    # Note: Adjust the path if the script is not run from the directory containing basic_cas.json5
     docker run `
         -v ${PWD}/basic_cas.json5:/config `
         -p 50051:50051 `
@@ -163,8 +165,10 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 **Linux, MacOS, WSL2**
 
+Look up the newest release tag, download the example configuration, and run
+that release from its flake:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
     https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
