@@ -7303,6 +7303,148 @@ exit 1
         Ok(())
     }
 
+    /// The worker reads no device. A wrapper that measured what the action
+    /// held on its GPU says so in the side channel file, and the figure
+    /// travels to the scheduler in the action's resource usage, beside the
+    /// memory and disk the worker sampled itself.
+    #[cfg(target_family = "unix")]
+    #[cfg_attr(feature = "nix", ignore)]
+    #[nativelink_test]
+    async fn entrypoint_reports_gpu_memory_via_side_channel()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+#!/bin/bash
+echo '{\"peak_gpu_memory_kb\": 5242880}' > \"$SIDE_CHANNEL_FILE\"
+exec \"$@\"
+";
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            {
+                let mut file_options = std::fs::OpenOptions::new();
+                file_options.create(true);
+                file_options.truncate(true);
+                file_options.write(true);
+                file_options.mode(0o777);
+                let mut test_wrapper_script_handle = file_options
+                    .open(OsString::from(&test_wrapper_script))
+                    .unwrap();
+                test_wrapper_script_handle
+                    .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
+                    .unwrap();
+                test_wrapper_script_handle.sync_all().unwrap();
+                // See `entrypoint_sends_timeout_via_side_channel`.
+                std::process::Command::new("sync").output().unwrap();
+            }
+            test_wrapper_script
+        };
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
+                    persistent_workers: PersistentWorkersSettings::default(),
+                    max_captured_output_bytes: 0,
+                    resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
+                    buck2_file_capture: None,
+                    entrypoint: Some(test_wrapper_script.into_string().unwrap()),
+                    additional_environment: Some(HashMap::from([(
+                        "SIDE_CHANNEL_FILE".to_string(),
+                        EnvironmentSource::SideChannelFile,
+                    )])),
+                },
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(result.exit_code, 0, "the wrapped command ran: {result:?}");
+        assert!(result.error.is_none(), "a report is not a failure");
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(usage.peak_gpu_memory_kb, 5_242_880, "{usage:?}");
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn core::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
