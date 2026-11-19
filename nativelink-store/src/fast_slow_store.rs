@@ -462,7 +462,8 @@ impl FastSlowStore {
                         name_missing_digest(
                             make_err!(
                                 Code::NotFound,
-                                "Object {} not found in either fast or slow store. \
+                                "Object {} not found in either fast or slow store, \
+                                    or the slow store considers it expired (consider_expired_after_s). \
                                     If using multiple workers, ensure all workers share the same CAS storage path.",
                                 key.as_str()
                             ),
@@ -998,7 +999,27 @@ impl StoreDriver for FastSlowStore {
 
     /// `FastSlowStore` has optimizations for dealing with files.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::FileUpdates
+        match optimization {
+            StoreOptimizations::FileUpdates => true,
+            // `get_part` reports a missing key as `NotFound` on its own, so a
+            // store above can skip its sizing `has()` whenever our slow store
+            // lets us skip ours. Asked without a key, a key-routed slow store
+            // (shard, size_partitioning) answers for itself and reports
+            // `false`, so this never claims laziness for one route's backend.
+            StoreOptimizations::LazyExistenceOnSync => self
+                .slow_store
+                .inner_store::<StoreKey<'_>>(None)
+                .optimized_for(StoreOptimizations::LazyExistenceOnSync),
+            _ => false,
+        }
+    }
+
+    /// A store above sizes a lazy fill by this limit, so report the slow
+    /// store's: a fill reads it from there.
+    fn max_upload_size(&self) -> u64 {
+        self.slow_store
+            .inner_store::<StoreKey<'_>>(None)
+            .max_upload_size()
     }
 
     /// Optimized variation to consume the file if one of the stores is a
