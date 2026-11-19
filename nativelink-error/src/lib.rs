@@ -544,6 +544,12 @@ impl From<base64::DecodeError> for Error {
     }
 }
 
+impl From<jiff::Error> for Error {
+    fn from(err: jiff::Error) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
 pub trait ResultExt<T> {
     /// # Errors
     ///

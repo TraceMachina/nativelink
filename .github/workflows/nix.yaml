@@ -7,7 +7,7 @@ on:
     paths-ignore:
       - ".github/styles/**"
       - "web/**"
-  # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
+  # Two jobs run only on the nightly schedule and full manual runs: Cargo Dev
   # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
   # mongo). See their per-job `if`. The installation and
   # RBE toolchain matrix stay on the branch CI path and skip the nightly run via
@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Branch CI only, or include nightly Cargo and integration checks
+        type: choice
+        options: [all, branch]
+        default: all
 
 permissions:
   contents: read
@@ -25,7 +31,7 @@ concurrency:
 
 jobs:
   # Credentialed work uses reviewed repository branches, like the Bazel lane.
-  # Promote reviewed external commits to a repository branch before running it.
+  # The trusted coordinator promotes listed forks; maintainers review others.
   nix-build:
     concurrency:
       group: retained-ci-nix
@@ -58,7 +64,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
       - name: Test Nix package sharing
         run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
 
@@ -99,7 +106,7 @@ jobs:
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scope != 'branch') }}
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +179,7 @@ jobs:
           nix run -L .#nativelink-is-executable-test
 
   integration:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scope != 'branch') }}
     name: ${{ matrix.test-name }}
     strategy:
       matrix:

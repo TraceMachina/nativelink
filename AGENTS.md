@@ -140,6 +140,7 @@ column is a real page under `web/apps/docs/content/docs/`.
 | Scheduler matching or platform-property semantics      | `nativelink-scheduler/src`                            | `remote-execution/platform-properties`, and `explanations/architecture` if the model changed rather than the mechanics    |
 | Worker sandboxing or input materialization             | `nativelink-worker/src/running_actions_manager.rs`    | `explanations/architecture` and `operate/security-hardening`; the second one states what the sandbox is _not_             |
 | The licence header on a file, or `LICENSE`             | the headers themselves                                | `reference/oss-and-enterprise`, which is the only place the licence split is explained                                    |
+| A release, or a README or docs snippet naming one      | the GitHub release (`releases/latest`)                | `getting-started/quickstart` and `getting-started/shared-cache` look it up; never hard-code one (CONTRIBUTING step 12)    |
 | The canonical production config                        | `deployment-examples/`, `nativelink-config/examples/` | `operate/production-config`; the snippets are lifted from there, not invented                                             |
 | A page's URL                                           | `web/apps/docs/content/docs/**/meta.json`             | add a redirect in `web/apps/docs/next.config.mjs`                                                                         |
 
@@ -178,9 +179,10 @@ bunx biome check --write .    # lint and format
 
 pnpm run --filter @nativelink/docs lint:snippets  # JSON5 snippets against the config schema
 pnpm run --filter @nativelink/docs lint:anchors   # explicit anchors on headings and FAQ entries
+pnpm run --filter @nativelink/docs lint:release-refs  # no hard-coded release pins in README.md or the docs
 ```
 
-Six things a docs change has to satisfy:
+Seven things a docs change has to satisfy:
 
 - **Vale and typos** run in pre-commit. New product nouns go in
   `.github/styles/config/vocabularies/TraceMachina/accept.txt`.
@@ -193,6 +195,14 @@ Six things a docs change has to satisfy:
   the generated config reference. A snippet that is deliberately wrong (showing
   a mistake, or a foreign tool's config) opts out with
   `{/* lint-snippets: ignore */}` above it.
+- **No hard-coded release pins.** Snippets in `README.md` and the docs look
+  up the newest release into `NATIVELINK_VERSION` instead of naming one, and
+  production guidance says to pin an exact tag. `lint:release-refs` checks
+  this with no network access, and runs on PRs.
+  `node web/apps/docs/scripts/check-release-refs.mjs --resolve` also fetches
+  every config URL, image tag and flake ref against the latest release, which
+  the "Docs / Release references" workflow does on each published release and
+  weekly.
 - **`lint:anchors` passes.** Every heading and every `<Accordion>` carries an
   explicit anchor, so rewording a heading cannot silently repoint a citation.
   `lint:anchors --fix` writes the anchor Fumadocs would have derived anyway,
