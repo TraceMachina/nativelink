@@ -17,9 +17,11 @@
  * Usage, from anywhere in the repository:
  *
  *   node web/apps/docs/scripts/check-release-refs.mjs
- *       Static check, no network: no hard-coded pins, and every file that
+ *       Static check, no network: no hard-coded pins, every file that
  *       uses NATIVELINK_VERSION also sets it (the lookup, or an explicit
- *       vX.Y.Z placeholder for a version the reader chooses).
+ *       vX.Y.Z placeholder for a version the reader chooses), and no shell
+ *       snippet that uses it has a comment line, which zsh runs as a
+ *       command when the snippet is pasted.
  *
  *   node web/apps/docs/scripts/check-release-refs.mjs --resolve [--wait <seconds>]
  *       Also fetch every URL and image manifest, with NATIVELINK_VERSION
@@ -116,6 +118,33 @@ function findPins(files) {
     });
   }
   return pins;
+}
+
+// Readers paste these snippets whole into a terminal. zsh, the default shell
+// on macOS, treats `#` as a comment only in a script: pasted at a prompt, a
+// comment line runs as a command named `#` and prints "command not found".
+// So the explanation goes in the prose around a snippet, not inside it.
+const SHELL_FENCE = /^\s*```\s*(?:bash|sh|shell|zsh)\b/;
+
+function findPastedComments(files) {
+  const found = [];
+  for (const file of files) {
+    const lines = readFileSync(join(root, file), "utf8").split("\n");
+    let fence = null;
+    lines.forEach((line, i) => {
+      if (!/^\s*```/.test(line)) {
+        if (!fence) return;
+        fence.uses ||= line.includes("NATIVELINK_VERSION");
+        if (/^\s*#/.test(line)) fence.comments.push(`${file}:${i + 1}`);
+      } else if (fence) {
+        if (fence.shell && fence.uses) found.push(...fence.comments);
+        fence = null;
+      } else {
+        fence = { shell: SHELL_FENCE.test(line), uses: false, comments: [] };
+      }
+    });
+  }
+  return found;
 }
 
 function staticCheck(pins) {
@@ -216,7 +245,8 @@ function arg(name) {
 }
 
 async function main() {
-  const pins = findPins(trackedFiles());
+  const files = trackedFiles();
+  const pins = findPins(files);
   if (pins.length === 0) {
     console.error("no release references found; the patterns are wrong");
     process.exit(1);
@@ -226,6 +256,10 @@ async function main() {
   console.log(`${pins.length} references in ${fileCount} files`);
   console.log(`${dynamicCount} of them use NATIVELINK_VERSION`);
   const errors = staticCheck(pins);
+  for (const where of findPastedComments(files)) {
+    const fix = "move it to the prose: zsh runs a pasted # line as a command";
+    errors.push(`${where}: comment inside a release snippet\n  ${fix}`);
+  }
 
   if (errors.length === 0 && process.argv.includes("--resolve")) {
     const latest = await latestRelease();
