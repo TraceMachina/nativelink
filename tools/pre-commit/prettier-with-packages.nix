@@ -5,7 +5,7 @@
   cacert,
 }: let
   # This derivation needs to be manually updated every time the pnpm-lock.yaml file changes.
-  outputHash = "sha256-v8WYmVIFfilhFscp6cqPJH2e+BvQhjrN/dgS0HD1rsE=";
+  outputHash = "sha256-7zJJOP1sxH6YaMcHRJwhp9n+VsCB0cSVLtR28/6sUt4=";
 in
   stdenv.mkDerivation {
     pname = "prettier-node-modules";
