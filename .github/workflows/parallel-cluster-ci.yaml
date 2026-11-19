@@ -212,12 +212,14 @@ jobs:
   # The same build on the AWS deployment, beside the lane above until it
   # replaces it. It never fails a run, and it starts only once the repository
   # variable NL_AWS_LANE is set, so that merging this does nothing by itself.
+  # It builds main only: that deployment trusts reviewed code alone, and its
+  # role and environment accept no other branch.
   # The cluster variables keep their names; this environment holds the AWS
   # deployment's values for them.
   cluster-aws:
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
-      startsWith(github.ref, 'refs/heads/') &&
+      github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       vars.NL_AWS_LANE == 'true'
     name: NativeLink / Linux (AWS)
@@ -238,7 +240,7 @@ jobs:
       NL_GKE_SERVER: ${{ secrets.NL_GKE_SERVER }}
       NL_GKE_CA_DATA: ${{ secrets.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
+      NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}
     steps:
       - name: Start setup timer
         run: echo "BENCHMARK_STARTED=$(date +%s)" >> "$GITHUB_ENV"

@@ -210,7 +210,9 @@ class BenchmarkTest(unittest.TestCase):
         self.assertIn('environment: cluster-ci-aws', aws_job)
         self.assertIn('continue-on-error: true', aws_job)
         self.assertIn("vars.NL_AWS_LANE == 'true'", aws_job)
-        self.assertIn("startsWith(github.ref, 'refs/heads/')", aws_job)
+        # Reviewed code only: a pushed branch is built by the primary lane.
+        self.assertIn("github.ref == 'refs/heads/main'", aws_job)
+        self.assertNotIn('startsWith(github.ref', aws_job)
         self.assertIn('id-token: write', aws_job)
         # The log of this public repository shows a variable and masks a
         # secret, so what locates the deployment is read from secrets.
@@ -227,6 +229,8 @@ class BenchmarkTest(unittest.TestCase):
         for stored_key in ('aws-access-key-id', 'aws-secret-access-key', 'AWS_SECRET_ACCESS_KEY'):
             self.assertNotIn(stored_key, workflow)
         self.assertNotIn('NL_GCP_', aws_job)
+        # The Bazel client by its own name: the Nix lane has a client of its own.
+        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}', aws_job)
         self.assertIn('name: cluster-ci-aws', aws_job)
 
     def test_eks_tokens_come_from_the_job_role_and_stay_out_of_kubeconfig(self):
