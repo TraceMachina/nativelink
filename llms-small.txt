@@ -1370,9 +1370,9 @@ serves all of them; the JSON5 config decides which subset to run.
 
 ## Container registry
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release and pull it:
 
 ## Backups & recovery
 
