@@ -210,7 +210,9 @@ class BenchmarkTest(unittest.TestCase):
         self.assertIn('environment: cluster-ci-aws', aws_job)
         self.assertIn('continue-on-error: true', aws_job)
         self.assertIn("vars.NL_AWS_LANE == 'true'", aws_job)
-        self.assertIn("startsWith(github.ref, 'refs/heads/')", aws_job)
+        # Reviewed code only: a pushed branch is built by the primary lane.
+        self.assertIn("github.ref == 'refs/heads/main'", aws_job)
+        self.assertNotIn('startsWith(github.ref', aws_job)
         self.assertIn('id-token: write', aws_job)
         # The log of this public repository shows a variable and masks a
         # secret, so what locates the deployment is read from secrets.
