@@ -127,6 +127,9 @@ struct MockTransport {
     /// When set, every request fails the way `connect()` does on a host with
     /// no local port left.
     out_of_ports: AtomicBool,
+    /// Base64 block id and time for one `Put Block` request to stall, so a
+    /// test can keep one block in flight while another one fails.
+    held_block: Mutex<Option<(String, Duration)>>,
 }
 
 impl MockTransport {
@@ -168,6 +171,10 @@ impl MockTransport {
 
     fn push_stage_block(&self, response: CannedResponse) {
         self.stage_block.lock().unwrap().push_back(response);
+    }
+
+    fn hold_block(&self, block_id: &[u8], hold: Duration) {
+        *self.held_block.lock().unwrap() = Some((azure_core::base64::encode(block_id), hold));
     }
 
     fn deleted(&self) -> Vec<String> {
@@ -226,6 +233,16 @@ impl HttpClient for MockTransport {
         let hold = *self.hold.lock().unwrap();
         if !hold.is_zero() {
             tokio::time::sleep(hold).await;
+        }
+        let stalled_block = self.held_block.lock().unwrap().clone();
+        if let Some((block_id, stall)) = stalled_block {
+            let is_stalled = request
+                .url()
+                .query_pairs()
+                .any(|(key, value)| key == "blockid" && value == block_id.as_str());
+            if is_stalled {
+                tokio::time::sleep(stall).await;
+            }
         }
         let response = self.respond(request);
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -1422,6 +1439,33 @@ async fn failed_staged_upload_leaves_staged_blocks_alone() -> Result<(), Error> 
         mock.committed_block_list().is_none(),
         "no block list is committed for a failed upload"
     );
+    Ok(())
+}
+
+/// A failed upload reports its error without waiting for block requests still
+/// in flight, so one stalled block cannot delay the failure.
+#[nativelink_test(start_paused = true)]
+async fn failed_staged_upload_does_not_wait_for_in_flight_blocks() -> Result<(), Error> {
+    let send_data = two_block_payload();
+    let mock = MockTransport::new();
+    // The first block stalls for an hour; the second is refused for good.
+    mock.hold_block(&format!("{:032}", 0).into_bytes(), Duration::from_hours(1));
+    mock.push_stage_block(CannedResponse {
+        status: StatusCode::BadRequest,
+        headers: Vec::new(),
+        body: Vec::new(),
+    });
+    let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+
+    let digest = DigestInfo::try_new(TEST_HASH, send_data.len())?;
+    let err = tokio::time::timeout(
+        Duration::from_mins(1),
+        store.update_oneshot(StoreKey::from(&digest), send_data.into()),
+    )
+    .await
+    .expect("the failure must not wait for the stalled block")
+    .expect_err("the refused block fails the upload");
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
     Ok(())
 }
 

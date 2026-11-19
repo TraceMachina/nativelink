@@ -681,36 +681,20 @@ where
 
         tokio::pin!(read_stream_fut);
 
-        let mut failure: Option<Error> = None;
         loop {
             if read_stream_fut.is_terminated() && rx.is_empty() && upload_futures.is_empty() {
                 break;
             }
+            // Returning on an error drops the block requests still in flight,
+            // cancelling them. A request that already reached Azure may still
+            // stage its block, which Azure collects like any other.
             tokio::select! {
-                result = &mut read_stream_fut => match result {
-                    Ok(uploaded) => total_uploaded = uploaded,
-                    Err(err) => {
-                        failure = Some(err);
-                        break;
-                    }
+                result = &mut read_stream_fut => {
+                    total_uploaded = result?;
                 },
-                Some(block_id) = upload_futures.next() => match block_id {
-                    Ok(block_id) => block_ids.push(block_id),
-                    Err(err) => {
-                        failure = Some(err);
-                        break;
-                    }
-                },
+                Some(block_id) = upload_futures.next() => block_ids.push(block_id?),
                 Some(fut) = rx.recv() => upload_futures.push(fut),
             }
-        }
-        if let Some(err) = failure {
-            // The read future is never polled again, so nothing new is
-            // staged; blocks already on their way to Azure are allowed to
-            // land so no request outlives the failed upload.
-            drop(rx);
-            while upload_futures.next().await.is_some() {}
-            return Err(err);
         }
 
         // Reject an incomplete transfer before publishing its staged blocks.
