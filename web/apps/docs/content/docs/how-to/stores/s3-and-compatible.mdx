@@ -202,6 +202,9 @@ interval:
 
 It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
 often the slowest thing in the build, and the answer is usually stale-tolerant.
+A `remove` or `remove_cached` through this store drops the digest from that
+index only; it does not delete the S3 object. Until the next sync, `has()`
+treats the digest as missing.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 

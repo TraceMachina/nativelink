@@ -191,6 +191,15 @@ a small map of digests, so it can hold far more entries than the store itself.
 This is the highest-leverage wrapper in front of object storage, where every
 existence check is a billed request.
 
+A `remove` or `remove_cached` through this wrapper drops that local presence
+entry, so the next `has()` asks the backend again. Dropping the index is not
+a repair of a durable object: `removed=true` means an eligible cached copy
+below this wrapper was dropped, not that an object-store blob was rewritten
+or deleted. A failed or no-op backend removal still leaves the old positive
+untrusted.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
+
 ### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
 
 Compresses blobs with LZ4 before they reach the wrapped store.
