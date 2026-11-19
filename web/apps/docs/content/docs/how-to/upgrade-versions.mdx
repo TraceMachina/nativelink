@@ -90,10 +90,10 @@ just the newest, because the breaking change may be three releases back.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ```sh
-# The exact release you are moving to, from the releases page
 NATIVELINK_VERSION=vX.Y.Z
 
 docker run --rm \
