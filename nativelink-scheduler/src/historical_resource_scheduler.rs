@@ -276,7 +276,11 @@ impl From<&Shaped> for Numbers {
 /// and a minimum on a dimension no worker advertises makes the action
 /// unsatisfiable, so a number on a dimension the fleet does not reserve is
 /// dropped when the hint is shaped. A configuration with neither a ladder
-/// nor a cold start reserves whatever was measured, as it always did.
+/// nor a cold start reserves whatever was measured of cpu, memory and disk,
+/// as it always did. Measured device memory is reserved only where a class
+/// names `gpu_memory_kb`, with or without a ladder: nothing else says a
+/// worker advertises it, and without one the first report from a wrapper
+/// would leave the action's next run waiting for a worker that never comes.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "one switch per dimension the fleet reserves; a set of them would not read better"
@@ -296,19 +300,20 @@ impl Reserved {
             || cold.cpu_count > 0
             || cold.memory_kb > 0
             || cold.disk_kb > 0;
+        let gpu_memory = spec.classes.iter().any(|c| c.gpu_memory_kb > 0);
         if !sized {
             return Self {
                 cpu: true,
                 memory: true,
                 disk: true,
-                gpu_memory: true,
+                gpu_memory,
             };
         }
         Self {
             cpu: cold.cpu_count > 0 || spec.classes.iter().any(|c| c.cpu_count > 0),
             memory: cold.memory_kb > 0 || spec.classes.iter().any(|c| c.memory_kb > 0),
             disk: cold.disk_kb > 0 || spec.classes.iter().any(|c| c.disk_kb > 0),
-            gpu_memory: spec.classes.iter().any(|c| c.gpu_memory_kb > 0),
+            gpu_memory,
         }
     }
 }
@@ -368,14 +373,10 @@ impl FileHints {
                     0
                 },
                 // Not subject to `reserved`: that rule drops a measurement
-                // on a dimension the fleet does not reserve, and this is a
-                // number someone wrote down for a fleet that has the device.
+                // on a dimension the fleet does not reserve, and these are
+                // numbers someone wrote down for a fleet that has the device.
                 gpu_count: hint.gpu_count.unwrap_or(class.gpu_count),
-                gpu_memory_kb: if self.reserved.gpu_memory {
-                    hint.gpu_memory_kb.unwrap_or(class.gpu_memory_kb)
-                } else {
-                    0
-                },
+                gpu_memory_kb: hint.gpu_memory_kb.unwrap_or(class.gpu_memory_kb),
             };
             for key in hint.keys() {
                 next.insert(key, numbers);

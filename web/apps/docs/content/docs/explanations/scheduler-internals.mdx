@@ -291,8 +291,12 @@ takes the smallest such class that holds what it held, with that class's
 `gpu_count`, and an action that was not measured on one takes a class that
 names no device memory. Past the largest slice no class stands in: the
 measured number is reserved as it is, so only a worker advertising that
-much is asked. A ladder that names no device memory reserves none.
-Snapshots that predate the dimension still load.
+much is asked. A measurement is reserved only when a class names
+`gpu_memory_kb`. A ladder that names no device memory reserves none, and
+neither does a configuration with no ladder at all, because nothing there
+says a worker advertises it; the measurement is still recorded. A number
+stated in the hints file is applied as written. Snapshots that predate the
+dimension still load.
 
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The

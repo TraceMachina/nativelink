@@ -1386,8 +1386,35 @@ async fn a_fleet_without_slices_does_not_reserve_measured_device_memory() -> Res
     Ok(())
 }
 
+/// A configuration with no ladder and no cold start reserves what was
+/// measured of memory, as it always did, and no device memory: nothing in
+/// it says a worker advertises any. Reserving it would leave the action's
+/// next run, after the first report from a wrapper, waiting for a worker
+/// that does not exist.
+#[nativelink_test]
+async fn an_unsized_fleet_does_not_reserve_measured_device_memory() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:physics_test", "CudaTest")),
+    )
+    .await?;
+    assert_eq!(
+        properties,
+        HashMap::from([("memory_kb".to_string(), "2000000".to_string())])
+    );
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
 /// While the hints file sizes actions, an entry states device memory like
-/// any other number, under the configured property name.
+/// any other number, under the configured property name. Someone wrote the
+/// number down, so it is applied as written whether or not a class names
+/// device memory; only a measurement waits for one.
 #[nativelink_test]
 async fn a_file_hint_states_device_memory() -> Result<(), Error> {
     let path = write_hints_file(
@@ -1396,21 +1423,22 @@ async fn a_file_hint_states_device_memory() -> Result<(), Error> {
     let mut spec = base_spec(path.clone(), None);
     spec.learn_from_workers = false;
     spec.gpu_memory_property_name = "gpu_ram".to_string();
-    let (mock, scheduler) = make_scheduler_with_spec(&spec);
-    let properties = properties_after_add(
-        &scheduler,
-        &mock,
-        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
-        Some(("//sim:render_test", "TestRunner")),
-    )
-    .await?;
-    assert_eq!(
-        properties,
-        HashMap::from([
-            ("gpu_count".to_string(), "28".to_string()),
-            ("gpu_ram".to_string(), "20971520".to_string()),
-        ])
-    );
+    let stated = HashMap::from([
+        ("gpu_count".to_string(), "28".to_string()),
+        ("gpu_ram".to_string(), "20971520".to_string()),
+    ]);
+    for classes in [vec![], vec![class("s", 1000, 4_000_000, 0)]] {
+        spec.classes = classes;
+        let (mock, scheduler) = make_scheduler_with_spec(&spec);
+        let properties = properties_after_add(
+            &scheduler,
+            &mock,
+            make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+            Some(("//sim:render_test", "TestRunner")),
+        )
+        .await?;
+        assert_eq!(properties, stated);
+    }
     fs::remove_file(path)?;
     Ok(())
 }

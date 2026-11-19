@@ -1066,9 +1066,12 @@ pub struct HistoricalResourceSpec {
     /// and the scheduler reserves the most any run in the window held, plus
     /// `headroom_percent`. With classes that name `gpu_memory_kb`, the
     /// action takes the smallest one that holds it, with that class's
-    /// `gpu_count`. A hints-file entry may state `gpu_memory_kb` while the
-    /// file is what sizes actions. A fleet whose ladder names no device
-    /// memory reserves none, as with any dimension it does not reserve.
+    /// `gpu_count`. A measurement is reserved only when a class names
+    /// `gpu_memory_kb`: with no such class, or with no classes at all, it
+    /// is recorded and nothing is asked, since nothing says a worker
+    /// advertises device memory. A hints-file entry may state
+    /// `gpu_memory_kb` while the file is what sizes actions, and a stated
+    /// number is applied as written.
     /// Default: `gpu_memory_kb`
     #[serde(
         default = "default_gpu_memory_property_name_for_hints",
