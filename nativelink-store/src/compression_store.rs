@@ -113,6 +113,11 @@ pub const CHUNK_FRAME_TYPE: u8 = 0;
 /// Number representing the footer.
 pub const FOOTER_FRAME_TYPE: u8 = 1;
 
+/// Bytes from the last byte of a framed object back through
+/// `uncompressed_data_sz`. That field sits at a fixed offset from EOF:
+/// version (u8), `block_size` (u32), then `uncompressed_data_sz` (u64).
+const FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN: u64 = 1 + 4 + 8;
+
 /// This is a partial mirror of `nativelink_config::stores::Lz4Config`.
 /// We cannot use that natively here because it could cause our
 /// serialized format to change if we added more configs.
@@ -340,6 +345,61 @@ impl CompressionStore {
         }
         Ok(())
     }
+
+    /// Reads `Footer.uncompressed_data_size` from its fixed place relative
+    /// to the last byte of the framed object. A truncated or unreadable
+    /// footer is an error, matching `get_part`; we do not fall back to
+    /// `digest.size_bytes()`, which is the Action size for an AC entry.
+    async fn uncompressed_payload_size(
+        &self,
+        key: StoreKey<'_>,
+        framed_size: u64,
+    ) -> Result<u64, Error> {
+        if framed_size < FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN {
+            return Err(make_err!(
+                Code::Internal,
+                "Compressed object {} is too small to hold a frame footer ({} < {})",
+                key.as_str(),
+                framed_size,
+                FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN
+            ));
+        }
+        let tail = self
+            .inner_store
+            .get_part_unchunked(
+                key.borrow(),
+                framed_size - FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN,
+                Some(FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN),
+            )
+            .await
+            .err_tip(|| {
+                format!(
+                    "Failed to read compression frame footer for {}",
+                    key.as_str()
+                )
+            })?;
+        let tail_len = u64::try_from(tail.len()).unwrap_or(u64::MAX);
+        if tail_len != FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN {
+            return Err(make_err!(
+                Code::Internal,
+                "Expected {} footer tail bytes for {}, got {}",
+                FOOTER_UNCOMPRESSED_SIZE_TAIL_LEN,
+                key.as_str(),
+                tail_len
+            ));
+        }
+        let version = tail[tail.len() - 1];
+        if version != CURRENT_STREAM_FORMAT_VERSION {
+            return Err(make_err!(
+                Code::Internal,
+                "Expected footer version {} for {}, got {}",
+                CURRENT_STREAM_FORMAT_VERSION,
+                key.as_str(),
+                version
+            ));
+        }
+        Ok(LittleEndian::read_u64(&tail[..8]))
+    }
 }
 
 #[async_trait]
@@ -357,14 +417,24 @@ impl StoreDriver for CompressionStore {
         self.inner_has_with_results(digests, results).await?;
         // The inner store holds the framed, compressed bytes, so the sizes it
         // reports are the compressed ones. Callers size fast-tier writes and
-        // buffers from this answer, so for a digest key report the length the
-        // digest declares, which is what a read of this store delivers. A
-        // string key declares no length and keeps the stored size; reading
-        // the uncompressed one back from the frame header is a follow-up.
+        // buffers from this answer, so for a present digest key report the
+        // stored uncompressed payload length from the frame footer. That is
+        // what a read of this store delivers. For a CAS blob it equals
+        // `digest.size_bytes()`; for an action-cache entry the digest is the
+        // Action size and the footer is the ActionResult length. A string
+        // key declares no uncompressed length and keeps the stored size.
+        // Missing keys stay `None`. Zero-digest keys stay size 0.
         for (key, result) in digests.iter().zip(results.iter_mut()) {
-            if let (StoreKey::Digest(digest), Some(_)) = (key.borrow(), result.as_ref()) {
-                *result = Some(digest.size_bytes());
+            let Some(framed_size) = *result else {
+                continue;
+            };
+            if !matches!(key.borrow(), StoreKey::Digest(_)) || is_zero_digest(key.borrow()) {
+                continue;
             }
+            *result = Some(
+                self.uncompressed_payload_size(key.borrow(), framed_size)
+                    .await?,
+            );
         }
         Ok(())
     }
