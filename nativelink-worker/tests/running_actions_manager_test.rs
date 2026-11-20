@@ -11375,6 +11375,7 @@ done
         }
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
             unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
         }
@@ -11399,6 +11400,7 @@ done
         let job_pid = read_job_pid(&pid_file).await;
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
             unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
         }
