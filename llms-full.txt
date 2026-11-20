@@ -10111,6 +10111,9 @@ interval:
 
 It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
 often the slowest thing in the build, and the answer is usually stale-tolerant.
+A `remove` through this store drops the digest from that index and deletes
+the S3 object. A `remove_cached` drops the index entry only and keeps the S3
+object; until the next sync, `has()` treats the digest as missing.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 
@@ -11862,6 +11865,14 @@ The `eviction_policy` here governs the existence *index*, not the data. It is
 a small map of digests, so it can hold far more entries than the store itself.
 This is the highest-leverage wrapper in front of object storage, where every
 existence check is a billed request.
+
+A `remove` or `remove_cached` through this wrapper drops that local presence
+entry, so the next `has()` asks the backend again, then forwards the call to
+the wrapped store. `removed=true` means a copy below this wrapper was
+dropped; `remove_cached` only reaches cache tiers and keeps the durable copy.
+A failed or no-op backend removal still leaves the old positive untrusted.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
 
 ### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
 
@@ -21635,6 +21646,11 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
@@ -21655,11 +21671,12 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
-**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
-an action is never answered from the Action Cache and never shares an
-execution with an identical action that is already running. The worker still
-writes its result to the Action Cache; that part is tracked in
-[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+**`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
+action is never answered from the Action Cache, never shares an execution with
+an identical action that is already running, and the worker does not write its
+result to the Action Cache. A historical result is still uploaded when
+`upload_historical_results_strategy` asks for one: that record is stored under
+its own digest for debugging and is never served as a cached result.
 
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
