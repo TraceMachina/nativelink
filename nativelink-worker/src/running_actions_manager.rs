@@ -6364,8 +6364,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 } else {
                     action_info.timeout
                 };
-                // REAPI lets a server clamp a timeout over its maximum; the
-                // client asked for more time, not for a rejection.
+                // REAPI says a server MUST reject a timeout over its maximum.
+                // The execution service does when its `max_action_timeout_s`
+                // is set; otherwise a longer timeout reaches the worker and is
+                // clamped here rather than failed, which existing clients rely
+                // on (#2822).
                 let timeout = if timeout > self.max_action_timeout {
                     info!(
                         ?operation_id,

@@ -349,6 +349,7 @@ impl World {
                     scheduler: SCHEDULER_NAME.to_string(),
                     experimental_buck2_invocation_isolation: false,
                     execute_stream_heartbeat_s: 0,
+                    max_action_timeout_s: 0,
                 },
             }],
             &providers,

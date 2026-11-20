@@ -35,8 +35,8 @@ use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{
-    CasConfig, CasStoreConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
-    ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
+    AcStoreConfig, CasConfig, CasStoreConfig, HttpCompressionAlgorithm, ListenerConfig,
+    SchedulerConfig, ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
@@ -313,6 +313,14 @@ pub async fn build_server(
         .flatten()
         .cloned()
         .collect();
+    // Likewise for the Action Cache, so `update_enabled` reflects `read_only`.
+    let all_ac_configs: Vec<WithInstanceName<AcStoreConfig>> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.ac.as_deref())
+        .flatten()
+        .cloned()
+        .collect();
 
     for server_cfg in server_cfgs {
         let services = server_cfg
@@ -400,6 +408,13 @@ pub async fn build_server(
                         &action_schedulers,
                         &remote_cache_compression_instances,
                         &all_cas_configs,
+                        &store_manager,
+                        if http_config.max_decoding_message_size == 0 {
+                            DEFAULT_MAX_DECODING_MESSAGE_SIZE
+                        } else {
+                            http_config.max_decoding_message_size
+                        },
+                        &all_ac_configs,
                     )
                 }))
                 .await

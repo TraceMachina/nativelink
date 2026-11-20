@@ -84,20 +84,28 @@ fn make_execution_server_with_isolation(
     store_manager: &StoreManager,
     isolation: bool,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
-    make_execution_server_inner(store_manager, isolation, 0)
+    make_execution_server_inner(store_manager, isolation, 0, 0)
 }
 
 fn make_execution_server_with_heartbeat(
     store_manager: &StoreManager,
     heartbeat_s: usize,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
-    make_execution_server_inner(store_manager, false, heartbeat_s)
+    make_execution_server_inner(store_manager, false, heartbeat_s, 0)
+}
+
+fn make_execution_server_with_max_timeout(
+    store_manager: &StoreManager,
+    max_action_timeout_s: usize,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_inner(store_manager, false, 0, max_action_timeout_s)
 }
 
 fn make_execution_server_inner(
     store_manager: &StoreManager,
     isolation: bool,
     heartbeat_s: usize,
+    max_action_timeout_s: usize,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let mut action_schedulers: HashMap<String, Arc<dyn KnownPlatformPropertyProvider>> =
@@ -109,6 +117,7 @@ fn make_execution_server_inner(
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: isolation,
                 execute_stream_heartbeat_s: heartbeat_s,
+                max_action_timeout_s,
                 cas_store: "main_cas".to_string(),
                 scheduler: "main_scheduler".to_string(),
             },
@@ -791,6 +800,70 @@ async fn execute_malformed_timeout_returns_invalid_argument()
             TonicCode::InvalidArgument,
             "timeout {seconds}s {nanos}ns: {status:?}",
         );
+    }
+    Ok(())
+}
+
+// REv2 `Action.timeout`: "if the client does specify a timeout that is longer
+// than the server's maximum timeout, the server MUST reject the request." The
+// maximum is opt-in (`max_action_timeout_s` on the execution service); without
+// it a longer timeout is accepted and the worker clamps it, as before.
+#[nativelink_test]
+async fn execute_rejects_timeout_over_configured_maximum() -> Result<(), Box<dyn core::error::Error>>
+{
+    let store_manager = make_store_manager().await?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let empty_digest = upload_action(&cas_store, &Action::default()).await?;
+
+    // (configured maximum, requested timeout, accepted)
+    for (max_s, timeout_s, accepted) in [
+        (3600, Some(7200), false),
+        (3600, Some(3600), true),
+        (3600, None, true),
+        (0, Some(7200), true),
+    ] {
+        let (execution_server, scheduler) =
+            make_execution_server_with_max_timeout(&store_manager, max_s)?;
+        let action = Action {
+            command_digest: Some(empty_digest.into()),
+            input_root_digest: Some(empty_digest.into()),
+            timeout: timeout_s.map(|seconds| prost_types::Duration { seconds, nanos: 0 }),
+            ..Default::default()
+        };
+        let action_digest = upload_action(&cas_store, &action).await?;
+        let request = Request::new(make_execute_request(action_digest));
+        if accepted {
+            let state = MockActionStateResult {
+                states: vec![Arc::new(ActionState {
+                    client_operation_id: OperationId::default(),
+                    stage: ActionStage::Queued,
+                    action_digest,
+                    last_transition_timestamp: SystemTime::now(),
+                })],
+            };
+            let (response, _) = tokio::join!(
+                execution_server.execute(request),
+                scheduler.expect_add_action(Ok(Box::new(state))),
+            );
+            assert!(
+                response.is_ok(),
+                "max {max_s}s, timeout {timeout_s:?}: {:?}",
+                response.err()
+            );
+        } else {
+            // A request that wrongly gets through waits on the mock
+            // scheduler forever; the deadline turns that into a failure.
+            let result = tokio::time::timeout(
+                core::time::Duration::from_secs(5),
+                execution_server.execute(request),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("max {max_s}s must reject timeout {timeout_s:?}"));
+            let Err(status) = result else {
+                panic!("max {max_s}s must reject timeout {timeout_s:?}");
+            };
+            assert_eq!(status.code(), TonicCode::InvalidArgument, "{status:?}");
+        }
     }
     Ok(())
 }
