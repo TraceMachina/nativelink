@@ -45,7 +45,7 @@ use nativelink_config::cas_server::{
     Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
     ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -148,7 +148,7 @@ const SIGKILL_NUMBER: i32 = 9;
 pub use nativelink_util::action_messages::MISSING_INPUT_ERROR_TIP;
 
 fn tag_missing_input(err: Error) -> Error {
-    if err.code == Code::NotFound {
+    if err.code == Code::NotFound && matches!(err.context, ErrorContext::MissingDigest { .. }) {
         err.append(MISSING_INPUT_ERROR_TIP)
     } else {
         err
@@ -6542,6 +6542,28 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn only_missing_digest_is_tagged_as_missing_input() {
+        let local_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+            .append("Could not open worker input path");
+        assert_eq!(tag_missing_input(local_error.clone()), local_error);
+        let missing = make_err!(Code::NotFound, "CAS blob missing").with_context(
+            ErrorContext::MissingDigest {
+                hash: "abc".to_string(),
+                size: 42,
+            },
+        );
+        assert_eq!(
+            tag_missing_input(missing.clone()),
+            missing.clone().append(MISSING_INPUT_ERROR_TIP)
+        );
+        let other_error = Error {
+            code: Code::Unavailable,
+            ..missing
+        };
+        assert_eq!(tag_missing_input(other_error.clone()), other_error);
+    }
 
     fn test_digest(first_byte: u8) -> DigestInfo {
         let mut hash = [0u8; 32];

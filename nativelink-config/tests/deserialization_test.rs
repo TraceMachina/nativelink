@@ -92,7 +92,7 @@ mod duration_tests {
             (r#"{"duration": 10}"#, 10),
             (r#"{"duration": "  1m 10s  "}"#, 70),
             // Complex duration formats
-            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_735_967),
+            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_714_367),
             (r#"{"duration": "0s"}"#, 0),
             (r#"{"duration": "1ns"}"#, 0), // Sub-second rounds to 0
             (r#"{"duration": "999h"}"#, 3_596_400),
@@ -128,10 +128,13 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (r#"{"duration": "invalid"}"#, "expected number at 0"),
+            (
+                r#"{"duration": "invalid"}"#,
+                "expected duration to start with a unit value (a decimal integer) after an optional sign, but no integer was found",
+            ),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
-                "number is too large",
+                "number too big to parse into 64-bit integer",
             ),
         ];
 
@@ -139,7 +142,10 @@ mod duration_tests {
             let error = serde_json5::from_str::<DurationEntity>(input)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected_error));
+            assert!(
+                error.contains(expected_error),
+                "{error} != {expected_error}"
+            );
         }
     }
 

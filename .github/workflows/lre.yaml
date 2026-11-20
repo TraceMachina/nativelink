@@ -2,16 +2,9 @@
 name: CI / LRE
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - ".github/styles/**"
-      - "web/**"
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - ".github/styles/**"
-      - "web/**"
+  schedule:
+    - cron: "30 7 * * *" # 07:30 UTC daily, staggered from the other nightlies
+  workflow_dispatch:
 
 # Jobs without their own permissions block only need checkout. ci-metadata
 # degrades to a notice when the token cannot list this run's jobs, and a
@@ -26,6 +19,8 @@ concurrency:
 
 jobs:
   local:
+    # Keep mirrored workflow runs off the PR and push paths too.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,11 +48,13 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          # Scheduled main builds keep the cache access of the former main
+          # push builds. Manual runs on other refs remain read-only.
           api-key: >-
-            ${{ github.event_name == 'push'
+            ${{ github.ref == 'refs/heads/main'
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          mode: ${{ github.ref == 'refs/heads/main' && 'write' || 'read' }}
           # Remote execution only on Linux; the action hard-fails exec on
           # non-Linux runners, so macOS lanes fall back to cache.
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
