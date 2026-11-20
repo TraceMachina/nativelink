@@ -3296,12 +3296,12 @@ repository.
 
   <Tab value="Linux (Docker)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab a known-good basic
+configuration, then run the official image:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
-
-# Grab a known-good basic configuration, then run the official image
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
 curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run \
@@ -3318,8 +3318,10 @@ listening on `localhost:50051`.
 
   <Tab value="macOS / Linux (Nix)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run that release from its flake:
+
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -3345,15 +3347,17 @@ runs natively on Apple Silicon.
 
   <Tab value="Windows (Docker)">
 
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run the official image:
+
 ```powershell
-# Look up the newest release tag, such as vX.Y.Z
 $NATIVELINK_VERSION = (Invoke-RestMethod `
   "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
 if (-not $NATIVELINK_VERSION) {
   Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
 } else {
-  Invoke-WebRequest -ErrorAction Stop `
+  Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
     -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
@@ -4489,8 +4493,10 @@ giving you cross-machine and cross-branch caching.
 
 ## 1. Start NativeLink [#1-start-nativelink]
 
+Look up the newest release tag, such as `vX.Y.Z`, download a basic
+configuration, and start the server in the background:
+
 ```sh
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -4781,10 +4787,9 @@ each independently.
 
 Official images are published to GitHub Container Registry, tagged with
 the release version prefixed by `v`. No `latest` image tag exists. To
-find the newest release and pull it:
+find the newest release tag, such as `vX.Y.Z`, and pull it:
 
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -5220,10 +5225,10 @@ easier to debug once you know the wiring is sound.
 ## Get the config [#get-the-config]
 
 The repo ships a config that is exactly this tutorial: CAS, action cache,
-scheduler, and one worker, all in a single process on localhost.
+scheduler, and one worker, all in a single process on localhost. Look up
+the newest release tag, such as `vX.Y.Z`, and download that release's copy:
 
 ```bash
-# Look up the newest release tag, such as vX.Y.Z
 NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
 : "${NATIVELINK_VERSION:?could not look up the latest release}" &&
@@ -13633,10 +13638,10 @@ just the newest, because the breaking change may be three releases back.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ```sh
-# The exact release you are moving to, from the releases page
 NATIVELINK_VERSION=vX.Y.Z
 
 docker run --rm \
@@ -20103,6 +20108,38 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 `memory_escalation.ladder_kb` set to the classes' memory values, a memory
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
+
+A class may also carry `gpu_count`, written to `gpu_property_name` on the
+scale the workers advertise: whole devices, or shares of one where a fleet
+counts a device in parts. A share is stated and never measured, so it plays
+no part in choosing a class for a measured action. While the hints file
+sizes actions, an entry states it directly with `gpu_count` or through the
+class it names. In either mode the class the cold-start rules name for an
+action supplies it, and goes on supplying it after the action's CPU and
+memory have been learned. A learning scheduler does not seed a `gpu_count`
+from the hints file and logs a warning when the file states one. A value
+the client sent is never lowered, and a class rule fills the property only
+when it is absent.
+
+Device memory is the part of a GPU that is learned, where something
+measures it. A worker reads no device itself: whatever wraps an action
+reports the peak it held as `peak_gpu_memory_kb` in the side channel file,
+the worker carries that figure in its usage report, and the sketch keeps the
+largest one of each half-window. The reservation, written to
+`gpu_memory_property_name`, is the most any run in the window held plus
+`headroom_percent`; a maximum and not a percentile, because an action that
+runs out of device memory is ended outright. A class that names
+`gpu_memory_kb` stands for a slice of a GPU. An action measured on a device
+takes the smallest such class that holds what it held, with that class's
+`gpu_count`, and an action that was not measured on one takes a class that
+names no device memory. Past the largest slice no class stands in: the
+measured number is reserved as it is, so only a worker advertising that
+much is asked. A measurement is reserved only when a class names
+`gpu_memory_kb`. A ladder that names no device memory reserves none, and
+neither does a configuration with no ladder at all, because nothing there
+says a worker advertises it; the measurement is still recorded. A number
+stated in the hints file is applied as written. Snapshots that predate the
+dimension still load.
 
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The
