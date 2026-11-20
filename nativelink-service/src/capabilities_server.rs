@@ -49,6 +49,11 @@ pub struct CapabilitiesServer {
     // property onto the wire.
     remote_cache_compression_instances: RemoteCacheCompressionInstances,
     chunking_params_for_instance: HashMap<InstanceName, FastCdc2020Params>,
+    // Whether each instance's Action Cache is read only, mirrored from the AC
+    // config so GetCapabilities can report `update_enabled` truthfully. An
+    // instance absent here is treated as writable, matching the previous
+    // always-true behaviour.
+    ac_read_only_for_instance: HashMap<InstanceName, bool>,
 }
 
 impl CapabilitiesServer {
@@ -57,6 +62,7 @@ impl CapabilitiesServer {
         scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
         remote_cache_compression_instances: &RemoteCacheCompressionInstances,
         cas_configs: &[WithInstanceName<CasStoreConfig>],
+        ac_read_only_for_instance: &HashMap<InstanceName, bool>,
     ) -> Result<Self, Error> {
         let mut chunking_params_for_instance = HashMap::new();
         for cas_config in cas_configs {
@@ -108,6 +114,7 @@ impl CapabilitiesServer {
             supported_node_properties_for_instance,
             remote_cache_compression_instances: remote_cache_compression_instances.clone(),
             chunking_params_for_instance,
+            ac_read_only_for_instance: ac_read_only_for_instance.clone(),
         })
     }
 
@@ -162,6 +169,14 @@ impl Capabilities for CapabilitiesServer {
         };
 
         let chunking_params = self.chunking_params_for_instance.get(&instance_name);
+        // Report write permission truthfully: an instance whose Action Cache is
+        // configured read only cannot accept UpdateActionResult, so clients
+        // (e.g. Bazel) should learn that here rather than failing on upload.
+        let action_cache_update_enabled = !self
+            .ac_read_only_for_instance
+            .get(&instance_name)
+            .copied()
+            .unwrap_or(false);
         let resp = ServerCapabilities {
             cache_capabilities: Some(CacheCapabilities {
                 digest_functions: vec![
@@ -169,7 +184,7 @@ impl Capabilities for CapabilitiesServer {
                     DigestFunction::Blake3.into(),
                 ],
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities {
-                    update_enabled: true,
+                    update_enabled: action_cache_update_enabled,
                 }),
                 cache_priority_capabilities: None,
                 max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,

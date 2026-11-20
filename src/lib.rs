@@ -314,6 +314,17 @@ pub async fn build_server(
         .cloned()
         .collect();
 
+    // Mirror each instance's Action Cache `read_only` flag so the capabilities
+    // service can report `update_enabled` per instance. Collected across all
+    // blocks for the same reason as the CAS configs above.
+    let ac_read_only_for_instance: HashMap<String, bool> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.ac.as_deref())
+        .flatten()
+        .map(|ac_config| (ac_config.instance_name.clone(), ac_config.read_only))
+        .collect();
+
     for server_cfg in server_cfgs {
         let services = server_cfg
             .services
@@ -400,6 +411,7 @@ pub async fn build_server(
                         &action_schedulers,
                         &remote_cache_compression_instances,
                         &all_cas_configs,
+                        &ac_read_only_for_instance,
                     )
                 }))
                 .await
