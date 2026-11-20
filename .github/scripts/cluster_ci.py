@@ -44,15 +44,13 @@ process.exit(result.status ?? 1);
 
 
 def credential_plugin(environ):
-    """The command kubectl runs for a short-lived token. None is stored."""
-    cluster = environ.get("NL_EKS_CLUSTER")
-    if not cluster:
-        return {"apiVersion": "client.authentication.k8s.io/v1", "interactiveMode": "Never",
-                "command": sys.executable,
-                "args": [str(Path(__file__).with_name("cluster_credentials.py").resolve())]}
-    # On AWS the job already holds role credentials from GitHub's OIDC token,
-    # and the CLI signs a token for this one cluster with them.
-    region = environ["NL_AWS_REGION"]
+    """The command kubectl runs for a short-lived token. None is stored.
+
+    The job already holds role credentials from GitHub's OIDC token, and the
+    AWS CLI signs a token for this one cluster with them.
+    """
+    cluster = environ.get("NL_EKS_CLUSTER", "")
+    region = environ.get("NL_AWS_REGION", "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", cluster) or not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d", region):
         raise ValueError("Invalid cluster name or region")
     return {"apiVersion": "client.authentication.k8s.io/v1beta1", "interactiveMode": "Never",
