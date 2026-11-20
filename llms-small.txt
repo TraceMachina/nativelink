@@ -1297,8 +1297,8 @@ projects.
 
 ## 1. Start NativeLink
 
-The image is multi-arch (x86_64 and ARM64) as of v1.6.0, so it runs
-natively on Linux and Apple Silicon alike.
+Look up the newest release tag, such as `vX.Y.Z`, download a basic
+configuration, and start the server in the background:
 
 ## 2. Install recc
 
@@ -1370,9 +1370,9 @@ serves all of them; the JSON5 config decides which subset to run.
 
 ## Container registry
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release tag, such as `vX.Y.Z`, and pull it:
 
 ## Backups & recovery
 
@@ -1468,7 +1468,8 @@ you started yourself. **Time:** about fifteen minutes.
 ## Get the config
 
 The repo ships a config that is exactly this tutorial: CAS, action cache,
-scheduler, and one worker, all in a single process on localhost.
+scheduler, and one worker, all in a single process on localhost. Look up
+the newest release tag, such as `vX.Y.Z`, and download that release's copy:
 
 ### Start the cluster
 
@@ -2935,7 +2936,8 @@ commit between the two.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ## Upgrade in the right order
 

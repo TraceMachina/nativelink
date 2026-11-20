@@ -252,7 +252,7 @@ fn missing_blob_survives_a_forwarding_hop() {
     assert_missing_blob_status(&to_client.status.expect("status must be set"), &digest);
 }
 
-/// REv2 omits the digest function from a `MISSING` subject only for
+/// `REv2` omits the digest function from a `MISSING` subject only for
 /// functions identifiable by hash length (SHA256 among them). BLAKE3 has a
 /// SHA256-length hash, so its subject must say `blobs/blake3/...`. The
 /// segment also has to survive the forwarding hop, or the client would be

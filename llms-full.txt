@@ -3296,15 +3296,18 @@ repository.
 
   <Tab value="Linux (Docker)">
 
-```bash
-# Grab a known-good basic configuration
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, grab a known-good basic
+configuration, then run the official image:
 
-# Run the official image
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 The image is multi-arch: x86_64 and ARM64 both run natively (use
@@ -3315,10 +3318,15 @@ listening on `localhost:50051`.
 
   <Tab value="macOS / Linux (Nix)">
 
-```bash
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run that release from its flake:
 
-nix run github:TraceMachina/nativelink/v1.6.5 ./basic_cas.json5
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
+nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} ./basic_cas.json5
 ```
 
 Slower than the prebuilt image because it builds from source, but works on
@@ -3339,15 +3347,25 @@ runs natively on Apple Silicon.
 
   <Tab value="Windows (Docker)">
 
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5" `
-  -OutFile "basic_cas.json5"
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run the official image:
 
-docker run `
-  -v ${PWD}/basic_cas.json5:/config `
-  -p 50051:50051 `
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+```powershell
+$NATIVELINK_VERSION = (Invoke-RestMethod `
+  "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
+
+if (-not $NATIVELINK_VERSION) {
+  Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
+} else {
+  Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
+    -OutFile "basic_cas.json5"
+
+  docker run `
+    -v ${PWD}/basic_cas.json5:/config `
+    -p 50051:50051 `
+    "ghcr.io/tracemachina/nativelink:$NATIVELINK_VERSION" config
+}
 ```
 
 The image is a Linux image published for x86_64 and ARM64, so Docker
@@ -3357,6 +3375,12 @@ instructions above works too.
   </Tab>
 
 </Tabs>
+
+<Callout type="info" title="Pin a version in production">
+  These commands look up the newest release each time they run, which keeps
+  a first try current. Production is different: pin an exact tag and upgrade
+  on purpose. See [Container registry](/getting-started/shared-cache#container-registry).
+</Callout>
 
 ## Verify it's running [#verify-its-running]
 
@@ -4469,13 +4493,18 @@ giving you cross-machine and cross-branch caching.
 
 ## 1. Start NativeLink [#1-start-nativelink]
 
-```sh
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, download a basic
+configuration, and start the server in the background:
 
+```sh
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run -d --name nativelink \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 -p 50061:50061 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 The image is multi-arch (x86_64 and ARM64) as of v1.6.0, so it runs
@@ -4756,13 +4785,26 @@ each independently.
 
 ## Container registry [#container-registry]
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release tag, such as `vX.Y.Z`, and pull it:
 
 ```bash
-docker pull ghcr.io/tracemachina/nativelink:v1.6.5
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+docker pull ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} &&
+echo "${NATIVELINK_VERSION}"
 ```
+
+<Callout type="warn" title="Pin an exact tag in production">
+  Looking up the newest release is fine for trying NativeLink out. We don't
+  recommend it for production: a deploy that resolves "latest" can pick up a
+  new release, with new defaults or breaking changes, without anyone
+  choosing to upgrade. Write the exact tag that command printed into your
+  deployment manifests, and move to a newer one deliberately with
+  [Upgrade versions](/how-to/upgrade-versions).
+</Callout>
 
 The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 page lists every published tag.
@@ -5183,11 +5225,19 @@ easier to debug once you know the wiring is sound.
 ## Get the config [#get-the-config]
 
 The repo ships a config that is exactly this tutorial: CAS, action cache,
-scheduler, and one worker, all in a single process on localhost.
+scheduler, and one worker, all in a single process on localhost. Look up
+the newest release tag, such as `vX.Y.Z`, and download that release's copy:
 
 ```bash
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/local_rbe_self_test.json5
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/${NATIVELINK_VERSION}/nativelink-config/examples/local_rbe_self_test.json5
 ```
+
+Run the rest of this page in the same terminal. Later steps reuse
+`NATIVELINK_VERSION`, so a new terminal would start a different (or no)
+version.
 
 <SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
 
@@ -5201,7 +5251,7 @@ maps onto something you already know or are about to learn.
 ### Start the cluster [#start-the-cluster]
 
 ```bash
-nix run github:TraceMachina/nativelink ./local_rbe_self_test.json5
+nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} ./local_rbe_self_test.json5
 ```
 
 Or, if you'd rather use the container image, mount the config in and publish
@@ -5211,7 +5261,7 @@ both ports:
 docker run \
   -v $(pwd)/local_rbe_self_test.json5:/config \
   -p 50051:50051 -p 50061:50061 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 Leave it running. You'll want its output visible; the scheduler logs here
@@ -10061,6 +10111,9 @@ interval:
 
 It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
 often the slowest thing in the build, and the answer is usually stale-tolerant.
+A `remove` through this store drops the digest from that index and deletes
+the S3 object. A `remove_cached` drops the index entry only and keeps the S3
+object; until the next sync, `has()` treats the digest as missing.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 
@@ -11812,6 +11865,14 @@ The `eviction_policy` here governs the existence *index*, not the data. It is
 a small map of digests, so it can hold far more entries than the store itself.
 This is the highest-leverage wrapper in front of object storage, where every
 existence check is a billed request.
+
+A `remove` or `remove_cached` through this wrapper drops that local presence
+entry, so the next `has()` asks the backend again, then forwards the call to
+the wrapped store. `removed=true` means a copy below this wrapper was
+dropped; `remove_cached` only reaches cache tiers and keeps the durable copy.
+A failed or no-op backend removal still leaves the old positive untrusted.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
 
 ### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
 
@@ -13588,12 +13649,15 @@ just the newest, because the breaking change may be three releases back.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ```sh
+NATIVELINK_VERSION=vX.Y.Z
+
 docker run --rm \
   -v $(pwd)/cas.json5:/config.json5 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 /config.json5
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} /config.json5
 ```
 
 A config error fails within a second, before any port is bound, with a message
@@ -20056,6 +20120,38 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
+A class may also carry `gpu_count`, written to `gpu_property_name` on the
+scale the workers advertise: whole devices, or shares of one where a fleet
+counts a device in parts. A share is stated and never measured, so it plays
+no part in choosing a class for a measured action. While the hints file
+sizes actions, an entry states it directly with `gpu_count` or through the
+class it names. In either mode the class the cold-start rules name for an
+action supplies it, and goes on supplying it after the action's CPU and
+memory have been learned. A learning scheduler does not seed a `gpu_count`
+from the hints file and logs a warning when the file states one. A value
+the client sent is never lowered, and a class rule fills the property only
+when it is absent.
+
+Device memory is the part of a GPU that is learned, where something
+measures it. A worker reads no device itself: whatever wraps an action
+reports the peak it held as `peak_gpu_memory_kb` in the side channel file,
+the worker carries that figure in its usage report, and the sketch keeps the
+largest one of each half-window. The reservation, written to
+`gpu_memory_property_name`, is the most any run in the window held plus
+`headroom_percent`; a maximum and not a percentile, because an action that
+runs out of device memory is ended outright. A class that names
+`gpu_memory_kb` stands for a slice of a GPU. An action measured on a device
+takes the smallest such class that holds what it held, with that class's
+`gpu_count`, and an action that was not measured on one takes a class that
+names no device memory. Past the largest slice no class stands in: the
+measured number is reserved as it is, so only a worker advertising that
+much is asked. A measurement is reserved only when a class names
+`gpu_memory_kb`. A ladder that names no device memory reserves none, and
+neither does a configuration with no ladder at all, because nothing there
+says a worker advertises it; the measurement is still recorded. A number
+stated in the hints file is applied as written. Snapshots that predate the
+dimension still load.
+
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The
 **512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
@@ -21550,6 +21646,11 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
@@ -21570,11 +21671,12 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
-**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
-an action is never answered from the Action Cache and never shares an
-execution with an identical action that is already running. The worker still
-writes its result to the Action Cache; that part is tracked in
-[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+**`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
+action is never answered from the Action Cache, never shares an execution with
+an identical action that is already running, and the worker does not write its
+result to the Action Cache. A historical result is still uploaded when
+`upload_historical_results_strategy` asks for one: that record is stored under
+its own digest for debugging and is never served as a cached result.
 
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
@@ -22033,10 +22135,11 @@ the crate, so:
 nativelink --version
 ```
 
-prints the crate version (`1.6.5` at the time of writing) and exits. The
-container image is tagged with the same version prefixed by `v`
-(`ghcr.io/tracemachina/nativelink:v1.6.5`); pin that tag in production rather
-than a floating one. See
+prints the crate version and exits. The container image is tagged with the
+same version prefixed by `v`, as in `ghcr.io/tracemachina/nativelink:vX.Y.Z`.
+We don't recommend deploying whatever release is newest at deploy time: in
+production, pin an exact tag and upgrade deliberately (see
+[Container registry](/getting-started/shared-cache#container-registry)). See
 [CLI and environment](/reference/cli-and-env) for the complete flag surface,
 which is `--help` and `--version` and nothing else, and
 [Upgrade versions](/how-to/upgrade-versions) for moving between them.
