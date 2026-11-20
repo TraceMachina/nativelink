@@ -364,4 +364,11 @@
          "max_requests": "100"
      }
     },
+    {
+      name: "24",
+      "external": {
+       "provider": "multi_cloud",
+       "config": {}
+     }
+    },
 ]}

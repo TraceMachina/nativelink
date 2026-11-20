@@ -85,6 +85,7 @@ rust_test_suite(
     srcs = [
         "tests/deserialization_test.rs",
         "tests/duplicate_servers_test.rs",
+        "tests/external_spec_test.rs",
         "tests/json5_test.rs",
     ],
     data = glob(
