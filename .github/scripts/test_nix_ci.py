@@ -69,9 +69,10 @@ elif sys.argv[1]=='--import':
 else:sys.exit(23)
 ''')
         (tools / 'nix-collect-garbage').write_text('''#!/usr/bin/env python3
-import os,sys
+import os,sys,time
 from pathlib import Path
 with (Path(os.environ['FAKE_ROOT'])/'calls').open('a') as trace:trace.write('gc\\n')
+if os.environ.get('FAKE_GC_HANG'):time.sleep(30)
 sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
 ''')
         for path in tools.iterdir():
@@ -129,6 +130,15 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
 
     def test_failed_store_collection_does_not_block_the_build(self):
         with patch.dict(os.environ, FAKE_GC_FAILURE='1'):
+            report = nix_ci.build(self.directory, self.revision)
+        self.assertEqual(report['outputs'], self.paths)
+        self.assertEqual(self.calls().count('nix build'), 1)
+
+    def test_hung_store_collection_does_not_consume_the_build_budget(self):
+        # A collector stuck behind another process's store lock is killed
+        # after the bounded wait and the build still runs.
+        with patch.object(nix_ci, 'GC_TIMEOUT_SECONDS', 0.2), \
+                patch.dict(os.environ, FAKE_GC_HANG='1'):
             report = nix_ci.build(self.directory, self.revision)
         self.assertEqual(report['outputs'], self.paths)
         self.assertEqual(self.calls().count('nix build'), 1)
