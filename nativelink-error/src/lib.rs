@@ -69,8 +69,28 @@ pub enum ErrorContext {
     None,
     /// The error refers to a specific CAS blob that could not be
     /// located. `hash` and `size` together form the digest the client
-    /// should re-upload (`REv2` `blobs/{hash}/{size}`).
-    MissingDigest { hash: String, size: i64 },
+    /// should re-upload; see [`missing_blob_subject`] for the subject.
+    MissingDigest {
+        hash: String,
+        size: i64,
+        /// The lowercase digest function name the subject has to carry,
+        /// for example `blake3`. `None` when it is omitted, which `REv2`
+        /// requires for MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512 and VSO.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest_function: Option<String>,
+    },
+}
+
+/// The `REv2` subject of a `MISSING` `PreconditionFailure` violation:
+/// `blobs/{digest_function/}{hash}/{size}`, formatted like a
+/// `ByteStream.Read` resource name without the instance name. The digest
+/// function segment is present exactly when `digest_function` is `Some`.
+#[must_use]
+pub fn missing_blob_subject(digest_function: Option<&str>, hash: &str, size: i64) -> String {
+    match digest_function {
+        Some(digest_function) => format!("blobs/{digest_function}/{hash}/{size}"),
+        None => format!("blobs/{hash}/{size}"),
+    }
 }
 
 #[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
@@ -235,10 +255,16 @@ fn missing_digest_from_details(details: &[prost_types::Any]) -> ErrorContext {
         .filter(|violation| violation.r#type == "MISSING")
         .find_map(|violation| {
             let rest = violation.subject.strip_prefix("blobs/")?;
-            let (hash, size) = rest.split_once('/')?;
+            // `{digest_function/}{hash}/{size}`: read from the right, since
+            // the digest function segment is optional.
+            let mut parts = rest.rsplitn(3, '/');
+            let size = parts.next()?.parse().ok()?;
+            let hash = parts.next()?.to_string();
+            let digest_function = parts.next().map(str::to_string);
             Some(ErrorContext::MissingDigest {
-                hash: hash.to_string(),
-                size: size.parse().ok()?,
+                hash,
+                size,
+                digest_function,
             })
         })
         .unwrap_or_default()
