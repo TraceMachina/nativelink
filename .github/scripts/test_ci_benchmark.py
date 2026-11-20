@@ -45,24 +45,32 @@ class BenchmarkTest(unittest.TestCase):
         self.assertNotIn(f'bazel_version: {pinned_version}',
                          Path('.github/workflows/native-bazel.yaml').read_text())
 
-    def test_only_unlisted_forks_run_the_hosted_bazel_suite(self):
+    def test_pull_requests_use_rbe_without_retained_client_credentials(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
         pr_job = workflow.split('  pull-request:', 1)[1].split('  cluster:', 1)[0]
-        self.assertIn("github.event_name == 'pull_request' &&", pr_job)
-        self.assertIn('github.event.pull_request.head.repo.full_name != github.repository', pr_job)
-        for setting in ('id-token:', 'cluster_ci.py', 'NL_GKE_', 'NL_GCP_', 'secrets.'):
-            self.assertNotIn(setting, pr_job)
-        self.assertIn('environment: public-ci', pr_job)
-        self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', pr_job)
-        self.assertIn('python3 .github/scripts/ci_trust.py', pr_job)
-        for name in ('Setup NativeLink Cloud', 'Setup Bazel', 'Run project-pinned Bazel tests'):
-            step = pr_job.split('      - name: ' + name + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn("if: steps.route.outputs.local == 'true'", step)
+        self.assertIn("if: github.event_name == 'pull_request'", pr_job)
+        for privileged_setting in ('id-token:', 'cluster_ci.py', 'NL_GKE_', 'NL_GCP_',
+                                   'NATIVELINK_STAGING_API_KEY_RW'):
+            self.assertNotIn(privileged_setting, pr_job)
+        same_repository = 'github.event.pull_request.head.repo.full_name == github.repository'
+        self.assertIn(same_repository + " && 'cluster-ci-benchmark' || 'public-ci'", pr_job)
+        configuration = pr_job.split('      - name: Configure loadtest remote execution\n', 1)[1]
+        configuration = configuration.split('\n      - ', 1)[0]
+        self.assertIn('if: ' + same_repository, configuration)
+        self.assertIn('secrets.NATIVELINK_CLUSTER_API_KEY', configuration)
+        self.assertIn('ci_benchmark.py configure-pr', configuration)
+        public = pr_job.split('      - name: Setup NativeLink Cloud\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('if: github.event.pull_request.head.repo.full_name != github.repository', public)
+        self.assertNotIn('secrets.', public)
+        self.assertIn("grep -qx 'common --config=nl-rbe' user.bazelrc", pr_job)
         self.assertIn('./tools/bazel-retry.sh test //...', pr_job)
         self.assertIn('--lockfile_mode=error', pr_job)
         self.assertNotIn('USE_BAZEL_VERSION', pr_job)
 
     def test_pr_rbe_configuration_and_missing_credentials(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        guard = workflow.split('      - name: Require remote execution for repository PRs\n', 1)[1]
+        guard = textwrap.dedent(guard.split('        run: |\n', 1)[1].split('\n      - ', 1)[0])
         for private_credentials in (True, False):
             with self.subTest(private_credentials=private_credentials), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -79,7 +87,10 @@ class BenchmarkTest(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(ValueError, 'CI API key is missing'):
                             ci_benchmark.configure_pr(rc_file)
+                checked = subprocess.run(['bash', '-c', guard], cwd=root, env=env,
+                                         capture_output=True, text=True)
                 if private_credentials:
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
                     rc = rc_file.read_text()
                     flags = [shlex.split(line)[1] for line in rc.splitlines()]
                     expected, _ = ci_benchmark.configuration('cluster', env)
@@ -93,6 +104,8 @@ class BenchmarkTest(unittest.TestCase):
                     self.assertIn('common --config=nl-rbe', rc)
                     self.assertNotIn('private-test-key', rc)
                 else:
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertIn('This PR requires remote execution', checked.stdout)
                     self.assertFalse(rc_file.exists())
 
     def test_web_only_changes_skip_bazel_lanes(self):

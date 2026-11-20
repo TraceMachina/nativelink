@@ -1,11 +1,9 @@
 # NativeLink cluster CI
 
 **CI / NativeLink** runs `bazel test //...` on the retained cluster client for
-branch pushes and manual runs. Repository PRs and listed forks reuse this
-build instead of repeating the full suite on a hosted PR client. Other forks
-run the same suite with the project-pinned Bazel on a hosted Linux runner,
-using local execution and the public read-only cache. Both paths include Clippy
-and rustfmt.
+branch pushes and manual runs. Pull requests run the same suite with the
+project-pinned Bazel version on a hosted Linux runner, using the public read-only
+cache without cluster credentials. Both paths include Clippy and rustfmt.
 For branch builds, GitHub's hosted job checks out the dispatch helpers, obtains short-lived
 credentials, dispatches the workload and publishes aggregate results. Nix shell
 preparation, repository downloads, the action disk cache, expanded repositories,
@@ -43,97 +41,13 @@ branch pattern, not tag policies. The identity provider must require the exact
 repository and owner IDs, an allowed workflow path at the signed branch ref, a
 `refs/heads/` ref, a push/manual event and this environment subject.
 
-Only upstream branch runs can use the retained client. The trusted coordinator
-can promote a listed fork's exact commit to an upstream branch and dispatch
-the existing workflows. Unlisted forks need explicit maintainer review and
-promotion. The cluster job still accepts only push/manual events; ordinary fork
-PR jobs receive no cluster credentials.
-
-## Before merging a pull request
-
-`CI / Trusted build status` publishes `ci/trusted-builds` on the current PR
-head. For changes outside `web/` and `.github/styles/`, success requires both
-`CI / NativeLink` and `CI / Nix` to pass on that exact commit in the upstream
-repository's push/manual lane. The retained-client jobs must actually pass;
-a skipped job, a green local-only PR run, or results for an earlier commit do
-not qualify. Nix's downstream installation and toolchain checks must pass too.
-Newer failed or pending runs supersede earlier successes.
-
-The trusted contributor list lives in [trusted-contributors.json](../trusted-contributors.json)
-on the protected base branch. Each entry pins the contributor's GitHub account
-ID and their fork's repository ID, with readable names. The PR author and fork
-owner must match that entry, and the event sender must be a listed account.
-An unlisted sender, transferred/recreated fork, or a PR from another repository
-does not qualify. A fork cannot change its own trust by editing this file.
-Listing an account authorizes its future qualifying commits to run with trusted
-CI credentials and the retained client; it is not merely a cache permission.
-
-On a qualifying PR update, the coordinator creates an immutable
-`ci-approved/pr-NUMBER-FULL_SHA` branch and dispatches only missing workflows.
-Existing successful, failed, or queued runs are reused; failures need an explicit
-re-run. The hosted fork job reads routing policy from the base branch and skips
-its Bazel suite for these contributions. Repository PRs already have push builds
-and skip the hosted job entirely. If a path-filtered push missed the latest
-commit of a PR that also changes source, the coordinator dispatches the missing
-builds. Builds on merge to `main` remain unchanged.
-
-Automatic Nix dispatch uses `scope=branch`, which builds the shared package and
-runs installation/toolchain checks without starting nightly Cargo, BuildStream,
-Buck2, or Mongo jobs. Manual dispatch defaults to `scope=all`; the nightly schedule
-is unchanged. The coordinator uses `GITHUB_TOKEN` with explicit dispatch because
-token-created branches do not generate push builds. See GitHub's
-[workflow token behavior](https://docs.github.com/en/actions/concepts/security/github_token).
-
-For an unlisted fork, review the code first, including workflows and build
-scripts, then promote it. From a trusted checkout with your own authenticated
-`gh` session, replace these values with the PR number and the **full commit SHA
-you reviewed**:
-
-```sh
-pr=123
-reviewed_sha=FULL_REVIEWED_COMMIT_SHA
-current_sha="$(gh api "repos/TraceMachina/nativelink/pulls/$pr" --jq .head.sha)"
-test "$reviewed_sha" = "$current_sha" || { echo "PR changed; review its current commit"; exit 1; }
-gh api --method POST repos/TraceMachina/nativelink/git/refs \
-  -f "ref=refs/heads/ci-approved/pr-$pr-$reviewed_sha" \
-  -f "sha=$reviewed_sha"
-```
-
-Creating this branch authorizes the reviewed code to run with the existing
-trusted CI credentials and retained client. The command creates a new branch;
-it never force-updates one. If the branch already exists, inspect or re-run its
-builds instead. This manual command relies on a user token's push event; the
-automatic coordinator instead dispatches explicitly. If GitHub rejects automatic
-branch creation, for example because promoting changed workflow files needs
-additional permissions, use this manual path. No broader token is installed by
-the workflow. Ordinary fork workflow approval alone does not authorize cluster
-access.
-
-The status refreshes when builds finish and when a PR changes. Re-running a job
-also refreshes the status when that attempt starts. First-attempt start events
-do not allocate a reporter runner: the PR event already set a pending status.
-A new PR commit needs new successful builds. Missing builds remain pending,
-and API errors clear any previous success before the reporter exits. Web/style
-only changes receive an explicit exemption matching the build workflows' path
-filters; renames out of source directories and incomplete file lists do not.
-
-**Rollout:** after this workflow lands and reports its first status, add
-`ci/trusted-builds` to the required checks for `main`, keeping the existing
-requirements and the up-to-date branch policy. Select GitHub Actions as its
-expected source. Require the published commit status, not the reporter job:
-that job coordinates builds and publishes the result. Repository rules are
-configured separately from workflow files; merging this change alone does not
-make the status mandatory. See GitHub's
-[required status check guidance](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
-
-The coordinator runs only trusted base/default-branch code. Its token can read
-PR metadata, create repository branches, dispatch workflows, and write commit
-statuses. It never checks out fork code, executes artifacts, or receives cluster
-credentials. Forks must update from `main` to pick up the new routing and Nix
-dispatch input. During rollout, a base that predates the policy falls back to
-local fork tests.
-
-## Fork workflow approval
+Only users or integrations allowed to push to the source repository can start
+this cluster lane. External fork PRs do not receive its environment secrets or
+retained client. After reviewing an external contribution, a maintainer can
+promote its exact commit to a repository branch such as `ci-approved/pr-123`;
+that push runs the same cluster CI against the reviewed commit. Do not promote
+unreviewed changes. The cluster job only accepts push/manual events; pull request
+events select the separate hosted job.
 
 The repository's Actions approval policy is `all_external_contributors`.
 Ordinary fork PR workflows from all outside contributors require approval from
