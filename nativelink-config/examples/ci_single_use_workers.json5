@@ -35,7 +35,9 @@
         instance_name: "pr",
         store_type: "cas",
         endpoints: [
-          { address: "grpc://127.0.0.1:50051" },
+          {
+            address: "grpc://127.0.0.1:50051",
+          },
         ],
       },
     },
@@ -61,12 +63,14 @@
       },
     },
   ],
+
   // Exactly one worker, and no `schedulers` block: both are required for
   // single_use.
   workers: [
     {
       local: {
         name: "PR_WORKER",
+
         // Connect to the "pr" scheduler's worker port in
         // ci_cache_and_schedulers.json5.
         worker_api_endpoint: {
@@ -81,13 +85,26 @@
         work_directory: "/tmp/nativelink-ci/work-pr",
         single_use: true,
         platform_properties: {
-          cpu_count: { values: ["1"] },
-          OSFamily: { values: [""] },
-          "container-image": { values: [""] },
+          cpu_count: {
+            values: [
+              "1",
+            ],
+          },
+          OSFamily: {
+            values: [
+              "",
+            ],
+          },
+          "container-image": {
+            values: [
+              "",
+            ],
+          },
         },
       },
     },
   ],
+
   // A single_use process may expose only health services.
   servers: [
     {
