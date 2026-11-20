@@ -298,6 +298,26 @@ where
         Ok(())
     }
 
+    /// Deletes the object from the bucket.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        if is_zero_digest(key.borrow()) {
+            return Ok(false);
+        }
+        self.s3_client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(self.make_s3_path(&key))
+            .send()
+            .await
+            .map_err(|e| {
+                make_err!(
+                    Code::Unavailable,
+                    "Failed to delete object in ONTAP S3: {e:?}"
+                )
+            })?;
+        Ok(true)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

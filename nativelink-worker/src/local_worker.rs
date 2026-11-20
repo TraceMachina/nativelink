@@ -28,7 +28,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
 use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
@@ -785,6 +785,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             // The manager tags a NotFound on anything the client
                                             // referenced by digest; no store's wording involved.
                                             let is_cas_blob_missing = e.code == Code::NotFound
+                                                && matches!(e.context, ErrorContext::MissingDigest { .. })
                                                 && e.messages.iter().any(|m| m == MISSING_INPUT_ERROR_TIP);
                                             if is_cas_blob_missing {
                                                 warn!(
@@ -795,6 +796,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 // execute response turns it into the
                                                 // PreconditionFailure detail Bazel
                                                 // re-uploads and retries on.
+                                                // Name the action's own digest function
+                                                // in the context: the store only saw the
+                                                // task context, which a spawned fetch can
+                                                // lose.
+                                                let context = match e.context.clone() {
+                                                    ErrorContext::MissingDigest { hash, size, .. } => {
+                                                        ErrorContext::MissingDigest {
+                                                            hash,
+                                                            size,
+                                                            digest_function: digest_hasher
+                                                                .resource_name_segment()
+                                                                .map(str::to_string),
+                                                        }
+                                                    }
+                                                    other @ ErrorContext::None => other,
+                                                };
                                                 let action_result = ActionResult {
                                                     error: Some(
                                                         make_err!(
@@ -802,7 +819,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             "{}",
                                                             e.message_string()
                                                         )
-                                                        .with_context(e.context.clone()),
+                                                        .with_context(context),
                                                     ),
                                                     ..ActionResult::default()
                                                 };
@@ -1163,6 +1180,7 @@ pub async fn new_local_worker(
             experimental_subtree_caching: cache_config.experimental_subtree_caching,
             max_concurrent_fetches: cache_config.max_concurrent_fetches,
             experimental_get_tree_prefetch: cache_config.experimental_get_tree_prefetch,
+            experimental_clone_executables: cache_config.experimental_clone_executables,
         };
 
         match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {

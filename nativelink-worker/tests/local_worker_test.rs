@@ -1064,6 +1064,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .with_context(ErrorContext::MissingDigest {
             hash: "0123456789abcdef".to_string(),
             size: 42,
+            digest_function: None,
         });
     running_action
         .expect_prepare_action(Err(missing_input.clone()))
@@ -1185,10 +1186,10 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Simulate prepare_action failing with a NotFound error that does NOT contain
-    // the CAS-specific message. This should result in an InternalError, not
-    // FailedPrecondition.
-    let other_not_found_error = make_err!(Code::NotFound, "Some other resource was not found");
+    // A tip without a typed missing digest must not request a client re-upload.
+    let other_not_found_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+        .append("Could not open worker input path")
+        .append(MISSING_INPUT_ERROR_TIP);
     running_action
         .expect_prepare_action(Err(other_not_found_error.clone()))
         .await?;
