@@ -6601,6 +6601,7 @@ mod tests {
             ErrorContext::MissingDigest {
                 hash: "abc".to_string(),
                 size: 42,
+                digest_function: None,
             },
         );
         assert_eq!(
