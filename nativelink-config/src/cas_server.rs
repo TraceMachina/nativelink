@@ -1213,6 +1213,12 @@ pub enum EnvironmentSource {
     ///   "failure": "timeout",
     /// }
     ///
+    /// The file may also carry `peak_gpu_memory_kb`, a number: the peak
+    /// device memory the action held on its GPU, in KiB, when whatever
+    /// wraps the action measured it. The worker reads no device itself; it
+    /// reports the figure with the action's other resource usage, and a
+    /// scheduler that learns from its workers sizes the action by it.
+    ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
     SideChannelFile,
