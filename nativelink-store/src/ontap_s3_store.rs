@@ -298,8 +298,7 @@ where
         Ok(())
     }
 
-    /// Deletes the object from the bucket. The bucket holds the durable copy,
-    /// so `remove_cached` keeps the default and leaves it in place.
+    /// Deletes the object from the bucket.
     async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         if is_zero_digest(key.borrow()) {
             return Ok(false);

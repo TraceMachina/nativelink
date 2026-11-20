@@ -544,9 +544,9 @@ async fn test_empty_bucket_handling() -> Result<(), Error> {
 }
 
 /// `remove` drops the index entry and forwards removal to the inner store.
-/// `remove_cached` drops the index entry and keeps the durable copy.
+/// `remove_cached` keeps the index entry and the durable copy.
 #[nativelink_test]
-async fn remove_drops_index_entry_and_forwards_to_inner_store() -> Result<(), Error> {
+async fn remove_cached_keeps_index_entry_and_forwards_to_inner_store() -> Result<(), Error> {
     const VALUE: &str = "123";
     let temp_dir = tempdir().expect("Failed to create temporary directory");
     let cache_path = temp_dir
@@ -601,7 +601,7 @@ async fn remove_drops_index_entry_and_forwards_to_inner_store() -> Result<(), Er
             .remove_cached(digest.into())
             .await?
     );
-    assert_eq!(store.has(digest).await?, None);
+    assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
     assert_eq!(
         Store::new(inner)
             .get_part_unchunked(digest, 0, None)
