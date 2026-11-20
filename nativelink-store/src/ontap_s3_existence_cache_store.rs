@@ -527,6 +527,23 @@ where
         result
     }
 
+    /// Drops the digest from the local index, then forwards to the inner
+    /// store's `remove`, which deletes the S3 object.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let digest = key.borrow().into_digest();
+        self.digests.write().await.remove(&digest);
+        self.inner_store.as_store_driver_pin().remove(key).await
+    }
+
+    /// Forwards to the inner store's `remove_cached`; the local index entry is
+    /// kept because the durable S3 object is kept.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
+    }
+
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
