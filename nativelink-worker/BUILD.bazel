@@ -75,6 +75,7 @@ rust_test_suite(
         "tests/capacity_test.rs",
         "tests/directory_cache_stress_test.rs",
         "tests/directory_cache_test.rs",
+        "tests/input_stack_test.rs",
         "tests/local_worker_test.rs",
         "tests/namespace_utils_test.rs",
         "tests/process_table_test.rs",

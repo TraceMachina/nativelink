@@ -1910,79 +1910,83 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
-        background_spawn!("filesystem_store_emplace_file", async move {
-            // Sometimes we get files to emplace that are identical to the existing files
-            // Due to the evict/remove/replace cycle taking some amount of time, we actually
-            // want to drop these
-            if check_duplicate_files(&evicting_map, &key, &entry).await? {
-                return Ok(());
-            }
-
-            let mut encoded_file_path = entry.get_encoded_file_path().write().await;
-
-            let final_path = get_file_path_raw(
-                &PathType::Content,
-                encoded_file_path.shared_context.as_ref(),
-                &key,
-                encoded_file_path.generation,
-                encoded_file_path.version,
-            );
-
-            let from_path = encoded_file_path.get_file_path();
-
-            // Lock the blob down as read-only *before* it lands at its final
-            // content path, so every hardlink of it (the worker directory cache
-            // and `download_to_directory`) inherits an immutable, read-only
-            // inode. This is what preserves the input-tree hermeticity contract
-            // (actions cannot mutate their inputs) without a per-materialization
-            // chmod walk, and it means callers must never `chmod` a hardlinked
-            // blob — anything needing a different mode (e.g. an executable's +x
-            // bit) must take a private copy. Content-addressed blobs are
-            // write-once and replaced by `rename` rather than in-place writes,
-            // and unlink only needs the *parent directory* to be writable, so a
-            // read-only file mode is safe for both overwrite-by-rename and
-            // eviction. Best-effort: a failure here (e.g. the temp file was
-            // already evicted out from under us) must not abort the emplace.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Err(err) =
-                    fs::set_permissions(&from_path, std::fs::Permissions::from_mode(0o444)).await
-                {
-                    warn!(?err, ?from_path, "Failed to set CAS blob read-only");
+        background_spawn!(
+            "filesystem_store_emplace_file",
+            Box::pin(async move {
+                // Sometimes we get files to emplace that are identical to the existing files
+                // Due to the evict/remove/replace cycle taking some amount of time, we actually
+                // want to drop these
+                if check_duplicate_files(&evicting_map, &key, &entry).await? {
+                    return Ok(());
                 }
-            }
-            let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
-                format!(
-                    "Failed to rename temp file to final path {}",
-                    final_path.display()
-                )
-            });
 
-            if let Err(err) = result {
-                error!(?err, ?from_path, ?final_path, "Failed to rename file",);
-                // This entry was never visible in the map. Drop cleans up its
-                // temporary file and the previous generation remains usable.
-                return Err(err);
-            }
-            trace!(?key, "Finished emplace file");
-            encoded_file_path.path_type = PathType::Content;
-            encoded_file_path.key = key.clone();
-            // Insertion can unref this entry immediately under cache pressure.
-            drop(encoded_file_path);
-            let (inserted, _) = evicting_map
-                .insert_if(key.clone().into(), entry.clone(), |present, new| {
-                    present.generation() < new.generation()
-                })
-                .await;
-            if !inserted {
-                // A newer upload completed first. Retire our unindexed content
-                // file too, so it cannot leak or reappear after a restart.
-                info!(%key, "Newer generation already emplaced, dropping");
-                entry.unref().await;
-            }
-            Ok(())
-        })
+                let mut encoded_file_path = entry.get_encoded_file_path().write().await;
+
+                let final_path = get_file_path_raw(
+                    &PathType::Content,
+                    encoded_file_path.shared_context.as_ref(),
+                    &key,
+                    encoded_file_path.generation,
+                    encoded_file_path.version,
+                );
+
+                let from_path = encoded_file_path.get_file_path();
+
+                // Lock the blob down as read-only *before* it lands at its final
+                // content path, so every hardlink of it (the worker directory cache
+                // and `download_to_directory`) inherits an immutable, read-only
+                // inode. This is what preserves the input-tree hermeticity contract
+                // (actions cannot mutate their inputs) without a per-materialization
+                // chmod walk, and it means callers must never `chmod` a hardlinked
+                // blob — anything needing a different mode (e.g. an executable's +x
+                // bit) must take a private copy. Content-addressed blobs are
+                // write-once and replaced by `rename` rather than in-place writes,
+                // and unlink only needs the *parent directory* to be writable, so a
+                // read-only file mode is safe for both overwrite-by-rename and
+                // eviction. Best-effort: a failure here (e.g. the temp file was
+                // already evicted out from under us) must not abort the emplace.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(err) =
+                        fs::set_permissions(&from_path, std::fs::Permissions::from_mode(0o444))
+                            .await
+                    {
+                        warn!(?err, ?from_path, "Failed to set CAS blob read-only");
+                    }
+                }
+                let result = (rename_fn)(&from_path, &final_path).err_tip(|| {
+                    format!(
+                        "Failed to rename temp file to final path {}",
+                        final_path.display()
+                    )
+                });
+
+                if let Err(err) = result {
+                    error!(?err, ?from_path, ?final_path, "Failed to rename file",);
+                    // This entry was never visible in the map. Drop cleans up its
+                    // temporary file and the previous generation remains usable.
+                    return Err(err);
+                }
+                trace!(?key, "Finished emplace file");
+                encoded_file_path.path_type = PathType::Content;
+                encoded_file_path.key = key.clone();
+                // Insertion can unref this entry immediately under cache pressure.
+                drop(encoded_file_path);
+                let (inserted, _) = evicting_map
+                    .insert_if(key.clone().into(), entry.clone(), |present, new| {
+                        present.generation() < new.generation()
+                    })
+                    .await;
+                if !inserted {
+                    // A newer upload completed first. Retire our unindexed content
+                    // file too, so it cannot leak or reappear after a restart.
+                    info!(%key, "Newer generation already emplaced, dropping");
+                    entry.unref().await;
+                }
+                Ok(())
+            })
+        )
         .await
         .err_tip(|| "Failed to create spawn in filesystem store update_file")?
     }

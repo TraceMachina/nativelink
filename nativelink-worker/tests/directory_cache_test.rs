@@ -1174,6 +1174,73 @@ impl StoreDriver for FlakyStore {
 
 default_health_status_indicator!(FlakyStore);
 
+#[nativelink_test]
+async fn small_fetch_budget_allows_shared_subtree_construction() -> Result<(), Error> {
+    for fetches in [1, 2] {
+        for subtree in [false, true] {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let memory_store = MemoryStore::new(&MemorySpec::default());
+                let (root, _, content) = seed_simple_nested(&memory_store, 0x70).await?;
+                let wrapper = ProtoDirectory {
+                    directories: vec![DirectoryNode {
+                        name: "shared".into(),
+                        digest: Some(root.into()),
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                let wrapper_digest = DigestInfo::new([0x75; 32], wrapper.len() as u64);
+                memory_store
+                    .update_oneshot(wrapper_digest, Bytes::from(wrapper))
+                    .await?;
+                let cache = DirectoryCache::new(
+                    DirectoryCacheConfig {
+                        cache_root: make_temp_path("small_budget_cache").into(),
+                        experimental_subtree_caching: subtree,
+                        max_concurrent_fetches: fetches,
+                        ..Default::default()
+                    },
+                    make_cas_store(memory_store).await,
+                )
+                .await?;
+                let work = PathBuf::from(make_temp_path("small_budget_work"));
+                tokio::fs::create_dir_all(&work).await?;
+                let first = work.join("first");
+                let second = work.join("second");
+                let third = work.join("third");
+                // Different roots contend for the same descendant flight.
+                // A fetch permit retained by an ancestor would block at 1.
+                futures::try_join!(
+                    cache.get_or_create(root, &first),
+                    cache.get_or_create(wrapper_digest, &second),
+                    cache.get_or_create(root, &third),
+                )?;
+                for path in [
+                    first.join("mid/leaf/a.txt"),
+                    second.join("shared/mid/leaf/a.txt"),
+                    third.join("mid/leaf/a.txt"),
+                ] {
+                    assert_eq!(tokio::fs::read(path).await?, content);
+                }
+                assert!(
+                    cache
+                        .get_or_create(wrapper_digest, &work.join("hot"))
+                        .await?
+                );
+                assert_eq!(
+                    tokio::fs::read(work.join("hot/shared/mid/leaf/a.txt")).await?,
+                    content
+                );
+                assert_eq!(cache.stats().await.in_use_entries, 0);
+                Ok::<_, Error>(())
+            })
+            .await
+            .expect("shared subtree construction deadlocked with a small fetch budget")?;
+        }
+    }
+    Ok(())
+}
+
 /// Construction-failure recovery: a failed construction (transient slow-store
 /// error) must leave NOTHING behind — no partial tree at the canonical
 /// `cache_root/<digest>` path (which would poison every retry of that stable
