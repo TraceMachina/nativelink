@@ -87,6 +87,8 @@ fn base_spec(hints_file: String, cold_start: Option<ColdStartSpec>) -> Historica
         cpu_property_name: "cpu_count".to_string(),
         memory_property_name: "memory_kb".to_string(),
         disk_property_name: "disk_kb".to_string(),
+        gpu_property_name: "gpu_count".to_string(),
+        gpu_memory_property_name: "gpu_memory_kb".to_string(),
         classes: vec![],
         default_class: None,
         class_by_mnemonic: HashMap::new(),
@@ -117,6 +119,8 @@ fn class(name: &str, cpu_count: u64, memory_kb: u64, disk_kb: u64) -> SizeClassS
         cpu_count,
         memory_kb,
         disk_kb,
+        gpu_count: 0,
+        gpu_memory_kb: 0,
     }
 }
 
@@ -1024,5 +1028,417 @@ async fn snapshot_discovery_is_bounded_but_owned_restore_still_works() -> Result
     assert_eq!(fresh.stats().entries, [0, 0, 0]);
     HistoricalResourceScheduler::load_snapshots(&fresh, &store, &snapshot_key("retired-0")).await;
     assert_eq!(fresh.lookup(&key, now).unwrap().memory_samples(), 1);
+    Ok(())
+}
+
+/// A size class that also carries a GPU share, on a fleet that counts a
+/// device in hundredths.
+fn gpu_class(name: &str, cpu_count: u64, memory_kb: u64, gpu_count: u64) -> SizeClassSpec {
+    SizeClassSpec {
+        gpu_count,
+        ..class(name, cpu_count, memory_kb, 0)
+    }
+}
+
+/// While the hints file is what sizes actions, a hint states the GPU share
+/// like any other number: its own `gpu_count`, or its class's. A share the
+/// client asked for is raised to the hint and never lowered, and a hint
+/// that states no share leaves the property alone.
+#[nativelink_test]
+async fn a_file_hint_states_the_gpu_share() -> Result<(), Error> {
+    let path = write_hints_file(
+        r#"[
+            { "target_id": "//sim:render_test", "gpu_count": 50, "memory_kb": 8000000 },
+            { "target_id": "//sim:physics_test", "class": "quarter" },
+            { "target_id": "//sim:whole_test", "class": "quarter", "gpu_count": 100 },
+            { "target_id": "//pkg:compile", "memory_kb": 2000000 }
+        ]"#,
+    );
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    spec.classes = vec![gpu_class("quarter", 4000, 16_000_000, 25)];
+    let (mock, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let sized = |target: &'static str, action| {
+        properties_after_add(&scheduler, &mock, action, Some((target, "TestRunner")))
+    };
+
+    let properties = sized("//sim:render_test", base.clone()).await?;
+    assert_eq!(properties["gpu_count"], "50");
+    assert_eq!(properties["memory_kb"], "8000000");
+
+    let properties = sized("//sim:physics_test", base.clone()).await?;
+    assert_eq!(properties["gpu_count"], "25", "the class's share");
+    assert_eq!(properties["cpu_count"], "4000");
+
+    let properties = sized("//sim:whole_test", base.clone()).await?;
+    assert_eq!(properties["gpu_count"], "100", "the hint's own number wins");
+
+    let properties = sized("//pkg:compile", base.clone()).await?;
+    assert!(!properties.contains_key("gpu_count"), "{properties:?}");
+
+    let mut asks_more = (*base).clone();
+    asks_more
+        .platform_properties
+        .insert("gpu_count".to_string(), "100".to_string());
+    let properties = sized("//sim:render_test", Arc::new(asks_more)).await?;
+    assert_eq!(properties["gpu_count"], "100", "never lowered");
+
+    let mut asks_less = (*base).clone();
+    asks_less
+        .platform_properties
+        .insert("gpu_count".to_string(), "10".to_string());
+    let properties = sized("//sim:render_test", Arc::new(asks_less)).await?;
+    assert_eq!(properties["gpu_count"], "50", "raised to the hint");
+
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+/// A GPU share is stated, never measured, so a learning scheduler gets it
+/// from the class its rules name for the action, and goes on getting it
+/// after the action has been measured. Without that the rule would apply to
+/// an action's first run only: once the sketch held its cpu and memory, the
+/// hint would size it and the share would be gone.
+#[nativelink_test]
+async fn a_class_rule_gives_a_learned_action_its_gpu_share() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        gpu_class("quarter", 4000, 16_000_000, 25),
+    ];
+    spec.class_by_mnemonic = HashMap::from([("CudaTest".to_string(), "quarter".to_string())]);
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let sized = |action| {
+        properties_after_add(
+            &scheduler,
+            &mock_scheduler,
+            action,
+            Some(("//sim:physics_test", "CudaTest")),
+        )
+    };
+
+    // Nothing learned yet: the rule's class, share included.
+    let properties = sized(base.clone()).await?;
+    assert_eq!(properties["gpu_count"], "25");
+    assert_eq!(properties["memory_kb"], "16000000");
+
+    // Measured small: the hint now sizes cpu and memory from the samples,
+    // and the share still comes from the rule.
+    let key = SketchKey::for_attempt(Some("//sim:physics_test"), Some("CudaTest"), "unused");
+    for _ in 0..2 {
+        scheduler.sketch().observe(
+            key.clone(),
+            &Observation {
+                peak_memory_kb: 1_000_000,
+                cpu_millicores: Some(500),
+                now_s: now_s(),
+                ..Observation::default()
+            },
+        );
+    }
+    let properties = sized(base.clone()).await?;
+    assert_eq!(properties["memory_kb"], "4000000", "sized from the samples");
+    assert_eq!(properties["gpu_count"], "25", "the rule still applies");
+
+    // A share the client sent stands, in either direction: a rule fills
+    // the property only when it is absent.
+    let mut tagged = (*base).clone();
+    tagged
+        .platform_properties
+        .insert("gpu_count".to_string(), "100".to_string());
+    assert_eq!(sized(Arc::new(tagged)).await?["gpu_count"], "100");
+
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A class is chosen for a measured action by the cpu and memory it used.
+/// That choice says nothing about a device: an action measured into a class
+/// that carries a share, with no rule naming that class for it, gets the
+/// class's cpu and memory and no GPU.
+#[nativelink_test]
+async fn a_measured_action_is_not_given_the_gpu_of_the_class_it_fits() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        gpu_class("quarter", 4000, 16_000_000, 25),
+    ];
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let key = SketchKey::for_attempt(Some("//pkg:link"), Some("CppLink"), "unused");
+    for _ in 0..2 {
+        scheduler.sketch().observe(
+            key.clone(),
+            &Observation {
+                peak_memory_kb: 10_000_000,
+                cpu_millicores: Some(3000),
+                now_s: now_s(),
+                ..Observation::default()
+            },
+        );
+    }
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//pkg:link", "CppLink")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "16000000", "the class it fits");
+    assert!(!properties.contains_key("gpu_count"), "{properties:?}");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// The sketch holds what workers measure, so a learning scheduler seeds a
+/// hint's cpu and memory and has nowhere to keep its `gpu_count`.
+#[nativelink_test]
+async fn a_learning_scheduler_does_not_seed_a_gpu_share() -> Result<(), Error> {
+    let hints_file = write_hints_file(
+        r#"[
+            { "target_id": "//sim:render_test", "gpu_count": 50, "memory_kb": 8000000 },
+            { "target_id": "//sim:gpu_only", "gpu_count": 50 }
+        ]"#,
+    );
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base.clone(),
+        Some(("//sim:render_test", "TestRunner")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "8000000");
+    assert!(!properties.contains_key("gpu_count"), "{properties:?}");
+
+    // A hint that states nothing a worker measures seeds no entry at all.
+    assert_eq!(scheduler.sketch().stats().entries, [1, 0, 0]);
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// The property name follows the configuration, and an existing one that
+/// never mentions a GPU gets the default without stating it.
+#[nativelink_test]
+async fn the_gpu_property_name_is_configurable() -> Result<(), Error> {
+    let defaulted: HistoricalResourceSpec = serde_json::from_value(serde_json::json!({
+        "hints_file": "hints.json", "scheduler": {"simple": {}}
+    }))
+    .unwrap();
+    assert_eq!(defaulted.gpu_property_name, "gpu_count");
+
+    let path = write_hints_file(r#"[ { "target_id": "//sim:render_test", "gpu_count": 50 } ]"#);
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    spec.gpu_property_name = "gpu".to_string();
+    let (mock, scheduler) = make_scheduler_with_spec(&spec);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:render_test", "TestRunner")),
+    )
+    .await?;
+    assert_eq!(
+        properties,
+        HashMap::from([("gpu".to_string(), "50".to_string())])
+    );
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+/// A class standing for a slice of a GPU: its share of a device and the
+/// device memory the slice has.
+fn slice_class(name: &str, memory_kb: u64, gpu_count: u64, gpu_memory_kb: u64) -> SizeClassSpec {
+    SizeClassSpec {
+        gpu_memory_kb,
+        ..gpu_class(name, 4000, memory_kb, gpu_count)
+    }
+}
+
+fn observe_on_gpu(scheduler: &HistoricalResourceScheduler, target: &str, gpu_memory_kb: u64) {
+    scheduler.sketch().observe(
+        SketchKey::for_attempt(Some(target), Some("CudaTest"), "unused"),
+        &Observation {
+            peak_memory_kb: 2_000_000,
+            peak_gpu_memory_kb: gpu_memory_kb,
+            now_s: now_s(),
+            ..Observation::default()
+        },
+    );
+}
+
+/// What a wrapper measured an action holding on its device sizes the next
+/// run: the smallest slice that holds it, as that slice's device memory and
+/// share of a device. The client states the least it could run on and the
+/// hint raises it; a share or a memory the client set higher stands.
+#[nativelink_test]
+async fn a_measured_action_takes_the_slice_its_device_memory_fits() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        slice_class("slice-10", 16_000_000, 14, 10_485_760),
+        slice_class("slice-20", 32_000_000, 28, 20_971_520),
+    ];
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let sized = |target: &'static str, action| {
+        properties_after_add(
+            &scheduler,
+            &mock_scheduler,
+            action,
+            Some((target, "CudaTest")),
+        )
+    };
+
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = sized("//sim:physics_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "10485760");
+    assert_eq!(properties["gpu_count"], "14");
+    assert_eq!(properties["memory_kb"], "16000000");
+
+    // A later run held more: the next slice up.
+    observe_on_gpu(&scheduler, "//sim:physics_test", 15_000_000);
+    let properties = sized("//sim:physics_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "20971520");
+    assert_eq!(properties["gpu_count"], "28");
+
+    // The client asked for the smallest share and is raised to the slice's;
+    // one that asked for a whole device keeps it.
+    let mut least = (*base).clone();
+    least
+        .platform_properties
+        .insert("gpu_count".to_string(), "14".to_string());
+    assert_eq!(
+        sized("//sim:physics_test", Arc::new(least)).await?["gpu_count"],
+        "28"
+    );
+    let mut whole = (*base).clone();
+    whole
+        .platform_properties
+        .insert("gpu_count".to_string(), "100".to_string());
+    assert_eq!(
+        sized("//sim:physics_test", Arc::new(whole)).await?["gpu_count"],
+        "100"
+    );
+
+    // Past the largest slice the measured number stands, so only a worker
+    // advertising that much device memory is asked, and no share is
+    // invented for it.
+    observe_on_gpu(&scheduler, "//sim:train_test", 30_000_000);
+    let properties = sized("//sim:train_test", base.clone()).await?;
+    assert_eq!(properties["gpu_memory_kb"], "30000000");
+    assert!(!properties.contains_key("gpu_count"), "{properties:?}");
+
+    // An action nothing measured on a device gets no device memory.
+    scheduler.sketch().observe(
+        SketchKey::for_attempt(Some("//pkg:link"), Some("CppLink"), "unused"),
+        &Observation {
+            peak_memory_kb: 3_000_000,
+            now_s: now_s(),
+            ..Observation::default()
+        },
+    );
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base,
+        Some(("//pkg:link", "CppLink")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "4000000");
+    assert!(!properties.contains_key("gpu_memory_kb"), "{properties:?}");
+
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A fleet whose ladder names no device memory reserves none: no worker
+/// there advertises it, and a minimum no worker advertises is an action
+/// that never runs. The measurement is dropped like any other on a
+/// dimension the fleet does not reserve.
+#[nativelink_test]
+async fn a_fleet_without_slices_does_not_reserve_measured_device_memory() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 4_000_000, 0),
+        class("m", 2000, 16_000_000, 0),
+    ];
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:physics_test", "CudaTest")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "4000000");
+    assert!(!properties.contains_key("gpu_memory_kb"), "{properties:?}");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A configuration with no ladder and no cold start reserves what was
+/// measured of memory, as it always did, and no device memory: nothing in
+/// it says a worker advertises any. Reserving it would leave the action's
+/// next run, after the first report from a wrapper, waiting for a worker
+/// that does not exist.
+#[nativelink_test]
+async fn an_unsized_fleet_does_not_reserve_measured_device_memory() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    observe_on_gpu(&scheduler, "//sim:physics_test", 7_000_000);
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+        Some(("//sim:physics_test", "CudaTest")),
+    )
+    .await?;
+    assert_eq!(
+        properties,
+        HashMap::from([("memory_kb".to_string(), "2000000".to_string())])
+    );
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// While the hints file sizes actions, an entry states device memory like
+/// any other number, under the configured property name. Someone wrote the
+/// number down, so it is applied as written whether or not a class names
+/// device memory; only a measurement waits for one.
+#[nativelink_test]
+async fn a_file_hint_states_device_memory() -> Result<(), Error> {
+    let path = write_hints_file(
+        r#"[ { "target_id": "//sim:render_test", "gpu_count": 28, "gpu_memory_kb": 20971520 } ]"#,
+    );
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    spec.gpu_memory_property_name = "gpu_ram".to_string();
+    let stated = HashMap::from([
+        ("gpu_count".to_string(), "28".to_string()),
+        ("gpu_ram".to_string(), "20971520".to_string()),
+    ]);
+    for classes in [vec![], vec![class("s", 1000, 4_000_000, 0)]] {
+        spec.classes = classes;
+        let (mock, scheduler) = make_scheduler_with_spec(&spec);
+        let properties = properties_after_add(
+            &scheduler,
+            &mock,
+            make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+            Some(("//sim:render_test", "TestRunner")),
+        )
+        .await?;
+        assert_eq!(properties, stated);
+    }
+    fs::remove_file(path)?;
     Ok(())
 }

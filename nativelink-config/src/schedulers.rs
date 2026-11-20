@@ -834,6 +834,14 @@ fn default_disk_property_name_for_hints() -> String {
     "disk_kb".to_string()
 }
 
+fn default_gpu_property_name_for_hints() -> String {
+    "gpu_count".to_string()
+}
+
+fn default_gpu_memory_property_name_for_hints() -> String {
+    "gpu_memory_kb".to_string()
+}
+
 /// A named point on the fleet's size ladder. List them ascending; each
 /// should dominate the one before on every dimension it names. A zero
 /// leaves that dimension alone.
@@ -855,6 +863,27 @@ pub struct SizeClassSpec {
     /// Value for `disk_property_name`, in KiB.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub disk_kb: u64,
+
+    /// Value for `gpu_property_name`, on the scale the workers advertise:
+    /// whole devices, or shares of one where a fleet counts a device in
+    /// parts. A share is never measured, so it plays no part in choosing a
+    /// class for a measured action. It reaches an action three ways: a
+    /// hints-file entry that names this class, one of the rules that pick a
+    /// class for an action (`class_by_mnemonic`, `class_by_timeout`,
+    /// `default_class`), or, for a class that also names `gpu_memory_kb`,
+    /// being the class an action's measured device memory fits.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub gpu_count: u64,
+
+    /// Value for `gpu_memory_property_name`, in KiB: the device memory of
+    /// the slice of a GPU this class stands for. A class that names it is
+    /// chosen only for an action that was measured holding device memory,
+    /// as the smallest such class that holds what it held, and a class that
+    /// does not name it is chosen only for an action that was not. Past the
+    /// largest such class the measured number stands by itself, so the
+    /// action is offered only to a worker advertising that much.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub gpu_memory_kb: u64,
 }
 
 /// A class for actions whose timeout is at least `min_timeout_s`. Bazel's
@@ -954,7 +983,8 @@ pub struct HistoricalResourceSpec {
     /// under the prefix if the store supports listing. Only one history is
     /// restored, never merged. Use a separate store prefix for each logical
     /// scheduler. Fallback scans at most 128 keys; retire old keys with a TTL.
-    /// Version 3 snapshots use wide histogram counters; older snapshots are
+    /// Version 4 snapshots add device memory, and version 3 snapshots still
+    /// load, without any. Version 3 uses wide histogram counters; older snapshots are
     /// skipped with a warning. Give the store eviction or a TTL for retired
     /// replica keys. It must support string keys; startup probes write/read.
     /// Ignored when `learn_from_workers` is false. Unset means memory only.
@@ -1005,6 +1035,49 @@ pub struct HistoricalResourceSpec {
         deserialize_with = "convert_string_with_shellexpand"
     )]
     pub disk_property_name: String,
+
+    /// Platform property name used for GPU minimums, on the scale the
+    /// workers advertise. Declared as `minimum` on the nested scheduler,
+    /// like the CPU name.
+    ///
+    /// A share of a device is stated, never measured. It comes from a
+    /// hints-file entry carrying `gpu_count` (or naming a class that does)
+    /// while the file is what sizes actions, and otherwise from the class
+    /// the cold-start rules name for the action, which is applied even when
+    /// the other dimensions were learned. A value the client sent is never
+    /// lowered, and a class rule fills the property only when it is absent.
+    /// With `learn_from_workers`, a `gpu_count` in the hints file is not
+    /// seeded. An action measured holding device memory also takes the
+    /// share of the class that memory fits; see `gpu_memory_property_name`.
+    /// Default: `gpu_count`
+    #[serde(
+        default = "default_gpu_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub gpu_property_name: String,
+
+    /// Platform property name used for device memory minimums, expressed in
+    /// KiB. Declared as `minimum` on the nested scheduler, like the CPU
+    /// name, and advertised by each worker as the device memory it holds.
+    ///
+    /// Unlike the share it is learned, where something measures it. A
+    /// worker reads no device itself: whatever wraps an action reports the
+    /// peak it held through the side channel file (`peak_gpu_memory_kb`),
+    /// and the scheduler reserves the most any run in the window held, plus
+    /// `headroom_percent`. With classes that name `gpu_memory_kb`, the
+    /// action takes the smallest one that holds it, with that class's
+    /// `gpu_count`. A measurement is reserved only when a class names
+    /// `gpu_memory_kb`: with no such class, or with no classes at all, it
+    /// is recorded and nothing is asked, since nothing says a worker
+    /// advertises device memory. A hints-file entry may state
+    /// `gpu_memory_kb` while the file is what sizes actions, and a stated
+    /// number is applied as written.
+    /// Default: `gpu_memory_kb`
+    #[serde(
+        default = "default_gpu_memory_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub gpu_memory_property_name: String,
 
     /// The fleet's size ladder. A hint may name a `class` instead of
     /// numbers, and the cold-start policy below picks one for actions no

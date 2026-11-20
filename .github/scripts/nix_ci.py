@@ -53,14 +53,20 @@ def digest(path):
 
 
 def prune_retained_outputs(directory):
-    # Each run's `result` link is a Nix GC root. On this retained client nothing else removes
-    # them, so every run keeps its closure alive and the store eventually fills the disk.
+    # Each run's `result` link is a Nix GC root, and its directory keeps the
+    # multi-gigabyte closure archive. On this retained client nothing else
+    # removes either, so past runs eventually fill the disk and the build
+    # dies mid-compile on ENOSPC. Downstream jobs import the archive their
+    # own run uploaded, never this copy, so only the newest result roots are
+    # worth keeping, for store warmth.
     current = directory.resolve()
     others = sorted((run for run in directory.parent.iterdir()
                      if run.is_dir() and run.resolve() != current),
                     key=lambda run: run.stat().st_mtime, reverse=True)
+    for retained in others[:RETAINED_RUNS]:
+        (retained / 'closure.nar.gz').unlink(missing_ok=True)
     for stale in others[RETAINED_RUNS:]:
-        (stale / 'result').unlink(missing_ok=True)
+        shutil.rmtree(stale, ignore_errors=True)
     collected = subprocess.run(['nix-collect-garbage'], check=False)
     if collected.returncode:
         print(f'warning: nix-collect-garbage exited {collected.returncode}; building anyway',

@@ -1063,6 +1063,20 @@ enum SideChannelFailureReason {
 struct SideChannelInfo {
     /// If the task should be considered a failure and why.
     failure: Option<SideChannelFailureReason>,
+    /// Peak device memory the action held on its GPU, in KiB, when whatever
+    /// wraps the action measured it. The worker reads no device itself; it
+    /// carries the figure to the scheduler in the action's resource usage.
+    #[serde(default)]
+    peak_gpu_memory_kb: Option<u64>,
+}
+
+/// What a side channel file said about the action that wrote it.
+#[derive(Debug, Default)]
+struct SideChannelReport {
+    /// The failure to record against the action, when the file names one.
+    error: Option<Error>,
+    /// Zero when the file states none.
+    peak_gpu_memory_kb: u64,
 }
 
 fn action_supports_persistent_workers(
@@ -2617,7 +2631,7 @@ async fn process_side_channel_file(
     side_channel_file: Cow<'_, OsStr>,
     args: &[&OsStr],
     timeout: Duration,
-) -> Result<Option<Error>, Error> {
+) -> Result<SideChannelReport, Error> {
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
@@ -2628,7 +2642,7 @@ async fn process_side_channel_file(
                     return Err(e).err_tip(|| "Error opening side channel file");
                 }
                 // Note: If file does not exist, it's ok. Users are not required to create this file.
-                return Ok(None);
+                return Ok(SideChannelReport::default());
             }
         };
         file_slot
@@ -2640,7 +2654,7 @@ async fn process_side_channel_file(
     let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
         .map_err(Error::from)
         .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
-    Ok(side_channel_info.failure.map(|failure| match failure {
+    let error = side_channel_info.failure.map(|failure| match failure {
         SideChannelFailureReason::Timeout => {
             let join_args = args.join(OsStr::new(" "));
             let command = join_args.to_string_lossy();
@@ -2654,7 +2668,11 @@ async fn process_side_channel_file(
                 ),
             )
         }
-    }))
+    });
+    Ok(SideChannelReport {
+        error,
+        peak_gpu_memory_kb: side_channel_info.peak_gpu_memory_kb.unwrap_or(0),
+    })
 }
 
 async fn do_cleanup(
@@ -4335,7 +4353,7 @@ impl RunningActionImpl {
                             )
                         });
                     let fetched_input = self.state.lock().input_bytes;
-                    let resource_usage = Some(ActionResourceUsage {
+                    let mut resource_usage = Some(ActionResourceUsage {
                         peak_memory_kb: sampled_usage.peak_memory_kb,
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
@@ -4364,12 +4382,16 @@ impl RunningActionImpl {
                     // log something useful instead of repeating same ?arg
                     info!(?exit_code, outcome = outcome.as_str_name(), "Command complete");
 
-                    let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
+                    let side_channel = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
                         .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
-                        None
+                        SideChannelReport::default()
                     };
+                    if let Some(usage) = resource_usage.as_mut() {
+                        usage.peak_gpu_memory_kb = side_channel.peak_gpu_memory_kb;
+                    }
+                    let maybe_error_override = side_channel.error;
                     {
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), maybe_error_override);
