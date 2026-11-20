@@ -222,6 +222,13 @@ pub struct ActionResourceUsage {
     /// / An output directory counts its tree digest, not its contents.
     #[prost(uint64, tag = "15")]
     pub output_bytes: u64,
+    /// / Peak device memory the action held on its GPU, in KiB, as measured
+    /// / by whatever wraps the action and reported through the side channel
+    /// / file. The worker does not read a device itself. Zero when nothing
+    /// / measured it, which is every action on a worker without a wrapper
+    /// / that does.
+    #[prost(uint64, tag = "16")]
+    pub peak_gpu_memory_kb: u64,
 }
 /// / One attempt at an action ended without the result it was run for.
 /// / Published as an origin event whose parent is the attempt's

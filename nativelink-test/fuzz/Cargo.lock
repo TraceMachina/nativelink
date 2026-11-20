@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "byte-unit",
  "jiff",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "base64",
  "caps",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -1128,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "derive_more",
  "prost",
