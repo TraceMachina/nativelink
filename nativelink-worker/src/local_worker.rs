@@ -28,14 +28,14 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
 use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
-    GoingAwayRequest, KeepAliveRequest, RunningOperations, StartExecute, UpdateForWorker,
-    WorkerLoad, execute_declined, execute_result,
+    GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, StartExecute,
+    UpdateForWorker, WorkerLoad, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -445,6 +445,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     ) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
+        let running_actions_manager = self.running_actions_manager.clone();
         let timeout = self
             .config
             .worker_api_endpoint
@@ -476,9 +477,23 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
                 let operation_ids = running_operations.lock().iter().cloned().collect();
+                // Each running action's sampled peak, so a scheduler that
+                // loses this worker can tell which action outgrew its
+                // reservation (RFC-0018).
+                let memory = running_actions_manager
+                    .memory_peaks()
+                    .into_iter()
+                    .map(|(operation_id, peak_memory_kb)| OperationMemory {
+                        operation_id,
+                        peak_memory_kb,
+                    })
+                    .collect();
                 let request = KeepAliveRequest {
                     load,
-                    running_operations: Some(RunningOperations { operation_ids }),
+                    running_operations: Some(RunningOperations {
+                        operation_ids,
+                        memory,
+                    }),
                 };
                 if let Err(e) = grpc_client.keep_alive(request).await {
                     error!(?e, "Failed to send KeepAlive in LocalWorker");
@@ -770,6 +785,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             // The manager tags a NotFound on anything the client
                                             // referenced by digest; no store's wording involved.
                                             let is_cas_blob_missing = e.code == Code::NotFound
+                                                && matches!(e.context, ErrorContext::MissingDigest { .. })
                                                 && e.messages.iter().any(|m| m == MISSING_INPUT_ERROR_TIP);
                                             if is_cas_blob_missing {
                                                 warn!(
@@ -1148,6 +1164,7 @@ pub async fn new_local_worker(
             experimental_subtree_caching: cache_config.experimental_subtree_caching,
             max_concurrent_fetches: cache_config.max_concurrent_fetches,
             experimental_get_tree_prefetch: cache_config.experimental_get_tree_prefetch,
+            experimental_clone_executables: cache_config.experimental_clone_executables,
         };
 
         match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {
@@ -1570,10 +1587,31 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let attempts = AtomicU32::new(0);
         let attempts_ref = &attempts;
         let jitter_fn = &self.jitter_fn;
-        let error_handler = Box::pin(move |err| async move {
+        let registration = &self.registration;
+        let error_handler = Box::pin(move |err, failure: &'static str| async move {
             let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
             let delay = reconnect_delay(attempt, jitter_fn());
-            error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
+            // A worker that comes up before its scheduler is reachable is
+            // normal (e.g. pods starting together in Kubernetes), so those
+            // startup misses are warnings. Once the worker has registered,
+            // losing the scheduler is an error.
+            if registration.ever_registered.load(Ordering::Acquire) {
+                error!(
+                    ?err,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    failure,
+                    "Scheduler connection attempt failed, retrying"
+                );
+            } else {
+                warn!(
+                    ?err,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    failure,
+                    "Scheduler connection attempt failed, retrying"
+                );
+            }
             (sleep_fn_pin)(delay).await;
         });
 
@@ -1582,7 +1620,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             let mut client = match (self.connection_factory)().await {
                 Ok(client) => client,
                 Err(e) => {
-                    (error_handler)(e).await;
+                    (error_handler)(e, "connect").await;
                     continue; // Try to connect again.
                 }
             };
@@ -1592,7 +1630,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
                 Err(e) => {
-                    (error_handler)(e).await;
+                    (error_handler)(e, "register").await;
                     continue; // Try to connect again.
                 }
                 Ok((worker_id, dispatch_ack, memory, update_for_worker_stream)) => (
@@ -1658,7 +1696,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     );
                 }
                 error!(?err, "Worker disconnected from scheduler, reconnecting");
-                (error_handler)(err).await; // Try to connect again.
+                (error_handler)(err, "disconnect").await; // Try to connect again.
             } else if self.config.single_use {
                 return Ok(());
             }

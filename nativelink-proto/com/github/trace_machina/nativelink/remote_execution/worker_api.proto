@@ -71,7 +71,27 @@ message KeepAliveRequest {
 message RunningOperations {
     repeated string operation_ids = 1;
 
-    reserved 2; // NextId.
+    /// The most memory the worker has sampled for each running operation
+    /// so far, in KiB. Lets the scheduler tell, if the worker is lost, which
+    /// of its actions grew past its reservation: one reported above it is
+    /// given a larger reservation on that loss. The report is only as fresh
+    /// as the keepalive, sent every half of the worker API timeout (2.5 s by
+    /// default); growth that outruns it, or a worker that does not report,
+    /// leaves the scheduler to its repeated-loss rule instead. Only sampled
+    /// operations appear.
+    repeated OperationMemory memory = 2;
+
+    reserved 3; // NextId.
+}
+
+/// One running operation's sampled memory.
+message OperationMemory {
+    string operation_id = 1;
+
+    /// The highest figure the sampler has read for the operation so far.
+    uint64 peak_memory_kb = 2;
+
+    reserved 3; // NextId.
 }
 
 /// Request object for going away requests.
@@ -236,7 +256,14 @@ message ActionResourceUsage {
     /// An output directory counts its tree digest, not its contents.
     uint64 output_bytes = 15;
 
-    reserved 16; // NextId.
+    /// Peak device memory the action held on its GPU, in KiB, as measured
+    /// by whatever wraps the action and reported through the side channel
+    /// file. The worker does not read a device itself. Zero when nothing
+    /// measured it, which is every action on a worker without a wrapper
+    /// that does.
+    uint64 peak_gpu_memory_kb = 16;
+
+    reserved 17; // NextId.
 }
 
 /// Why one attempt at an action ended without the result it was run for.

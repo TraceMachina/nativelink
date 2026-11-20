@@ -23,7 +23,7 @@ export default function LicensePage() {
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
               <Eyebrow className="mb-5">License</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.05] tracking-[-0.035em] md:text-[60px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.05] tracking-[-0.035em] md:text-6xl">
                 NativeLink Licensing
               </h1>
               <p className="mx-auto mt-5 max-w-[650px] text-base leading-relaxed text-muted-foreground md:text-lg">

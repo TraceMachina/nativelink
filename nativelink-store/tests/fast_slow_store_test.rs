@@ -20,9 +20,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
+use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{
-    CompressionAlgorithm, CompressionSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec,
-    NoopSpec, StoreDirection, StoreSpec,
+    CommonObjectSpec, CompressionAlgorithm, CompressionSpec, ExperimentalCloudObjectSpec,
+    ExperimentalGcsSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec, NoopSpec,
+    StoreDirection, StoreSpec,
 };
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
@@ -30,6 +32,9 @@ use nativelink_metric::MetricsComponent;
 use nativelink_store::compression_store::CompressionStore;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
+use nativelink_store::gcs_client::mocks::MockGcsOperations;
+use nativelink_store::gcs_client::types::ObjectPath;
+use nativelink_store::gcs_store::GcsStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::{
@@ -37,6 +42,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
@@ -997,6 +1003,46 @@ async fn lazy_slow_read_announces_the_slow_store_limit_to_the_fast_store() -> Re
     let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
     assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
 
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
+    );
+    Ok(())
+}
+
+// A fast_slow store whose slow tier is a lazy fast_slow store announces the
+// innermost slow store's limit too, not `u64::MAX`.
+#[nativelink_test]
+async fn nested_lazy_slow_read_announces_the_slow_store_limit() -> Result<(), Error> {
+    let (inner, _inner_fast, inner_slow) =
+        make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())));
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let outer = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })),
+        inner,
+    ));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    assert_eq!(
+        outer.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        original_data.as_slice()
+    );
     assert_eq!(
         *announced_sizes.lock().unwrap(),
         vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
@@ -3143,6 +3189,115 @@ async fn a_wedged_commit_fails_at_the_grace_deadline() -> Result<(), Error> {
     assert!(
         err.to_string().contains("the fast tier's commit"),
         "the error must name the commit phase, got: {err:?}",
+    );
+    Ok(())
+}
+
+/// The sizing `has()` returns `None` both for a missing object and for one
+/// the slow store considers expired, so the error names both.
+#[nativelink_test]
+async fn missing_object_error_names_expiry() -> Result<(), Error> {
+    let (fast_slow_store, _fast_store, _slow_store) = make_stores();
+    let digest = DigestInfo::try_new(VALID_HASH, 100)?;
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("an object in neither tier is not found");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("not found in either fast or slow store"),
+        "{message}"
+    );
+    assert!(
+        message.contains("or the slow store considers it expired"),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// `consider_expired_after_s` makes the object store's `has()` report an old
+/// object as missing so clients upload it again, while the object stays
+/// readable. A `FastSlowStore` directly over the object store skips its sizing
+/// `has()` (`LazyExistenceOnSync`) and reads it. Nesting that store as the slow
+/// tier of another `FastSlowStore` must read it as well.
+#[nativelink_test]
+async fn nested_fast_slow_reads_object_expired_for_has() -> Result<(), Error> {
+    const EXPIRE_AFTER_S: u64 = 7 * 24 * 60 * 60;
+    const UPDATED_AT_S: u64 = 1_000;
+    const BUCKET: &str = "bucket";
+
+    let data = Bytes::from(make_random_data(100));
+    let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+    let ops = Arc::new(MockGcsOperations::new());
+    ops.add_object_with_timestamp(
+        &ObjectPath::new(BUCKET.to_string(), &StoreKey::from(digest).as_str()),
+        data.to_vec(),
+        UPDATED_AT_S,
+    )
+    .await;
+    let gcs_spec = ExperimentalGcsSpec {
+        bucket: BUCKET.to_string(),
+        common: CommonObjectSpec {
+            consider_expired_after_s: u32::try_from(EXPIRE_AFTER_S).unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let object_store = Store::new(GcsStore::new_with_ops(
+        &gcs_spec,
+        ops,
+        MockInstantWrapped::default,
+    )?);
+    MockClock::set_time(Duration::from_secs(UPDATED_AT_S + EXPIRE_AFTER_S + 1));
+
+    let fast_slow_spec = |slow| FastSlowSpec {
+        fast: StoreSpec::Memory(MemorySpec::default()),
+        slow,
+        fast_direction: StoreDirection::default(),
+        slow_direction: StoreDirection::default(),
+        bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
+    };
+    let inner = Store::new(FastSlowStore::new(
+        &fast_slow_spec(StoreSpec::ExperimentalCloudObjectStore(
+            ExperimentalCloudObjectSpec::Gcs(gcs_spec),
+        )),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        object_store.clone(),
+    ));
+    let outer = Store::new(FastSlowStore::new(
+        &fast_slow_spec(StoreSpec::Memory(MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        inner.clone(),
+    ));
+
+    assert_eq!(
+        object_store.has(digest).await?,
+        None,
+        "the object store reports the object as expired"
+    );
+    assert_eq!(
+        outer.get_part_unchunked(digest, 0, None).await?,
+        data,
+        "the nested fast_slow store reads the expired object"
+    );
+    assert_eq!(
+        inner.get_part_unchunked(digest, 0, None).await?,
+        data,
+        "the inner fast_slow store reads the expired object"
+    );
+
+    let missing = DigestInfo::try_new(VALID_HASH, data.len() + 1)?;
+    assert_eq!(
+        outer
+            .get_part_unchunked(missing, 0, None)
+            .await
+            .expect_err("an object that does not exist is not found")
+            .code,
+        Code::NotFound,
     );
     Ok(())
 }

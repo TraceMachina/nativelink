@@ -41,8 +41,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_declined, execute_result,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, OperationMemory,
+    StartExecute, UpdateForWorker, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -1185,10 +1185,10 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Simulate prepare_action failing with a NotFound error that does NOT contain
-    // the CAS-specific message. This should result in an InternalError, not
-    // FailedPrecondition.
-    let other_not_found_error = make_err!(Code::NotFound, "Some other resource was not found");
+    // A tip without a typed missing digest must not request a client re-upload.
+    let other_not_found_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+        .append("Could not open worker input path")
+        .append(MISSING_INPUT_ERROR_TIP);
     running_action
         .expect_prepare_action(Err(other_not_found_error.clone()))
         .await?;
@@ -1293,6 +1293,76 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
     ))
 }
 
+/// RFC-0018: every keepalive carries each running action's sampled peak, so
+/// a scheduler that loses this worker can tell which action outgrew its
+/// reservation.
+#[nativelink_test]
+async fn keepalive_reports_running_peaks() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.01),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    *test_context.actions_manager.memory_peaks.lock().unwrap() =
+        vec![("op-a".to_string(), 15_000_000), ("op-b".to_string(), 800)];
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    for _ in 0..30 {
+        let first = test_context
+            .client
+            .keep_alive_requests
+            .lock()
+            .unwrap()
+            .first()
+            .cloned();
+        if let Some(request) = first {
+            let mut memory = request
+                .running_operations
+                .expect("the keepalive reports running operations")
+                .memory;
+            memory.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+            assert_eq!(
+                memory,
+                vec![
+                    OperationMemory {
+                        operation_id: "op-a".to_string(),
+                        peak_memory_kb: 15_000_000,
+                    },
+                    OperationMemory {
+                        operation_id: "op-b".to_string(),
+                        peak_memory_kb: 800,
+                    },
+                ]
+            );
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(make_err!(Code::DeadlineExceeded, "No keepalive was sent"))
+}
+
 /// A keepalive that never completes does not end the connection by itself:
 /// a send waits behind whatever the scheduler is still processing, and the
 /// scheduler's liveness timeout is the clock. When the scheduler closes the
@@ -1368,9 +1438,16 @@ async fn a_hung_keepalive_waits_for_the_scheduler_to_close_the_stream() -> Resul
     })
     .await
     .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
-    assert!(logs_contain(
-        "Worker disconnected from scheduler, reconnecting"
-    ));
+    logs_assert(|lines: &[&str]| {
+        if lines.iter().any(|line| {
+            line.contains("Worker disconnected from scheduler, reconnecting")
+                && line.contains("ERROR")
+        }) {
+            Ok(())
+        } else {
+            Err("a disconnect after registration must log at ERROR".to_string())
+        }
+    });
     Ok(())
 }
 
@@ -2090,5 +2167,45 @@ async fn reconnect_backoff_takes_its_jitter_from_the_jitter_fn() -> Result<(), E
         delays[..2],
         [Duration::from_millis(250), Duration::from_millis(500)]
     );
+    Ok(())
+}
+
+/// A worker that starts before its scheduler is reachable retries; those
+/// startup misses are warnings, not errors.
+#[nativelink_test]
+async fn startup_scheduler_connect_failure_logs_a_warning() -> Result<(), Error> {
+    use utils::local_worker_test_utils::MockWorkerApiClient;
+    use utils::mock_running_actions_manager::MockRunningActionsManager;
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = std::sync::Mutex::new(Some(done_tx));
+    let worker = nativelink_worker::local_worker::LocalWorker::<MockWorkerApiClient, _>::new_with_connection_factory_and_actions_manager(
+        Arc::new(LocalWorkerConfig::default()),
+        Arc::new(MockRunningActionsManager::new()),
+        Box::new(|| Box::pin(async { Err(make_err!(Code::Unavailable, "no scheduler")) })),
+        Box::new(move |_delay| {
+            let done = done_tx.lock().unwrap().take();
+            if let Some(done) = done {
+                done.send(()).unwrap();
+            }
+            // Yield, so the reconnect loop lets this test run.
+            Box::pin(tokio::task::yield_now())
+        }),
+    );
+    let (shutdown, _) = tokio::sync::broadcast::channel(1);
+    let run = nativelink_util::spawn!("startup_warn_test_worker", worker.run(shutdown.subscribe()));
+    done_rx.await.unwrap();
+    drop(run);
+    logs_assert(|lines: &[&str]| {
+        let attempt = lines.iter().find(|line| {
+            line.contains("Scheduler connection attempt failed, retrying")
+                && line.contains("failure=\"connect\"")
+        });
+        match attempt {
+            Some(line) if line.contains("WARN") => Ok(()),
+            Some(line) => Err(format!("startup connect failure must be a warning: {line}")),
+            None => Err("no startup connect failure was logged".to_string()),
+        }
+    });
     Ok(())
 }

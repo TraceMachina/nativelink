@@ -45,7 +45,7 @@ use nativelink_config::cas_server::{
     Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
     ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -148,7 +148,7 @@ const SIGKILL_NUMBER: i32 = 9;
 pub use nativelink_util::action_messages::MISSING_INPUT_ERROR_TIP;
 
 fn tag_missing_input(err: Error) -> Error {
-    if err.code == Code::NotFound {
+    if err.code == Code::NotFound && matches!(err.context, ErrorContext::MissingDigest { .. }) {
         err.append(MISSING_INPUT_ERROR_TIP)
     } else {
         err
@@ -292,6 +292,10 @@ enum OverLimit {
 #[derive(Debug, Default)]
 pub struct ActionMemoryWatch {
     last_memory_kb: AtomicU64,
+    /// The highest figure the sampler has read for the action; it only
+    /// rises. Reported on the keepalive so a scheduler that loses this
+    /// worker can tell which action grew past its reservation.
+    peak_memory_kb: AtomicU64,
     /// The memory reservation the action runs under, 0 when it has none.
     reserved_memory_kb: AtomicU64,
     kill_requested_percent: AtomicU64,
@@ -306,6 +310,16 @@ pub struct ActionMemoryWatch {
 impl ActionMemoryWatch {
     pub fn last_memory_kb(&self) -> u64 {
         self.last_memory_kb.load(Ordering::Relaxed)
+    }
+
+    pub fn peak_memory_kb(&self) -> u64 {
+        self.peak_memory_kb.load(Ordering::Relaxed)
+    }
+
+    /// Records a sample: the last figure, and the peak if it is higher.
+    pub fn observe(&self, memory_kb: u64) {
+        self.last_memory_kb.store(memory_kb, Ordering::Relaxed);
+        self.peak_memory_kb.fetch_max(memory_kb, Ordering::Relaxed);
     }
 
     pub fn reserved_memory_kb(&self) -> u64 {
@@ -634,10 +648,7 @@ async fn sample_action_resource_usage(
         }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
-            ceilings
-                .watch
-                .last_memory_kb
-                .store(memory_kb, Ordering::Relaxed);
+            ceilings.watch.observe(memory_kb);
         }
         if observed.is_none() && !process_exists(pgid) {
             // The group leader has been reaped and no member process remains,
@@ -1052,6 +1063,20 @@ enum SideChannelFailureReason {
 struct SideChannelInfo {
     /// If the task should be considered a failure and why.
     failure: Option<SideChannelFailureReason>,
+    /// Peak device memory the action held on its GPU, in KiB, when whatever
+    /// wraps the action measured it. The worker reads no device itself; it
+    /// carries the figure to the scheduler in the action's resource usage.
+    #[serde(default)]
+    peak_gpu_memory_kb: Option<u64>,
+}
+
+/// What a side channel file said about the action that wrote it.
+#[derive(Debug, Default)]
+struct SideChannelReport {
+    /// The failure to record against the action, when the file names one.
+    error: Option<Error>,
+    /// Zero when the file states none.
+    peak_gpu_memory_kb: u64,
 }
 
 fn action_supports_persistent_workers(
@@ -2606,7 +2631,7 @@ async fn process_side_channel_file(
     side_channel_file: Cow<'_, OsStr>,
     args: &[&OsStr],
     timeout: Duration,
-) -> Result<Option<Error>, Error> {
+) -> Result<SideChannelReport, Error> {
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
@@ -2617,7 +2642,7 @@ async fn process_side_channel_file(
                     return Err(e).err_tip(|| "Error opening side channel file");
                 }
                 // Note: If file does not exist, it's ok. Users are not required to create this file.
-                return Ok(None);
+                return Ok(SideChannelReport::default());
             }
         };
         file_slot
@@ -2629,7 +2654,7 @@ async fn process_side_channel_file(
     let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
         .map_err(Error::from)
         .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
-    Ok(side_channel_info.failure.map(|failure| match failure {
+    let error = side_channel_info.failure.map(|failure| match failure {
         SideChannelFailureReason::Timeout => {
             let join_args = args.join(OsStr::new(" "));
             let command = join_args.to_string_lossy();
@@ -2643,7 +2668,11 @@ async fn process_side_channel_file(
                 ),
             )
         }
-    }))
+    });
+    Ok(SideChannelReport {
+        error,
+        peak_gpu_memory_kb: side_channel_info.peak_gpu_memory_kb.unwrap_or(0),
+    })
 }
 
 async fn do_cleanup(
@@ -4333,7 +4362,7 @@ impl RunningActionImpl {
                             )
                         });
                     let fetched_input = self.state.lock().input_bytes;
-                    let resource_usage = Some(ActionResourceUsage {
+                    let mut resource_usage = Some(ActionResourceUsage {
                         peak_memory_kb: sampled_usage.peak_memory_kb,
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
@@ -4362,12 +4391,16 @@ impl RunningActionImpl {
                     // log something useful instead of repeating same ?arg
                     info!(?exit_code, outcome = outcome.as_str_name(), "Command complete");
 
-                    let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
+                    let side_channel = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
                         .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
-                        None
+                        SideChannelReport::default()
                     };
+                    if let Some(usage) = resource_usage.as_mut() {
+                        usage.peak_gpu_memory_kb = side_channel.peak_gpu_memory_kb;
+                    }
+                    let maybe_error_override = side_channel.error;
                     {
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), maybe_error_override);
@@ -5087,6 +5120,13 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn metrics(&self) -> &Arc<Metrics>;
+
+    /// The highest memory sampled so far for each running operation that
+    /// has been sampled, as `(operation id, KiB)`, for the keepalive
+    /// (RFC-0018). Empty where nothing samples.
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
 }
 
 /// A function to get the current system time, used to allow mocking for tests
@@ -6458,6 +6498,17 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
     }
+
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        self.running_actions
+            .lock()
+            .iter()
+            .filter_map(|(operation_id, action)| {
+                let peak_kb = action.upgrade()?.memory_watch.peak_memory_kb();
+                (peak_kb > 0).then(|| (operation_id.to_string(), peak_kb))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Default, MetricsComponent)]
@@ -6540,6 +6591,28 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn only_missing_digest_is_tagged_as_missing_input() {
+        let local_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+            .append("Could not open worker input path");
+        assert_eq!(tag_missing_input(local_error.clone()), local_error);
+        let missing = make_err!(Code::NotFound, "CAS blob missing").with_context(
+            ErrorContext::MissingDigest {
+                hash: "abc".to_string(),
+                size: 42,
+            },
+        );
+        assert_eq!(
+            tag_missing_input(missing.clone()),
+            missing.clone().append(MISSING_INPUT_ERROR_TIP)
+        );
+        let other_error = Error {
+            code: Code::Unavailable,
+            ..missing
+        };
+        assert_eq!(tag_missing_input(other_error.clone()), other_error);
+    }
 
     fn test_digest(first_byte: u8) -> DigestInfo {
         let mut hash = [0u8; 32];

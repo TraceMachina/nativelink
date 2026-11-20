@@ -65,7 +65,7 @@ export default function CompanyPage() {
           <Reveal>
             <div className="mx-auto max-w-[920px] text-center">
               <Eyebrow className="mb-5">Company</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 Accelerating the{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   machine age

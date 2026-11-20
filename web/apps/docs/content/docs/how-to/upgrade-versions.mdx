@@ -90,12 +90,15 @@ just the newest, because the breaking change may be three releases back.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ```sh
+NATIVELINK_VERSION=vX.Y.Z
+
 docker run --rm \
   -v $(pwd)/cas.json5:/config.json5 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 /config.json5
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} /config.json5
 ```
 
 A config error fails within a second, before any port is bound, with a message

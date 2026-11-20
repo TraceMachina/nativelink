@@ -20,7 +20,7 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use humantime::format_duration;
+use jiff::Span;
 use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
@@ -416,6 +416,10 @@ impl From<&ActionInfo> for ExecuteRequest {
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
             digest_function: unique_qualifier.digest_function.proto_digest_func().into(),
+            // Hints only (REAPI v2.9), and `ActionInfo` does not carry them.
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         }
     }
 }
@@ -607,6 +611,7 @@ impl From<DirectoryInfo> for OutputDirectory {
             path: val.path,
             tree_digest: Some(val.tree_digest.into()),
             is_topologically_sorted: false,
+            root_directory_digest: None,
         }
     }
 }
@@ -1204,7 +1209,7 @@ impl Display for ActionState {
             self.stage.name(),
             self.last_transition_timestamp.elapsed().map_or_else(
                 |_| "<unknown duration>".to_string(),
-                |d| { format_duration(d).to_string() }
+                |d| { format!("{}", Span::try_from(d).unwrap_or_default()) }
             ),
             self.client_operation_id,
             self.action_digest
@@ -1312,6 +1317,10 @@ impl ActionState {
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,
+            // Left unset, which REAPI allows for the digest functions we
+            // support: the client infers it from the action digest's length
+            // and the capabilities.
+            digest_function: 0,
         };
 
         Operation {

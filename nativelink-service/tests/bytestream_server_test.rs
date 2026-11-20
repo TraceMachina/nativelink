@@ -1756,6 +1756,27 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::err
     Ok(())
 }
 
+// An unknown instance name is a bad argument, not a server fault. Bazel
+// retries INTERNAL with backoff but fails fast on INVALID_ARGUMENT.
+#[nativelink_test]
+pub async fn read_unknown_instance_is_invalid_argument() -> Result<(), Box<dyn core::error::Error>>
+{
+    let store_manager = make_store_manager().await?;
+    let bs_server = make_bytestream_server(store_manager.as_ref(), None)?;
+    let Err(status) = bs_server
+        .read(Request::new(ReadRequest {
+            resource_name: format!("unknown_instance/blobs/{HASH1}/55"),
+            read_offset: 0,
+            read_limit: 0,
+        }))
+        .await
+    else {
+        panic!("a read for an unknown instance must fail");
+    };
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+    Ok(())
+}
+
 /// A bug was found in early development where we could deadlock when reading a stream if the
 /// store backend resulted in an error. This was because we were not shutting down the stream
 /// when on the backend store error which caused the `AsyncReader` to block forever because the

@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -67,6 +68,12 @@ elif sys.argv[1]=='--import':
  (root/'imported').touch()
 else:sys.exit(23)
 ''')
+        (tools / 'nix-collect-garbage').write_text('''#!/usr/bin/env python3
+import os,sys
+from pathlib import Path
+with (Path(os.environ['FAKE_ROOT'])/'calls').open('a') as trace:trace.write('gc\\n')
+sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
+''')
         for path in tools.iterdir():
             path.chmod(0o755)
         self.environment = patch.dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
@@ -93,6 +100,38 @@ else:sys.exit(23)
         self.assertEqual(self.calls().count('nix build'), 1)
         self.assertEqual(self.calls().count('store --import'), 3)
         self.assertEqual(self.calls().count('nix path-info'), 3)
+
+    def test_build_prunes_older_runs_and_every_stale_archive_before_building(self):
+        closure = self.root / 'closure'
+        closure.mkdir()
+        results = self.root / 'ci-results'
+        runs = []
+        for age, name in enumerate(['run-1', 'run-2', 'run-3', 'run-4']):
+            run = results / name
+            run.mkdir(parents=True)
+            (run / 'result').symlink_to(closure)
+            (run / 'closure.nar.gz').write_bytes(b'archived closure')
+            (run / 'nix.json').write_text('{}')
+            os.utime(run, (1_000 + age, 1_000 + age))
+            runs.append(run)
+
+        nix_ci.build(results / 'current', self.revision)
+
+        removed = [run.name for run in runs if not run.exists()]
+        self.assertEqual(removed, ['run-1', 'run-2'])
+        for kept in (runs[2], runs[3]):
+            self.assertTrue((kept / 'result').is_symlink(),
+                            'retained result roots keep recent closures warm')
+            self.assertFalse((kept / 'closure.nar.gz').exists(),
+                             'archives are only read from the uploaded artifact')
+        self.assertTrue((results / 'current' / 'closure.nar.gz').exists())
+        self.assertLess(self.calls().index('gc'), self.calls().index('nix build'))
+
+    def test_failed_store_collection_does_not_block_the_build(self):
+        with patch.dict(os.environ, FAKE_GC_FAILURE='1'):
+            report = nix_ci.build(self.directory, self.revision)
+        self.assertEqual(report['outputs'], self.paths)
+        self.assertEqual(self.calls().count('nix build'), 1)
 
     def test_bad_revision_checksum_and_package_definition_stop_before_import(self):
         report = nix_ci.build(self.directory, self.revision)
@@ -160,6 +199,38 @@ else:sys.exit(23)
             self.assertNotIn('secrets.', consumer)
             self.assertLess(consumer.index('nix_ci.py import'), consumer.index('nix run -L'))
         self.assertIn('needs.nix-build.outputs.matrix', toolchains)
+
+    def test_shared_nix_package_is_built_on_aws_for_every_branch(self):
+        workflow = Path('.github/workflows/nix.yaml').read_text()
+        job = workflow.split('  nix-build:', 1)[1].split('  nix-cargo:', 1)[0]
+        self.assertNotIn('nix-build-aws', workflow)
+        self.assertIn('environment: cluster-ci-aws', job)
+        self.assertIn('name: Build shared Nix package\n', job)
+        self.assertIn("startsWith(github.ref, 'refs/heads/')", job)
+        for removed in ('continue-on-error', 'NL_AWS_LANE', 'cluster-ci-benchmark', 'NL_GCP_'):
+            self.assertNotIn(removed, workflow)
+        # The Nix client by its own name, and only short-lived credentials.
+        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_NIX_POD }}', job)
+        self.assertIn('id-token: write', job)
+        self.assertRegex(job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
+        for stored_key in ('aws-access-key-id', 'aws-secret-access-key', 'AWS_SECRET_ACCESS_KEY'):
+            self.assertNotIn(stored_key, job)
+        # The log of this public repository shows a variable and masks a
+        # secret, so what locates the deployment is read from secrets.
+        for located in ('NL_AWS_DISPATCH_ROLE_ARN', 'NL_GKE_SERVER', 'NL_GKE_CA_DATA'):
+            self.assertIn('${{ secrets.%s }}' % located, job)
+        self.assertIn('mask-aws-account-id: true', job)
+        # The result is read with a new token after the build, so the
+        # credentials must outlast the job.
+        session = int(re.search(r'role-duration-seconds: (\d+)', job).group(1))
+        limit = int(re.search(r'timeout-minutes: (\d+)', job).group(1))
+        self.assertGreater(session, limit * 60)
+        # The cluster client asks the AWS CLI for each token, and the
+        # free-disk action removes that CLI from the runner.
+        self.assertNotIn('uses: ./.github/actions/free-disk', job)
+        # The jobs below import its closure and read its command matrix.
+        self.assertIn('matrix: ${{ steps.manifest.outputs.matrix }}', job)
+        self.assertIn('name: nix-ci-package', job)
 
 
 if __name__ == '__main__':

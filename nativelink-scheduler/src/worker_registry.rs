@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_lock::RwLock;
+use jiff::Timestamp;
 use nativelink_util::action_messages::WorkerId;
 use tracing::{debug, trace};
 
@@ -71,7 +72,7 @@ impl WorkerRegistry {
     pub async fn update_worker_heartbeat(&self, worker_id: &WorkerId, now: SystemTime) {
         let mut workers = self.workers.write().await;
         workers.insert(worker_id.clone(), now);
-        trace!(?worker_id, now = %humantime::format_rfc3339(now), "FLOW: Worker heartbeat updated in registry");
+        trace!(?worker_id, now = %Timestamp::try_from(now).unwrap(), "FLOW: Worker heartbeat updated in registry");
     }
 
     pub async fn register_worker(&self, worker_id: &WorkerId, now: SystemTime) {
@@ -109,7 +110,7 @@ impl WorkerRegistry {
         };
         trace!(
             ?worker_id,
-            last_seen = %humantime::format_rfc3339(*last_seen),
+            last_seen = %Timestamp::try_from(*last_seen).unwrap_or_default(),
             ?timeout,
             ?liveness,
             "FLOW: Worker liveness check"

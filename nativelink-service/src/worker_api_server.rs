@@ -426,6 +426,24 @@ impl WorkerConnection {
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         if let Some(running) = keep_alive_request.running_operations {
+            // The memory first: the running report can release an operation
+            // the worker left out, and a peak for it is then dropped anyway.
+            let peaks: Vec<(OperationId, u64)> = running
+                .memory
+                .into_iter()
+                .map(|memory| {
+                    (
+                        OperationId::from(memory.operation_id),
+                        memory.peak_memory_kb,
+                    )
+                })
+                .collect();
+            if !peaks.is_empty() {
+                self.scheduler
+                    .worker_operation_memory_reported(&self.worker_id, peaks)
+                    .await
+                    .err_tip(|| "Could not process the memory report in inner_keep_alive()")?;
+            }
             self.scheduler
                 .worker_running_operations_reported(
                     &self.worker_id,

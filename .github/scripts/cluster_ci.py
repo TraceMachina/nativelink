@@ -43,6 +43,21 @@ process.exit(result.status ?? 1);
 """
 
 
+def credential_plugin(environ):
+    """The command kubectl runs for a short-lived token. None is stored.
+
+    The job already holds role credentials from GitHub's OIDC token, and the
+    AWS CLI signs a token for this one cluster with them.
+    """
+    cluster = environ.get("NL_EKS_CLUSTER", "")
+    region = environ.get("NL_AWS_REGION", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", cluster) or not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d", region):
+        raise ValueError("Invalid cluster name or region")
+    return {"apiVersion": "client.authentication.k8s.io/v1beta1", "interactiveMode": "Never",
+            "command": "aws",
+            "args": ["eks", "get-token", "--cluster-name", cluster, "--region", region, "--output", "json"]}
+
+
 def kubeconfig(environ):
     server = environ["NL_GKE_SERVER"]
     if not server.startswith("https://"):
@@ -52,10 +67,7 @@ def kubeconfig(environ):
                            "certificate-authority-data": environ["NL_GKE_CA_DATA"]}}],
             "contexts": [{"name": "ci", "context": {"cluster": "ci", "user": "ci",
                           "namespace": environ["NL_GKE_NAMESPACE"]}}],
-            "users": [{"name": "ci", "user": {"exec": {
-                "apiVersion": "client.authentication.k8s.io/v1", "interactiveMode": "Never",
-                "command": sys.executable,
-                "args": [str(Path(__file__).with_name("cluster_credentials.py").resolve())]}}}]}
+            "users": [{"name": "ci", "user": {"exec": credential_plugin(environ)}}]}
 
 
 def payload(environ, repetitions, task='bazel'):

@@ -14,8 +14,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as base64_standard;
-use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
+use jiff::{Span, Timestamp};
 use nativelink_error::{Error, make_err};
 use sha2::Sha256;
 use tonic::Code;
@@ -38,9 +38,7 @@ pub(crate) fn build_container_sas_url(
     account_key_b64: &str,
     container: &str,
 ) -> Result<String, Error> {
-    let expiry = (Utc::now() + Duration::seconds(SAS_LIFETIME_SECS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let expiry = (Timestamp::now() + Span::new().seconds(SAS_LIFETIME_SECS)).to_string();
 
     let canonicalized_resource = format!("/blob/{account_name}/{container}");
 
@@ -110,9 +108,7 @@ pub(crate) fn build_account_sas_query(
     const SIGNED_SERVICE: &str = "b"; // blob
     const SIGNED_RESOURCE_TYPE: &str = "c"; // container
 
-    let expiry = (Utc::now() + Duration::seconds(SAS_LIFETIME_SECS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let expiry = (Timestamp::now() + Span::new().seconds(SAS_LIFETIME_SECS)).to_string();
 
     // Trailing "\n" after signedEncryptionScope is part of the spec, not a
     // typo. Building this via `.join("\n")` alone would silently drop it.
