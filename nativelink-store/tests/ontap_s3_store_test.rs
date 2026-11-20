@@ -33,7 +33,7 @@ use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -771,5 +771,48 @@ async fn incomplete_small_upload_never_sends_ontap_put() -> Result<(), Error> {
         );
         assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
     }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn remove_deletes_object() -> Result<(), Error> {
+    let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-100?x-id=DeleteObject"
+            ))
+            .body(SdkBody::empty())
+            .unwrap(),
+        http::Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(SdkBody::empty())
+            .unwrap(),
+    )]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::from_static(VSERVER_NAME))
+        .http_client(mock_client.clone())
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = OntapS3Store::new_with_client_and_jitter(
+        &(ExperimentalOntapS3Spec {
+            bucket: BUCKET_NAME.to_string(),
+            vserver_name: VSERVER_NAME.to_string(),
+            endpoint: "https://example.com".to_string(),
+            ..Default::default()
+        }),
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+    let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
+    assert!(
+        Store::new(store)
+            .as_store_driver_pin()
+            .remove(digest.into())
+            .await?
+    );
+    mock_client.assert_requests_match(&[]);
     Ok(())
 }

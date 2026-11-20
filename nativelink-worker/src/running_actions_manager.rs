@@ -45,7 +45,7 @@ use nativelink_config::cas_server::{
     Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
     ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, ActionResult as ProtoActionResult, Command as ProtoCommand,
@@ -148,7 +148,7 @@ const SIGKILL_NUMBER: i32 = 9;
 pub use nativelink_util::action_messages::MISSING_INPUT_ERROR_TIP;
 
 fn tag_missing_input(err: Error) -> Error {
-    if err.code == Code::NotFound {
+    if err.code == Code::NotFound && matches!(err.context, ErrorContext::MissingDigest { .. }) {
         err.append(MISSING_INPUT_ERROR_TIP)
     } else {
         err
@@ -1063,6 +1063,20 @@ enum SideChannelFailureReason {
 struct SideChannelInfo {
     /// If the task should be considered a failure and why.
     failure: Option<SideChannelFailureReason>,
+    /// Peak device memory the action held on its GPU, in KiB, when whatever
+    /// wraps the action measured it. The worker reads no device itself; it
+    /// carries the figure to the scheduler in the action's resource usage.
+    #[serde(default)]
+    peak_gpu_memory_kb: Option<u64>,
+}
+
+/// What a side channel file said about the action that wrote it.
+#[derive(Debug, Default)]
+struct SideChannelReport {
+    /// The failure to record against the action, when the file names one.
+    error: Option<Error>,
+    /// Zero when the file states none.
+    peak_gpu_memory_kb: u64,
 }
 
 fn action_supports_persistent_workers(
@@ -2617,7 +2631,7 @@ async fn process_side_channel_file(
     side_channel_file: Cow<'_, OsStr>,
     args: &[&OsStr],
     timeout: Duration,
-) -> Result<Option<Error>, Error> {
+) -> Result<SideChannelReport, Error> {
     let mut json_contents = String::new();
     {
         // Note: Scoping `file_slot` allows the file_slot semaphore to be released faster.
@@ -2628,7 +2642,7 @@ async fn process_side_channel_file(
                     return Err(e).err_tip(|| "Error opening side channel file");
                 }
                 // Note: If file does not exist, it's ok. Users are not required to create this file.
-                return Ok(None);
+                return Ok(SideChannelReport::default());
             }
         };
         file_slot
@@ -2640,7 +2654,7 @@ async fn process_side_channel_file(
     let side_channel_info: SideChannelInfo = serde_json5::from_str(&json_contents)
         .map_err(Error::from)
         .err_tip(|| "Could not convert contents of side channel file (json) to SideChannelInfo")?;
-    Ok(side_channel_info.failure.map(|failure| match failure {
+    let error = side_channel_info.failure.map(|failure| match failure {
         SideChannelFailureReason::Timeout => {
             let join_args = args.join(OsStr::new(" "));
             let command = join_args.to_string_lossy();
@@ -2654,7 +2668,11 @@ async fn process_side_channel_file(
                 ),
             )
         }
-    }))
+    });
+    Ok(SideChannelReport {
+        error,
+        peak_gpu_memory_kb: side_channel_info.peak_gpu_memory_kb.unwrap_or(0),
+    })
 }
 
 async fn do_cleanup(
@@ -2747,6 +2765,10 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
 
     /// Returns worker-observed resource usage captured while this action ran.
     fn resource_usage(&self) -> Option<ActionResourceUsage>;
+
+    /// Whether the action set `do_not_cache`, in which case its result must
+    /// not be written to the Action Cache.
+    fn do_not_cache(&self) -> bool;
 
     /// Returns the work directory of the action.
     fn get_work_directory(&self) -> &String;
@@ -2956,6 +2978,9 @@ pub struct RunningActionImpl {
     action_directory: String,
     work_directory: String,
     action_info: ActionInfo,
+    /// The Action's `do_not_cache`. Kept here rather than on `ActionInfo`,
+    /// which is serialized into the scheduler databases.
+    do_not_cache: bool,
     /// `Some` only when the manager was configured with
     /// `experimental_active_input_leases`; `None` leaves eviction untouched.
     input_lease: Option<Arc<ActionInputLease>>,
@@ -2992,6 +3017,7 @@ impl RunningActionImpl {
         operation_id: OperationId,
         action_directory: String,
         action_info: ActionInfo,
+        do_not_cache: bool,
         timeout: Duration,
         running_actions_manager: Arc<RunningActionsManagerImpl>,
     ) -> Self {
@@ -3011,6 +3037,7 @@ impl RunningActionImpl {
             action_directory,
             work_directory,
             action_info,
+            do_not_cache,
             input_lease,
             timeout,
             running_actions_manager,
@@ -4335,7 +4362,7 @@ impl RunningActionImpl {
                             )
                         });
                     let fetched_input = self.state.lock().input_bytes;
-                    let resource_usage = Some(ActionResourceUsage {
+                    let mut resource_usage = Some(ActionResourceUsage {
                         peak_memory_kb: sampled_usage.peak_memory_kb,
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
@@ -4364,12 +4391,16 @@ impl RunningActionImpl {
                     // log something useful instead of repeating same ?arg
                     info!(?exit_code, outcome = outcome.as_str_name(), "Command complete");
 
-                    let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
+                    let side_channel = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
                         .err_tip(|| format!("Error processing side channel file: {}", side_channel_file.display()))?
                     } else {
-                        None
+                        SideChannelReport::default()
                     };
+                    if let Some(usage) = resource_usage.as_mut() {
+                        usage.peak_gpu_memory_kb = side_channel.peak_gpu_memory_kb;
+                    }
+                    let maybe_error_override = side_channel.error;
                     {
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), maybe_error_override);
@@ -5052,6 +5083,10 @@ impl RunningAction for RunningActionImpl {
         self.state.lock().resource_usage.clone()
     }
 
+    fn do_not_cache(&self) -> bool {
+        self.do_not_cache
+    }
+
     fn get_work_directory(&self) -> &String {
         &self.work_directory
     }
@@ -5066,11 +5101,15 @@ pub trait RunningActionsManager: Sync + Send + Sized + Unpin + 'static {
         start_execute: StartExecute,
     ) -> impl Future<Output = Result<Arc<Self::RunningAction>, Error>> + Send;
 
+    /// Uploads the result to the Action Cache and the historical results
+    /// store as configured. With `do_not_cache` set, the Action Cache is
+    /// skipped; a historical result is still uploaded.
     fn cache_action_result(
         &self,
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn kill_all(&self) -> impl Future<Output = ()> + Send;
@@ -5454,11 +5493,16 @@ impl UploadActionResults {
         action_info: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         let should_upload_historical_results =
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
-        let should_upload_ac_results =
-            Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
+        // REv2 `Action.do_not_cache`: "If true, then the Action's result
+        // cannot be cached". The historical results store is a debugging
+        // record under its own digest, not the Action Cache, so it is
+        // unaffected.
+        let should_upload_ac_results = !do_not_cache
+            && Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
         // Shortcut so we don't need to convert to proto if not needed.
         if !should_upload_ac_results && !should_upload_historical_results {
             return Ok(());
@@ -5950,7 +5994,7 @@ impl RunningActionsManagerImpl {
         &self,
         start_execute: StartExecute,
         queued_timestamp: SystemTime,
-    ) -> impl Future<Output = Result<ActionInfo, Error>> + '_ {
+    ) -> impl Future<Output = Result<(ActionInfo, bool), Error>> + '_ {
         self.metrics.create_action_info.wrap(async move {
             let execute_request = start_execute
                 .execute_request
@@ -5966,6 +6010,8 @@ impl RunningActionsManagerImpl {
                 .await
                 .err_tip(|| "During start_action")
                 .map_err(tag_missing_input)?;
+            // Read before the Action is consumed; `ActionInfo` does not carry it.
+            let do_not_cache = action.do_not_cache;
             let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
@@ -5989,7 +6035,7 @@ impl RunningActionsManagerImpl {
                         .insert(property.name, property.value);
                 }
             }
-            Ok(action_info)
+            Ok((action_info, do_not_cache))
         })
     }
 
@@ -6292,7 +6338,8 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let operation_id = start_execute
                     .operation_id.as_str().into();
-                let action_info = self.create_action_info(start_execute, queued_timestamp).await?;
+                let (action_info, do_not_cache) =
+                    self.create_action_info(start_execute, queued_timestamp).await?;
                 debug!(
                     ?action_info,
                     "Worker received action",
@@ -6335,6 +6382,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     operation_id.clone(),
                     action_directory,
                     action_info,
+                    do_not_cache,
                     timeout,
                     self.clone(),
                 ));
@@ -6385,6 +6433,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         action_info: DigestInfo,
         action_result: &mut ActionResult,
         hasher: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         self.metrics
             .cache_action_result
@@ -6392,6 +6441,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 action_info,
                 action_result,
                 hasher,
+                do_not_cache,
             ))
             .await
     }
@@ -6541,6 +6591,29 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn only_missing_digest_is_tagged_as_missing_input() {
+        let local_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+            .append("Could not open worker input path");
+        assert_eq!(tag_missing_input(local_error.clone()), local_error);
+        let missing = make_err!(Code::NotFound, "CAS blob missing").with_context(
+            ErrorContext::MissingDigest {
+                hash: "abc".to_string(),
+                size: 42,
+                digest_function: None,
+            },
+        );
+        assert_eq!(
+            tag_missing_input(missing.clone()),
+            missing.clone().append(MISSING_INPUT_ERROR_TIP)
+        );
+        let other_error = Error {
+            code: Code::Unavailable,
+            ..missing
+        };
+        assert_eq!(tag_missing_input(other_error.clone()), other_error);
+    }
 
     fn test_digest(first_byte: u8) -> DigestInfo {
         let mut hash = [0u8; 32];
