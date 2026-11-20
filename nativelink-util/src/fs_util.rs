@@ -181,37 +181,14 @@ async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
 /// hardlinks.
 #[cfg(target_os = "macos")]
 async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
     // From <sys/clonefile.h>: don't follow symlinks at the top level. Symlinks
     // *within* the cloned tree are cloned as symlinks regardless. The `libc`
     // crate exposes `clonefile` but not this flag constant.
     const CLONE_NOFOLLOW: u32 = 0x0001;
 
-    let src_c = CString::new(src.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "src path contains interior NUL byte",
-        )
-    })?;
-    let dst_c = CString::new(dst.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "dst path contains interior NUL byte",
-        )
-    })?;
-
+    let (src, dst) = (src.to_owned(), dst.to_owned());
     crate::spawn_blocking!("clonefile", move || {
-        // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
-        // word. Both CStrings are owned by this closure for the duration of
-        // the call, so the pointers stay valid.
-        let res = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), CLONE_NOFOLLOW) };
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
+        crate::fs::clonefile(&src, &dst, CLONE_NOFOLLOW)
     })
     .await
     .map_err(std::io::Error::other)?
