@@ -1,0 +1,186 @@
+// The trusted control plane for CI with untrusted pull requests: the cache,
+// the schedulers, and the persistent main-branch worker. Pair it with
+// ci_single_use_workers.json5, which runs the untrusted pull-request worker
+// as its own process (the config schema requires a single_use worker to be
+// alone in its process, so the two tiers cannot live in one file).
+//
+// Two REAPI instance names split trust:
+//   - "main" : trusted main-branch builds. Action Cache is writable.
+//   - "pr"   : untrusted pull-request builds. Action Cache is READ-ONLY and
+//              points at the same trusted store, so a pull request gets cache
+//              hits from trusted builds but can never write one. Execution
+//              goes to a separate scheduler/worker pool (the single_use
+//              workers), so untrusted actions never share a worker with
+//              trusted ones.
+// The CAS is shared: it is content-addressed and every blob is verified
+// against its digest, so an untrusted client cannot forge or poison it.
+//
+// read_only is a per-instance setting, not a per-client role: nothing here
+// decides which build is a pull request. Put a proxy or network policy in
+// front and route pull-request clients to instance_name "pr" (ideally on a
+// separate listener), trusted builds to "main".
+{
+  stores: [
+    {
+      name: "CAS_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-ci/data/content-cas",
+        temp_path: "/tmp/nativelink-ci/data/tmp-cas",
+        eviction_policy: {
+          max_bytes: 2000000000,
+        },
+      },
+    },
+    {
+      // Only trusted main-branch builds and the main worker write here.
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink-ci/data/content-ac-main",
+        temp_path: "/tmp/nativelink-ci/data/tmp-ac-main",
+        eviction_policy: {
+          max_bytes: 200000000,
+        },
+      },
+    },
+    {
+      name: "WORKER_MAIN_FAST_SLOW",
+      fast_slow: {
+        // "fast" must be a filesystem store: the worker hardlinks out of it
+        // to build each action's sandbox.
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-ci/data/content-worker-main",
+            temp_path: "/tmp/nativelink-ci/data/tmp-worker-main",
+            eviction_policy: {
+              max_bytes: 2000000000,
+            },
+          },
+        },
+        slow: {
+          ref_store: {
+            name: "CAS_STORE",
+          },
+        },
+      },
+    },
+  ],
+  schedulers: [
+    // Separate schedulers keep untrusted pull-request actions and trusted
+    // main actions on separate worker pools; they never share a worker.
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+        },
+      },
+    },
+    {
+      name: "PR_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "priority",
+          "container-image": "priority",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      // Trusted tier: a normal persistent worker for main-branch builds that
+      // may write to the trusted Action Cache. (The untrusted pull-request
+      // worker is single_use and lives in ci_single_use_workers.json5.)
+      local: {
+        name: "MAIN_WORKER",
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_MAIN_FAST_SLOW",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink-ci/work-main",
+        platform_properties: {
+          cpu_count: { values: ["1"] },
+          OSFamily: { values: [""] },
+          "container-image": { values: [""] },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      // Client-facing endpoint. Both instance names are served here; put a
+      // proxy or network policy in front to decide which clients may reach
+      // the writable "main" instance.
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          { instance_name: "main", cas_store: "CAS_STORE" },
+          { instance_name: "pr", cas_store: "CAS_STORE" },
+        ],
+        ac: [
+          // Trusted builds may write their results.
+          { instance_name: "main", ac_store: "AC_MAIN_STORE" },
+          // Pull-request builds read the trusted cache but cannot write it:
+          // UpdateActionResult is rejected for this instance, so an untrusted
+          // build can never publish a forged result into AC_MAIN_STORE.
+          { instance_name: "pr", ac_store: "AC_MAIN_STORE", read_only: true },
+        ],
+        bytestream: [
+          { instance_name: "main", cas_store: "CAS_STORE" },
+          { instance_name: "pr", cas_store: "CAS_STORE" },
+        ],
+        execution: [
+          { instance_name: "main", cas_store: "CAS_STORE", scheduler: "MAIN_SCHEDULER" },
+          { instance_name: "pr", cas_store: "CAS_STORE", scheduler: "PR_SCHEDULER" },
+        ],
+        capabilities: [
+          { instance_name: "main", remote_execution: { scheduler: "MAIN_SCHEDULER" } },
+          { instance_name: "pr", remote_execution: { scheduler: "PR_SCHEDULER" } },
+        ],
+      },
+    },
+    {
+      // Worker ports. Workers connect out to these; clients never do. The
+      // "pr" port is where ci_single_use_workers.json5 connects.
+      name: "worker_api_main",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+    {
+      name: "worker_api_pr",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50062",
+        },
+      },
+      services: {
+        worker_api: {
+          scheduler: "PR_SCHEDULER",
+        },
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
+}

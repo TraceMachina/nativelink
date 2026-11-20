@@ -1,0 +1,105 @@
+// The untrusted pull-request worker for CI. Run this as its own process,
+// one per build action, behind a launcher (a Kubernetes Job, a fresh
+// container, etc.) that gives each action a brand-new container and fresh
+// writable volumes. It pairs with ci_cache_and_schedulers.json5, the trusted
+// cache and scheduler process it connects to.
+//
+// Why a separate file: the config schema requires a single_use worker to be
+// the only worker in its process, with no scheduler and no services other
+// than health. So the untrusted execution tier cannot share a process (or
+// this file) with the cache, the schedulers, or the trusted worker.
+//
+// Security-relevant settings:
+//   - single_use: the worker takes exactly one action, uploads nothing to
+//     the Action Cache (see upload_ac_results_strategy below), and stops.
+//     Combined with a launcher that recreates the container per action, no
+//     state (local files, stray processes, caches) survives from one
+//     untrusted action to the next. single_use is NOT a kernel sandbox; keep
+//     the container unprivileged and apply the network/process restrictions
+//     in docs/operate/security-hardening.
+//   - upload_ac_results_strategy "never": an untrusted build never writes an
+//     ActionResult anywhere, so it cannot poison a cache. Output blobs still
+//     go to the shared CAS, which is safe because CAS entries are verified
+//     against their digest. The tradeoff is that pull-request builds do not
+//     populate the Action Cache; they still get read hits from the trusted
+//     cache via the read-only "pr" instance in ci_cache_and_schedulers.json5.
+//   - work_directory: a launcher recreates this per action; single_use is
+//     what makes that per-action reset possible.
+{
+  stores: [
+    {
+      // Reach the trusted cluster's CAS over gRPC on the "pr" instance.
+      // Output blobs are content-addressed, so writing them here is safe.
+      name: "GRPC_CAS",
+      grpc: {
+        instance_name: "pr",
+        store_type: "cas",
+        endpoints: [
+          { address: "grpc://127.0.0.1:50051" },
+        ],
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW",
+      fast_slow: {
+        // "fast" must be a filesystem store: the worker hardlinks out of it
+        // to build each action's sandbox.
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink-ci/data/content-worker-pr",
+            temp_path: "/tmp/nativelink-ci/data/tmp-worker-pr",
+            eviction_policy: {
+              max_bytes: 2000000000,
+            },
+          },
+        },
+        slow: {
+          ref_store: {
+            name: "GRPC_CAS",
+          },
+        },
+      },
+    },
+  ],
+  // Exactly one worker, and no `schedulers` block: both are required for
+  // single_use.
+  workers: [
+    {
+      local: {
+        name: "PR_WORKER",
+        // Connect to the "pr" scheduler's worker port in
+        // ci_cache_and_schedulers.json5.
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50062",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW",
+        upload_action_result: {
+          // Untrusted results are never cached. Omitting ac_store is fine
+          // because nothing is uploaded.
+          upload_ac_results_strategy: "never",
+        },
+        work_directory: "/tmp/nativelink-ci/work-pr",
+        single_use: true,
+        platform_properties: {
+          cpu_count: { values: ["1"] },
+          OSFamily: { values: [""] },
+          "container-image": { values: [""] },
+        },
+      },
+    },
+  ],
+  // A single_use process may expose only health services.
+  servers: [
+    {
+      name: "health",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50063",
+        },
+      },
+      services: {
+        health: {},
+      },
+    },
+  ],
+}
