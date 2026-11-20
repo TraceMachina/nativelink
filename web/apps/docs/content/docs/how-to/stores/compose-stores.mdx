@@ -302,6 +302,15 @@ A store's share is its `weight` divided by the sum of all weights, so `SHARD_C`
 above takes half. `weight` defaults to `1`, so an unweighted list is an even
 split.
 
+In development builds, repair requests follow the same weighted key routing as
+reads and writes. A disposable-copy removal reaches only the owning shard;
+cache-only removal asks that shard to drop its cache tiers while keeping its
+backing copy. A bare memory or filesystem shard is not marked disposable by
+cache-only removal. Put a disposable sharded tier on the fast side of
+`fast_slow`, or put `fast_slow` inside each shard, so size-verification repair
+can evict a truncated cache entry and refill it from the intact backing copy.
+A backend error is returned to the caller, not treated as successful repair.
+
 <Callout type="warn" title="Changing the shard set invalidates placement">
   Blobs are placed by hashing against the current set of stores and weights.
   Add, remove or reweight a shard and existing entries stop being looked for

@@ -156,6 +156,24 @@ impl StoreDriver for ShardStore {
         Ok(())
     }
 
+    // Preserve the caller's distinction between a disposable tier and a store
+    // containing caches. Never broaden a cache-only repair into durable removal.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.get_store(&key)
+            .as_store_driver_pin()
+            .remove(key)
+            .await
+            .err_tip(|| "In ShardStore::remove()")
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.get_store(&key)
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
+            .err_tip(|| "In ShardStore::remove_cached()")
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
