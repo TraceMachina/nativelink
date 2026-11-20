@@ -804,6 +804,26 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
 }
 
 #[test]
+fn directory_cache_clone_executables_defaults_and_overrides() {
+    use nativelink_config::cas_server::DirectoryCacheConfig;
+
+    for (input, expected) in [
+        ("{}", false),
+        ("{experimental_clone_executables: true}", true),
+        ("{experimental_clone_executables: false}", false),
+    ] {
+        let config: DirectoryCacheConfig = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.experimental_clone_executables, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["experimental_clone_executables"], expected);
+    }
+    for invalid in ["null", "1", "'true'"] {
+        let input = format!("{{experimental_clone_executables: {invalid}}}");
+        assert!(serde_json5::from_str::<DirectoryCacheConfig>(&input).is_err());
+    }
+}
+
+#[test]
 fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
     use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
     let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
