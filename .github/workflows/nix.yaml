@@ -134,9 +134,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
-
+      # No free-disk step here: it removes the AWS CLI, which the cluster
+      # client runs for every token. The build runs on the retained client,
+      # and the runner only receives its report and a small archive.
       - name: Install pinned cluster client
         run: |
           curl --fail --location --retry 3 \

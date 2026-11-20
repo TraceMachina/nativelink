@@ -230,6 +230,9 @@ sys.exit(int(os.environ.get('FAKE_GC_FAILURE','0')))
         session = int(re.search(r'role-duration-seconds: (\d+)', aws_job).group(1))
         limit = int(re.search(r'timeout-minutes: (\d+)', aws_job).group(1))
         self.assertGreater(session, limit * 60)
+        # The cluster client asks the AWS CLI for each token, and the
+        # free-disk action removes that CLI from the runner.
+        self.assertNotIn('uses: ./.github/actions/free-disk', aws_job)
         # Nothing waits for it or imports its closure; only its report is kept.
         self.assertNotIn('nix-build-aws', after)
         self.assertNotIn('outputs:', aws_job)
