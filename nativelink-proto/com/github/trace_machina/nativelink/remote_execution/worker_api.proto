@@ -256,7 +256,14 @@ message ActionResourceUsage {
     /// An output directory counts its tree digest, not its contents.
     uint64 output_bytes = 15;
 
-    reserved 16; // NextId.
+    /// Peak device memory the action held on its GPU, in KiB, as measured
+    /// by whatever wraps the action and reported through the side channel
+    /// file. The worker does not read a device itself. Zero when nothing
+    /// measured it, which is every action on a worker without a wrapper
+    /// that does.
+    uint64 peak_gpu_memory_kb = 16;
+
+    reserved 17; // NextId.
 }
 
 /// Why one attempt at an action ended without the result it was run for.

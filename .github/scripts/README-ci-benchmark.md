@@ -34,12 +34,14 @@ use its own runtime. Other Nix shell commands keep their normal environment.
 
 ## Configuration and trust
 
-The Bazel workflow file remains `parallel-cluster-ci.yaml`. Federation permits
-that path and `nix.yaml`, each at its matching source branch. Their environment remains
-`cluster-ci-benchmark`. Allow repository **branches** with the `**/*` deployment
-branch pattern, not tag policies. The identity provider must require the exact
-repository and owner IDs, an allowed workflow path at the signed branch ref, a
-`refs/heads/` ref, a push/manual event and this environment subject.
+The cluster lanes run on the AWS deployment, `ci.nativelink.com`. The Bazel
+workflow file remains `parallel-cluster-ci.yaml`. The dispatch role trusts that
+path and `nix.yaml`, each at its matching source branch, in the
+`cluster-ci-aws` environment. Allow repository **branches** with the `*` and
+`**/*` deployment branch patterns, not tag policies. The role's trust requires
+the repository, an allowed workflow path at a `refs/heads/` ref and this
+environment subject. The role and the environment are set up from
+`TraceMachina/ci-acceleration` (`infrastructure/terraform/aws/bootstrap`).
 
 Only users or integrations allowed to push to the source repository can start
 this cluster lane. External fork PRs do not receive its environment secrets or
@@ -87,11 +89,14 @@ Do not enable shell tracing or upload raw BEP, logs, profiles or environments.
 
 ## Retained client access
 
-Configure `NL_GCP_PROVIDER`, `NL_GCP_SERVICE_ACCOUNT`, `NL_GKE_SERVER`,
-`NL_GKE_CA_DATA`, `NL_GKE_NAMESPACE` and `NL_GKE_POD` as environment variables.
-The API address and public CA are configuration, not credentials. GitHub OIDC
-exchanges the job identity for a short-lived token in memory. Include the
-`userinfo.email` scope for the GKE email-based RoleBinding.
+Configure `NL_EKS_CLUSTER`, `NL_AWS_REGION`, `NL_GKE_NAMESPACE`,
+`NL_GKE_BAZEL_POD` and `NL_GKE_NIX_POD` as environment variables, and
+`NL_AWS_DISPATCH_ROLE_ARN`, `NL_GKE_SERVER` and `NL_GKE_CA_DATA` as environment
+secrets. The cluster's address and CA are not credentials, but this repository
+is public and a job log shows a variable's value; a secret is masked. The
+variables keep their GKE names from the earlier deployment. GitHub OIDC gives
+the job short-lived role credentials, and the AWS CLI signs a token for the one
+cluster with them in memory.
 
 The role permits get/exec on one named client pod, with no Secret reads or
 exec access to database/worker pods. No service-account key or developer
