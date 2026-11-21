@@ -147,7 +147,11 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     /// The worker's stream ended without a `GoingAway`: it crashed, was
     /// OOM-killed or lost its connection. Its actions requeue as a
     /// disconnect, so the retry cap names the worker rather than the job.
-    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error>;
+    /// `connection` is the entry's `Worker::connection`; when the worker has
+    /// since reconnected under the same id, the entry is the new
+    /// connection's and is left alone.
+    async fn worker_disconnected(&self, worker_id: &WorkerId, connection: u64)
+    -> Result<(), Error>;
 
     /// Evict all workers from the scheduler, setting their actions back to queued.
     async fn shutdown(&self, shutdown_guard: ShutdownGuard);

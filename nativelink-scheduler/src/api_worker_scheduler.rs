@@ -3330,6 +3330,30 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 "Received request to add worker while shutting down"
             ));
         }
+        // A worker that names itself reconnects under the same id, possibly
+        // before this scheduler has seen its earlier stream end. That
+        // connection is gone either way: its actions requeue as its
+        // disconnect would have requeued them.
+        if inner
+            .workers
+            .peek(&worker_id)
+            .is_some_and(|existing| existing.connection != worker.connection)
+        {
+            info!(
+                ?worker_id,
+                "Worker reconnected; ending its earlier connection"
+            );
+            drop(
+                inner
+                    .immediate_evict_worker(
+                        &worker_id,
+                        make_err!(Code::Unavailable, "Worker reconnected"),
+                        true,
+                        WorkerDisconnectReason::Disconnected,
+                    )
+                    .await,
+            );
+        }
         let result = inner
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
@@ -3461,10 +3485,24 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .await
     }
 
-    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        self.worker_registry.remove_worker(worker_id).await;
-
+    async fn worker_disconnected(
+        &self,
+        worker_id: &WorkerId,
+        connection: u64,
+    ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
+        if inner
+            .workers
+            .peek(worker_id)
+            .is_some_and(|worker| worker.connection != connection)
+        {
+            debug!(
+                ?worker_id,
+                connection, "An earlier connection of a reconnected worker ended"
+            );
+            return Ok(());
+        }
+        self.worker_registry.remove_worker(worker_id).await;
         inner
             .immediate_evict_worker(
                 worker_id,

@@ -161,6 +161,11 @@ pub struct Worker {
     /// worker even when this scheduler thinks it idle.
     pub admits_when_idle: bool,
 
+    /// Which of this worker id's connections the entry belongs to. A worker
+    /// that names itself keeps its id across reconnects, so the end of an
+    /// earlier connection must not remove the entry a later one made.
+    pub connection: u64,
+
     /// The smallest reservation this worker declined for load while it held
     /// nothing else, from a worker that does not admit when idle (an older
     /// one, or one with no cgroup limit). It is not offered that much or
@@ -268,6 +273,7 @@ impl Worker {
             is_paused: false,
             pause_needs_kb: None,
             admits_when_idle: false,
+            connection: 0,
             idle_declined_kb: None,
             is_draining: false,
             recent_outcomes: VecDeque::new(),
