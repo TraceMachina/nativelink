@@ -32,7 +32,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, UpdateForScheduler, WorkerLoad
+    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, ExecuteResultAccepted, GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, UpdateForScheduler, WorkerLoad
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -41,9 +41,7 @@ use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker::{ActionInfoWithProps, channel_capacity};
 use nativelink_scheduler::worker_scheduler::{WorkerScheduler, WorkerSummary};
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
-use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
-};
+use nativelink_util::action_messages::{ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
@@ -1685,13 +1683,15 @@ async fn a_worker_id_that_is_too_long_or_not_printable_is_refused()
     Ok(())
 }
 
-/// A worker that keeps its id can reconnect before the scheduler has seen
-/// its earlier stream end. The earlier connection is ended, its action
-/// requeued as its disconnect would have, and when that stream's end is
-/// finally seen it leaves the new connection alone.
-#[nativelink_test]
-async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
--> Result<(), Box<dyn core::error::Error>> {
+/// A server over a scheduler whose state manager the test answers.
+fn answered_server() -> Result<
+    (
+        Arc<ApiWorkerScheduler>,
+        Arc<MockWorkerStateManager>,
+        WorkerApiServer,
+    ),
+    Error,
+> {
     let state_manager = Arc::new(MockWorkerStateManager::new());
     let scheduler = ApiWorkerScheduler::new(
         state_manager.clone(),
@@ -1721,20 +1721,23 @@ async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
     };
     let server =
         WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
-    let request = ConnectWorkerRequest {
-        worker_id: "pool-0193a1f2".to_string(),
-        ..Default::default()
-    };
-    let (worker_id, mut first_stream, first_tx) = connect_as(&server, request.clone()).await?;
+    Ok((scheduler, state_manager, server))
+}
 
-    // The first connection is running an action.
+/// Dispatches an action to the worker and reads it off the worker's stream.
+async fn run_on(
+    scheduler: &ApiWorkerScheduler,
+    worker_id: &WorkerId,
+    stream: &mut ConnectWorkerStream,
+    seed: u8,
+) -> Result<OperationId, Error> {
     let operation_id = OperationId::default();
     scheduler
         .worker_notify_run_action(
             worker_id.clone(),
             operation_id.clone(),
             ActionInfoWithProps {
-                inner: uncacheable_action(1),
+                inner: uncacheable_action(seed),
                 platform_properties: PlatformProperties::default(),
                 origin_metadata: OriginMetadata::default(),
                 scheduler_start_execute_event_id: None,
@@ -1742,10 +1745,26 @@ async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
             BASE_NOW_S,
         )
         .await?;
-    first_stream
-        .next()
-        .await
-        .expect("the action is dispatched")?;
+    stream.next().await.expect("the action is dispatched")?;
+    Ok(operation_id)
+}
+
+/// A worker that keeps its id can reconnect before the scheduler has seen
+/// its earlier stream end. The earlier connection is ended, its action
+/// requeued as its disconnect would have, and when that stream's end is
+/// finally seen it leaves the new connection alone.
+#[nativelink_test]
+async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let request = ConnectWorkerRequest {
+        worker_id: "pool-0193a1f2".to_string(),
+        ..Default::default()
+    };
+    let (worker_id, mut first_stream, first_tx) = connect_as(&server, request.clone()).await?;
+
+    // The first connection is running an action.
+    let operation_id = run_on(&scheduler, &worker_id, &mut first_stream, 1).await?;
 
     // The worker reconnects; the first connection's action is requeued.
     let reconnect = connect_as(&server, request);
@@ -1776,5 +1795,118 @@ async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
     assert!(logs_contain(
         "An earlier connection of a reconnected worker ended"
     ));
+    Ok(())
+}
+
+/// The result the worker sends for `operation_id`.
+fn result_for(operation_id: &OperationId) -> Update {
+    Update::ExecuteResult(ExecuteResult {
+        instance_name: "main".to_string(),
+        operation_id: operation_id.to_string(),
+        result: Some(execute_result::Result::ExecuteResponse(
+            ActionStage::Completed(ActionResult::default()).into(),
+        )),
+        resource_usage: None,
+    })
+}
+
+/// The next message on the worker's stream, if one comes within a moment.
+async fn next_message(stream: &mut ConnectWorkerStream) -> Option<update_for_worker::Update> {
+    tokio::time::timeout(Duration::from_millis(200), stream.next())
+        .await
+        .ok()
+        .flatten()
+        .and_then(Result::ok)
+        .and_then(|update| update.update)
+}
+
+fn accepted(operation_id: &OperationId) -> update_for_worker::Update {
+    update_for_worker::Update::ExecuteResultAccepted(ExecuteResultAccepted {
+        operation_id: operation_id.to_string(),
+    })
+}
+
+/// A worker that named itself is told once its result is applied, and told
+/// again when it sends the same result a second time, with no second update
+/// to the operation: the worker can forget a result only the scheduler has.
+#[nativelink_test]
+async fn a_worker_that_names_itself_is_told_its_result_is_settled()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: "pool-0193a1f2".to_string(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, (updated, _, _)) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Ok(())),
+    );
+    sent?;
+    assert_eq!(updated, operation_id);
+    assert_eq!(
+        next_message(&mut stream).await,
+        Some(accepted(&operation_id))
+    );
+
+    // Sent again, as after a reconnect: acknowledged, not applied again (a
+    // second update would wait on the state manager and the stream would
+    // stay silent).
+    tx.send(result_for(&operation_id)).await?;
+    assert_eq!(
+        next_message(&mut stream).await,
+        Some(accepted(&operation_id))
+    );
+    Ok(())
+}
+
+/// A result the store refused is held and written later; the worker keeps
+/// its copy until then, so it is not told the result is settled.
+#[nativelink_test]
+async fn a_result_the_store_refused_is_not_acknowledged() -> Result<(), Box<dyn core::error::Error>>
+{
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: "pool-0193a1f2".to_string(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, _) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Err(make_err!(
+            nativelink_error::Code::Unavailable,
+            "the store refused the write"
+        ))),
+    );
+    sent?;
+    assert_eq!(next_message(&mut stream).await, None);
+    Ok(())
+}
+
+/// A worker that does not name itself does not know the acknowledgement,
+/// and would fail on it: it is never sent one.
+#[nativelink_test]
+async fn a_worker_that_does_not_name_itself_is_not_sent_acknowledgements()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_with_prefix(&server, "pool-").await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, _) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Ok(())),
+    );
+    sent?;
+    assert_eq!(next_message(&mut stream).await, None);
     Ok(())
 }
