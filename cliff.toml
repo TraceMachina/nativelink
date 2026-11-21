@@ -78,6 +78,44 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.7: pinned by subject, since their bodies trip the generic word rules.
+  { message = "1.7.7 had a non-Vale compliant doc comment", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Add an optional AWS lane to the Nix workflow", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Add an optional AWS lane to the cluster CI workflow", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Check quickstart release references on each release", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Fix opentelemetry issue", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Look up the latest release in quickstart snippets", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Move comments out of the quickstart snippets", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Name the Bazel client by its own variable in the AWS lane", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Preserve local NotFound errors during input preparation", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Prune stale Nix result roots before building on the retained client", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Remove stale run directories, not just their GC roots", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Replace chrono and humantime with jiff", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Run the AWS lane for main only", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Stop the origin event publisher once its senders are gone", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "a GPU dimension for the resource hints", group = "<!-- 1 -->⛰️  Features" },
+  { message = "log worker startup scheduler misses as warnings", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "picomatch fixes for GHSA-fc5q-39xc-vjpf", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "run trusted fork builds once before merge", group = "<!-- 4 -->🧪 Testing & CI" },
+
+  # v1.8.6: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Azurite test runner assumed access to transient dependencies", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Commit the config reference again after the prettier hook reformats it", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Fix several security issues", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Free disk space before running Nix shared package", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Mention expiry in the fast_slow store's NotFound message", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Read expired objects through a nested fast_slow store", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Reject a malformed Action.timeout with INVALID_ARGUMENT", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Windows also needs ShutdownGuard", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "add Alibaba Cloud OSS through the S3-compatible API", group = "<!-- 1 -->⛰️  Features" },
+  { message = "cap workflow-level token permissions at contents:read", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "fix fork PRs sometimes missing the git2prod comment", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "keep cluster coordinates out of the step log headers", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "link each cluster iteration to its BEP build-results page", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "publish fork PR build events to the build-results UI", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "stage BEP and failed-test logs on PR lanes without BES", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "update Jest glob dependencies for DoS advisories", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+
   # v1.8.5: pinned by subject, since their bodies trip the generic word rules.
   { message = "Gate the caps dependency to Linux", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Give the service integration tests the moderate timeout", group = "<!-- 4 -->🧪 Testing & CI" },

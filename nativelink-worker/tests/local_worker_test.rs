@@ -382,7 +382,9 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
-    let running_action = Arc::new(MockRunningAction::new());
+    // The running action reports `do_not_cache`, as one created from an
+    // Action with `do_not_cache` set would.
+    let running_action = Arc::new(MockRunningAction::with_do_not_cache(true));
 
     // Send and wait for response from create_and_add_action to RunningActionsManager.
     test_context
@@ -397,11 +399,15 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (_stored_digest, _stored_result, digest_hasher) = test_context
+    let (_stored_digest, _stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot
+    // be cached". The running action's flag must reach `cache_action_result`,
+    // which decides whether to write the Action Cache.
+    assert!(do_not_cache);
 
     Ok(())
 }
@@ -566,13 +572,14 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (stored_digest, stored_result, digest_hasher) = test_context
+    let (stored_digest, stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(stored_digest, action_digest);
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+    assert!(!do_not_cache);
     assert_eq!(
         test_context.client.going_away_count.load(Ordering::Relaxed),
         0
@@ -1057,6 +1064,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .with_context(ErrorContext::MissingDigest {
             hash: "0123456789abcdef".to_string(),
             size: 42,
+            digest_function: None,
         });
     running_action
         .expect_prepare_action(Err(missing_input.clone()))
@@ -1178,10 +1186,10 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Simulate prepare_action failing with a NotFound error that does NOT contain
-    // the CAS-specific message. This should result in an InternalError, not
-    // FailedPrecondition.
-    let other_not_found_error = make_err!(Code::NotFound, "Some other resource was not found");
+    // A tip without a typed missing digest must not request a client re-upload.
+    let other_not_found_error = make_err!(Code::NotFound, "No such file or directory (os error 2)")
+        .append("Could not open worker input path")
+        .append(MISSING_INPUT_ERROR_TIP);
     running_action
         .expect_prepare_action(Err(other_not_found_error.clone()))
         .await?;
@@ -1431,9 +1439,16 @@ async fn a_hung_keepalive_waits_for_the_scheduler_to_close_the_stream() -> Resul
     })
     .await
     .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
-    assert!(logs_contain(
-        "Worker disconnected from scheduler, reconnecting"
-    ));
+    logs_assert(|lines: &[&str]| {
+        if lines.iter().any(|line| {
+            line.contains("Worker disconnected from scheduler, reconnecting")
+                && line.contains("ERROR")
+        }) {
+            Ok(())
+        } else {
+            Err("a disconnect after registration must log at ERROR".to_string())
+        }
+    });
     Ok(())
 }
 
@@ -2153,5 +2168,45 @@ async fn reconnect_backoff_takes_its_jitter_from_the_jitter_fn() -> Result<(), E
         delays[..2],
         [Duration::from_millis(250), Duration::from_millis(500)]
     );
+    Ok(())
+}
+
+/// A worker that starts before its scheduler is reachable retries; those
+/// startup misses are warnings, not errors.
+#[nativelink_test]
+async fn startup_scheduler_connect_failure_logs_a_warning() -> Result<(), Error> {
+    use utils::local_worker_test_utils::MockWorkerApiClient;
+    use utils::mock_running_actions_manager::MockRunningActionsManager;
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = std::sync::Mutex::new(Some(done_tx));
+    let worker = nativelink_worker::local_worker::LocalWorker::<MockWorkerApiClient, _>::new_with_connection_factory_and_actions_manager(
+        Arc::new(LocalWorkerConfig::default()),
+        Arc::new(MockRunningActionsManager::new()),
+        Box::new(|| Box::pin(async { Err(make_err!(Code::Unavailable, "no scheduler")) })),
+        Box::new(move |_delay| {
+            let done = done_tx.lock().unwrap().take();
+            if let Some(done) = done {
+                done.send(()).unwrap();
+            }
+            // Yield, so the reconnect loop lets this test run.
+            Box::pin(tokio::task::yield_now())
+        }),
+    );
+    let (shutdown, _) = tokio::sync::broadcast::channel(1);
+    let run = nativelink_util::spawn!("startup_warn_test_worker", worker.run(shutdown.subscribe()));
+    done_rx.await.unwrap();
+    drop(run);
+    logs_assert(|lines: &[&str]| {
+        let attempt = lines.iter().find(|line| {
+            line.contains("Scheduler connection attempt failed, retrying")
+                && line.contains("failure=\"connect\"")
+        });
+        match attempt {
+            Some(line) if line.contains("WARN") => Ok(()),
+            Some(line) => Err(format!("startup connect failure must be a warning: {line}")),
+            None => Err("no startup connect failure was logged".to_string()),
+        }
+    });
     Ok(())
 }

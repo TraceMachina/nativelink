@@ -20,8 +20,10 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use humantime::format_duration;
-use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
+use jiff::Span;
+use nativelink_error::{
+    Error, ErrorContext, ResultExt, error_if, make_input_err, missing_blob_subject,
+};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
@@ -882,13 +884,13 @@ impl From<&ActionStage> for execution_stage::Value {
 ///
 /// This is the worker-side counterpart to `execution_server`'s
 /// `missing_blobs_failed_precondition` — both produce the `REv2`
-/// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
-fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
+/// subject format `blobs/{digest_function/}{hash}/{size}` that Bazel
+/// auto-retries on (see [`missing_blob_subject`]).
+fn missing_blob_failed_precondition_status(err: &Error, subject: String) -> Status {
     let pf = PreconditionFailure {
         violations: vec![precondition_failure::Violation {
             r#type: common::VIOLATION_TYPE_MISSING.to_string(),
-            // REv2-mandated subject format for missing-blob violations.
-            subject: format!("blobs/{hash}/{size}"),
+            subject,
             description: err.message_string(),
         }],
     };
@@ -939,9 +941,13 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
             .error
             .clone()
             .map(|err| match &err.context {
-                ErrorContext::MissingDigest { hash, size } => {
-                    let (hash, size) = (hash.clone(), *size);
-                    missing_blob_failed_precondition_status(&err, &hash, size)
+                ErrorContext::MissingDigest {
+                    hash,
+                    size,
+                    digest_function,
+                } => {
+                    let subject = missing_blob_subject(digest_function.as_deref(), hash, *size);
+                    missing_blob_failed_precondition_status(&err, subject)
                 }
                 ErrorContext::None => err.into(),
             })
@@ -1209,7 +1215,7 @@ impl Display for ActionState {
             self.stage.name(),
             self.last_transition_timestamp.elapsed().map_or_else(
                 |_| "<unknown duration>".to_string(),
-                |d| { format_duration(d).to_string() }
+                |d| { format!("{}", Span::try_from(d).unwrap_or_default()) }
             ),
             self.client_operation_id,
             self.action_digest

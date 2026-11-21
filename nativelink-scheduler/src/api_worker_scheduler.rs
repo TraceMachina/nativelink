@@ -3170,6 +3170,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     resource_usage.cpu_time_ms.saturating_mul(1000) / resource_usage.wall_time_ms
                 }),
                 peak_disk_kb: resource_usage.peak_disk_kb,
+                peak_gpu_memory_kb: resource_usage.peak_gpu_memory_kb,
                 killed_at_kb,
                 killed: !matches!(
                     outcome,

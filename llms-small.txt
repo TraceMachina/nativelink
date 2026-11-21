@@ -1297,8 +1297,8 @@ projects.
 
 ## 1. Start NativeLink
 
-The image is multi-arch (x86_64 and ARM64) as of v1.6.0, so it runs
-natively on Linux and Apple Silicon alike.
+Look up the newest release tag, such as `vX.Y.Z`, download a basic
+configuration, and start the server in the background:
 
 ## 2. Install recc
 
@@ -1370,9 +1370,9 @@ serves all of them; the JSON5 config decides which subset to run.
 
 ## Container registry
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release tag, such as `vX.Y.Z`, and pull it:
 
 ## Backups & recovery
 
@@ -1468,7 +1468,8 @@ you started yourself. **Time:** about fifteen minutes.
 ## Get the config
 
 The repo ships a config that is exactly this tutorial: CAS, action cache,
-scheduler, and one worker, all in a single process on localhost.
+scheduler, and one worker, all in a single process on localhost. Look up
+the newest release tag, such as `vX.Y.Z`, and download that release's copy:
 
 ### Start the cluster
 
@@ -2286,7 +2287,7 @@ through to the slow store and refill the fast tier.
 
 # https://docs.nativelink.com/how-to/stores/s3-and-compatible
 
-**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2 or NetApp ONTAP S3: one store type, three providers, and the shared options that decide cost and failure behaviour.
+**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2, Alibaba Cloud OSS, or NetApp ONTAP S3, and choose the options that decide cost and failure behaviour.
 
 **Who this is for:** anyone who wants durability they don't operate, on S3 or
 something that speaks S3. **What you'll have at the end:** a bucket-backed CAS
@@ -2302,23 +2303,33 @@ config.
 
 ### Other services that speak S3
 
-The `aws` provider reaches any S3-compatible service, not only AWS. Four
-optional fields cover the difference:
+The `aws` provider can reach other S3-compatible services. For Alibaba Cloud OSS,
+use the dedicated [`oss` provider](#alibaba-cloud-oss), which configures its
+addressing and checksum requirements. Four optional fields configure other
+services:
 
 ## Cloudflare R2
 
 R2 has no regions from the client's point of view: the endpoint is derived
 entirely from your account ID.
 
+## Alibaba Cloud OSS
+
+The `oss` provider uses Alibaba Cloud's S3-compatible API with virtual-hosted
+addressing and explicit credentials for each store. It requires `region`,
+`bucket`, `access_key_id`, and `secret_access_key`; it does not fall back to the
+AWS credential chain. Optional fields include `session_token`, `endpoint`, `cname`,
+`key_prefix`, `retry`, and `multipart_max_concurrent_uploads` (default: 2).
+
 ## NetApp ONTAP S3
 
 On-premises S3 needs an explicit endpoint, the storage VM serving it, and
 usually a private CA bundle:
 
-## The options all three share
+## Common options for AWS, R2, and ONTAP
 
-Every provider flattens the same block of common options. These are the ones
-worth setting deliberately:
+The `aws`, `r2`, and `ontap` providers flatten the same block of common options.
+These are the ones worth setting deliberately:
 
 ## Steps
 
@@ -2563,6 +2574,49 @@ the failure the checksum downgrade exists to prevent, and it shows up first on
 Action Cache entries because they are small single-`PUT` objects. Confirm you
 are on a NativeLink version that carries the `oci` provider rather than
 pointing the `aws` provider at an OCI endpoint by hand.
+
+# https://docs.nativelink.com/how-to/stores/oss
+
+**Alibaba Cloud OSS**: Use an OSS bucket as the cache through the S3-compatible API.
+
+The `oss` provider uses the [OSS S3-compatible API](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+and the shared NativeLink S3 store. It derives the service endpoint from the
+bucket region, uses virtual-hosted addressing, and signs requests with AWS SigV4.
+Optional trailing checksums are disabled to avoid `aws-chunked` uploads.
+
+## Configure the store
+
+Configure credentials explicitly for each OSS store. Reference independent
+variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
+expansion. For temporary credentials, also configure `session_token`, for example
+`${OSS_SESSION_TOKEN}`. Keep the values out of source control.
+
+## Use a custom domain
+
+Set `cname: true` to use an HTTPS custom domain bound to the bucket. This option
+requires an explicit `endpoint`. The provider uses that host directly, without
+adding the bucket name to the host or path. The default is `cname: false`, which
+keeps virtual-hosted service-endpoint addressing.
+
+## Endpoint access restrictions
+
+Alibaba Cloud restricts default public endpoints for accounts that activated OSS
+on or after March 20, 2025, at 00:00 UTC+8, when the bucket is in a Chinese mainland
+region. Data operations can fail with `PublicEndpointForbidden` (HTTP 400).
+
+## Retry and resource behavior
+
+The optional `retry` object uses the standard store retry policy. SDK retries
+are disabled, but the shared HTTP transport also retries: its attempts can
+multiply the store retry loop. A total retry budget is not yet implemented.
+
+## Verify
+
+Point the CAS service at this store and run the same build twice with remote
+caching enabled. The first build should upload its outputs and the second should
+reuse them. Check both a small Action Cache entry and an object large enough to
+use multipart upload. A successful replay test does not establish compatibility
+with a live bucket, its permissions, or its endpoint restrictions.
 
 # https://docs.nativelink.com/how-to/stores/compose-stores
 
@@ -2882,7 +2936,8 @@ commit between the two.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ## Upgrade in the right order
 

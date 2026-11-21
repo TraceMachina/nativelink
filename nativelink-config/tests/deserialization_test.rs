@@ -92,7 +92,7 @@ mod duration_tests {
             (r#"{"duration": 10}"#, 10),
             (r#"{"duration": "  1m 10s  "}"#, 70),
             // Complex duration formats
-            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_735_967),
+            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_714_367),
             (r#"{"duration": "0s"}"#, 0),
             (r#"{"duration": "1ns"}"#, 0), // Sub-second rounds to 0
             (r#"{"duration": "999h"}"#, 3_596_400),
@@ -128,10 +128,13 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (r#"{"duration": "invalid"}"#, "expected number at 0"),
+            (
+                r#"{"duration": "invalid"}"#,
+                "expected duration to start with a unit value (a decimal integer) after an optional sign, but no integer was found",
+            ),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
-                "number is too large",
+                "number too big to parse into 64-bit integer",
             ),
         ];
 
@@ -139,7 +142,10 @@ mod duration_tests {
             let error = serde_json5::from_str::<DurationEntity>(input)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected_error));
+            assert!(
+                error.contains(expected_error),
+                "{error} != {expected_error}"
+            );
         }
     }
 
@@ -794,5 +800,90 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
     for invalid in ["null", "0", "'false'"] {
         let input = format!("{{socket_address: '127.0.0.1:0', tcp_nodelay: {invalid}}}");
         assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
+    }
+}
+
+#[test]
+fn directory_cache_clone_executables_defaults_and_overrides() {
+    use nativelink_config::cas_server::DirectoryCacheConfig;
+
+    for (input, expected) in [
+        ("{}", false),
+        ("{experimental_clone_executables: true}", true),
+        ("{experimental_clone_executables: false}", false),
+    ] {
+        let config: DirectoryCacheConfig = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.experimental_clone_executables, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["experimental_clone_executables"], expected);
+    }
+    for invalid in ["null", "1", "'true'"] {
+        let input = format!("{{experimental_clone_executables: {invalid}}}");
+        assert!(serde_json5::from_str::<DirectoryCacheConfig>(&input).is_err());
+    }
+}
+
+#[test]
+fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
+    use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
+    let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
+    assert!(matches!(
+        parsed,
+        StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Oss(_))
+    ));
+    for field in [
+        "consider_expired_after_s",
+        "max_retry_buffer_per_request",
+        "max_concurrent_uploads",
+        "upload_queue_timeout_s",
+    ] {
+        let config = format!(
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET","{field}":1}}"#
+        );
+        assert!(
+            serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
+            "unexpected OSS field accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn oss_credentials_are_required_and_redacted_from_debug() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+    let missing = r#"{"region":"cn-hangzhou","bucket":"test-bucket"}"#;
+    assert!(serde_json5::from_str::<ExperimentalOssSpec>(missing).is_err());
+    let spec = ExperimentalOssSpec {
+        access_key_id: "PRIVATE_OSS_KEY_ID".into(),
+        secret_access_key: "PRIVATE_OSS_SECRET".into(),
+        session_token: Some("PRIVATE_OSS_TOKEN".into()),
+        ..Default::default()
+    };
+    let debug = format!("{spec:?}");
+    for credential in [
+        "PRIVATE_OSS_KEY_ID",
+        "PRIVATE_OSS_SECRET",
+        "PRIVATE_OSS_TOKEN",
+    ] {
+        assert!(!debug.contains(credential));
+    }
+}
+
+#[test]
+fn oss_cname_defaults_to_false_and_round_trips() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+
+    let config = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
+    let mut spec: ExperimentalOssSpec = serde_json5::from_str(config).unwrap();
+    assert!(!spec.cname);
+    spec.cname = true;
+    spec.endpoint = Some("https://cache.example.com".into());
+    let round_trip: ExperimentalOssSpec =
+        serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
+    assert!(round_trip.cname);
+    assert_eq!(round_trip.endpoint, spec.endpoint);
+    for invalid in ["null", "1", "\"true\""] {
+        let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
+        assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
     }
 }

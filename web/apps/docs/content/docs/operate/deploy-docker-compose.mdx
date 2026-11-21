@@ -118,8 +118,9 @@ anything else in it: **all workers must share the same CAS storage path.**
 When they do not, actions fail with
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 which the worker reports to the scheduler as `FAILED_PRECONDITION` with that
