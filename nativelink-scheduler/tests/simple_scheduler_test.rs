@@ -5642,3 +5642,102 @@ async fn a_refused_change_notice_loses_neither_the_dispatch_nor_the_result() -> 
     }
     Ok(())
 }
+
+/// How the record an Execute client listens on goes bad on Redis.
+#[derive(Clone, Copy, Debug)]
+enum RecordFault {
+    /// Every read of it is refused.
+    ReadRefused,
+    /// It is evicted.
+    Evicted,
+}
+
+/// A client whose operation's record can no longer be read is told so with
+/// an error, so it can resubmit, rather than left waiting on a stream that
+/// will never move. Queued or executing, on its next poll.
+#[nativelink_test]
+async fn a_record_that_cannot_be_read_ends_the_client_stream_with_an_error() -> Result<(), Error> {
+    for fault in [RecordFault::ReadRefused, RecordFault::Evicted] {
+        for executing in [false, true] {
+            let case = format!("{fault:?}, executing {executing}");
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(Backend::FakeRedis, &SimpleSpec::default()).await?;
+            let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+            let worker_id = WorkerId("worker_id".to_string());
+            let (tx, mut rx_from_worker) = mpsc::channel(16);
+            if executing {
+                scheduler
+                    .add_worker(Worker::new(
+                        worker_id.clone(),
+                        PlatformProperties::default(),
+                        tx,
+                        NOW_TIME,
+                        1,
+                    ))
+                    .await?;
+                tokio::task::yield_now().await;
+                verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+            }
+            let mut listener = setup_action(
+                &scheduler,
+                DigestInfo::new([1u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let expected = if executing {
+                ActionStage::Executing
+            } else {
+                ActionStage::Queued
+            };
+            loop {
+                let (state, _) = tokio::time::timeout(Duration::from_secs(10), listener.changed())
+                    .await
+                    .unwrap_or_else(|_| panic!("{case}: the client never saw {expected:?}"))?;
+                if state.stage == expected {
+                    break;
+                }
+            }
+
+            match fault {
+                RecordFault::ReadRefused => fake_redis.fail_commands(
+                    "HMGET",
+                    Some("aa_"),
+                    Fault::Error("refused".into()),
+                    None,
+                ),
+                RecordFault::Evicted => {
+                    fake_redis.evict_prefix("aa_");
+                }
+            }
+
+            // The client polls on the mock clock; give it a minute.
+            let next = listener.changed();
+            tokio::pin!(next);
+            let mut outcome = None;
+            for _ in 0..600 {
+                if let Poll::Ready(result) = poll!(&mut next) {
+                    outcome = Some(result);
+                    break;
+                }
+                MockClock::advance(Duration::from_millis(100));
+                tokio::task::yield_now().await;
+            }
+            match outcome {
+                None => panic!("{case}: the client's stream stayed silent for a minute"),
+                Some(Ok((state, _))) => {
+                    panic!(
+                        "{case}: the client was told {:?}, not an error",
+                        state.stage
+                    )
+                }
+                Some(Err(_)) => {}
+            }
+        }
+    }
+    Ok(())
+}
