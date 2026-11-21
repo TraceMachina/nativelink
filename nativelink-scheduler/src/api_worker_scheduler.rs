@@ -240,13 +240,26 @@ fn publish_attempt_ended(
 /// its requeue is not reported.
 const MAX_LOST_RESULTS: usize = 4096;
 
-/// Results the state manager refused, with their attempt's start, oldest
-/// first, so a store that refuses everything cannot grow it without bound.
-/// The executing sweep writes each once the store takes writes again; one
-/// pushed out by the bound is requeued instead, as before results were kept.
+/// A result the state manager refused: the worker that sent it, its
+/// attempt's start, and the result.
+#[derive(Debug)]
+struct LostResult {
+    worker_id: WorkerId,
+    action_info: ActionInfoWithProps,
+    stage: ActionStage,
+}
+
+/// Results the state manager refused, oldest first, so a store that refuses
+/// everything cannot grow it without bound. The executing sweep writes each
+/// once the store takes writes again; one pushed out by the bound is
+/// requeued instead, as before results were kept.
+///
+/// A result belongs to one attempt, on the worker that sent it. It is only
+/// handed back for that worker, and it is dropped when the operation is
+/// dispatched again, so it never completes a later attempt.
 #[derive(Debug, Default)]
 struct LostResults {
-    by_operation: HashMap<OperationId, (ActionInfoWithProps, ActionStage)>,
+    by_operation: HashMap<OperationId, LostResult>,
     order: VecDeque<OperationId>,
 }
 
@@ -254,12 +267,18 @@ impl LostResults {
     fn insert(
         &mut self,
         operation_id: OperationId,
+        worker_id: WorkerId,
         action_info: ActionInfoWithProps,
         stage: ActionStage,
     ) {
+        let lost = LostResult {
+            worker_id,
+            action_info,
+            stage,
+        };
         if self
             .by_operation
-            .insert(operation_id.clone(), (action_info, stage))
+            .insert(operation_id.clone(), lost)
             .is_none()
         {
             self.order.push_back(operation_id);
@@ -271,14 +290,30 @@ impl LostResults {
         }
     }
 
-    fn stage(&self, operation_id: &OperationId) -> Option<&ActionStage> {
-        self.by_operation.get(operation_id).map(|(_, stage)| stage)
+    /// The result `worker_id` sent for `operation_id`, if one is held.
+    fn stage(&self, worker_id: &WorkerId, operation_id: &OperationId) -> Option<&ActionStage> {
+        self.by_operation
+            .get(operation_id)
+            .filter(|lost| lost.worker_id == *worker_id)
+            .map(|lost| &lost.stage)
     }
 
-    fn take(&mut self, operation_id: &OperationId) -> Option<(ActionInfoWithProps, ActionStage)> {
-        let entry = self.by_operation.remove(operation_id)?;
+    /// Removes and returns the result `worker_id` sent for `operation_id`.
+    fn take(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<(ActionInfoWithProps, ActionStage)> {
+        self.stage(worker_id, operation_id)?;
+        self.forget(operation_id)
+            .map(|lost| (lost.action_info, lost.stage))
+    }
+
+    /// Removes whatever is held for `operation_id`, whoever sent it.
+    fn forget(&mut self, operation_id: &OperationId) -> Option<LostResult> {
+        let lost = self.by_operation.remove(operation_id)?;
         self.order.retain(|id| id != operation_id);
-        Some(entry)
+        Some(lost)
     }
 }
 
@@ -2159,8 +2194,12 @@ impl ApiWorkerSchedulerImpl {
                         "Failed to update_operation on update_action"
                     );
                     if let Some((action_info, stage)) = lost_result {
-                        self.lost_results
-                            .insert(operation_id.clone(), action_info, stage);
+                        self.lost_results.insert(
+                            operation_id.clone(),
+                            worker_id.clone(),
+                            action_info,
+                            stage,
+                        );
                     }
                 }
             }
@@ -2219,6 +2258,9 @@ impl ApiWorkerSchedulerImpl {
         action_info: ActionInfoWithProps,
         dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
+        // A dispatch starts a new attempt. A result still held for this
+        // operation is an earlier attempt's, and must not complete this one.
+        self.lost_results.forget(&operation_id);
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction(Box::new((
@@ -2704,8 +2746,10 @@ impl ApiWorkerScheduler {
     ) -> Option<OnWorker> {
         let inner = self.inner.lock().await;
         // Held whether or not the worker is still connected: its result is
-        // the attempt's outcome either way.
-        if let Some(stage) = inner.lost_results.stage(operation_id) {
+        // the attempt's outcome either way. Only for the worker that sent
+        // it, though: once the record is another worker's, that is a new
+        // attempt and the result is not its outcome.
+        if let Some(stage) = inner.lost_results.stage(worker_id, operation_id) {
             return Some(OnWorker::ResultHeld(Box::new(stage.clone())));
         }
         inner.workers.peek(worker_id).map(|worker| {
@@ -2726,7 +2770,7 @@ impl ApiWorkerScheduler {
         written: bool,
     ) {
         let mut inner = self.inner.lock().await;
-        let Some((action_info, stage)) = inner.lost_results.take(operation_id) else {
+        let Some((action_info, stage)) = inner.lost_results.take(worker_id, operation_id) else {
             return;
         };
         let Some((reason, detail)) = written
@@ -2765,7 +2809,7 @@ impl ApiWorkerScheduler {
         let Some(action_info) = held.or_else(|| {
             inner
                 .lost_results
-                .take(operation_id)
+                .take(worker_id, operation_id)
                 .map(|(action_info, _)| action_info)
         }) else {
             return;
