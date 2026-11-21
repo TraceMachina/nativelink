@@ -706,3 +706,42 @@ fn slow_store_burst_evicts_no_live_worker() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Updates are published on Redis for subscribers to read; a publish that
+/// fails must not cost a client its result. With every publish from half a
+/// second in refused, each client still gets its result, its stream ends
+/// with it, and nothing stalls.
+fn publish_refused(times: u64) -> Scenario {
+    let mut scenario =
+        Scenario::new(&format!("publish-refused-{times}"), 43).workers(3, WorkerSpec::default());
+    for action in 1..=10 {
+        scenario = scenario.at(
+            0,
+            Step::execute(&format!("c{action}"), Action::new(action).run_ms(3_000)),
+        );
+    }
+    scenario
+        .at(
+            500,
+            Step::redis_fail("PUBLISH", Fault::Error("refused".into()), times),
+        )
+        .settle(Duration::from_mins(5))
+}
+
+#[test]
+fn every_result_arrives_when_publishes_are_refused() -> Result<(), Error> {
+    for times in [1, 50, 1_000_000] {
+        let reports = publish_refused(times).run()?;
+        for report in &reports {
+            for action in 1..=10 {
+                assert_eq!(
+                    executions(report, &format!("a{action}")),
+                    1,
+                    "{:?}, {times} publishes refused",
+                    report.backend
+                );
+            }
+        }
+    }
+    Ok(())
+}
