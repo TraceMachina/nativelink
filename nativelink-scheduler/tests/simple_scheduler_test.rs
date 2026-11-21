@@ -39,7 +39,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
     KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
-use nativelink_redis_tester::FakeRedisBackend;
+use nativelink_redis_tester::{FakeRedisBackend, Fault};
 use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -5403,4 +5403,88 @@ async fn lost_assignment_skips_only_its_shape_until_the_next_pass() -> Result<()
 #[nativelink_test]
 async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<(), Error> {
     check_lost_assignment_skips_shape(true).await
+}
+
+/// A change notice goes out after the write it announces has landed, so a
+/// notice Redis refuses must not undo the write: with every notice refused,
+/// the action still reaches a worker, found by the matcher's fallback pass,
+/// and its result still reaches the client, on the client's next poll.
+#[nativelink_test]
+async fn a_refused_change_notice_loses_neither_the_dispatch_nor_the_result() -> Result<(), Error> {
+    // Production's defaults, with the fallback pass every second rather than
+    // five to keep the test short.
+    let spec = SimpleSpec {
+        fallback_match_interval_s: 1,
+        ..SimpleSpec::from_config_defaults()
+    };
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(backend, &spec).await?;
+        if let Some(fake_redis) = &fake_redis {
+            fake_redis.fail_commands("PUBLISH", None, Fault::Error("refused".into()), None);
+        }
+        let worker_id = WorkerId("worker_id".to_string());
+        let (tx, mut rx_from_worker) = mpsc::channel(16);
+        scheduler
+            .add_worker(Worker::new(
+                worker_id.clone(),
+                PlatformProperties::default(),
+                tx,
+                NOW_TIME,
+                1,
+            ))
+            .await?;
+        tokio::task::yield_now().await;
+        verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+        let mut listener = setup_action(
+            &scheduler,
+            DigestInfo::new([1u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+
+        let update = tokio::time::timeout(Duration::from_secs(10), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{backend:?}: the action was never sent to the worker"))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+
+        // The client polls on the mock clock; move it until the result is
+        // read, a minute at most.
+        let completed = async {
+            loop {
+                let (state, _) = listener.changed().await?;
+                if matches!(state.stage, ActionStage::Completed(_)) {
+                    return Ok::<_, Error>(());
+                }
+            }
+        };
+        tokio::pin!(completed);
+        let mut read = false;
+        for _ in 0..600 {
+            if let Poll::Ready(result) = poll!(&mut completed) {
+                result?;
+                read = true;
+                break;
+            }
+            MockClock::advance(Duration::from_millis(100));
+            tokio::task::yield_now().await;
+        }
+        assert!(read, "{backend:?}: the client never read the result");
+    }
+    Ok(())
 }
