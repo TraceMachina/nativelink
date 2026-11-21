@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp;
 use core::pin::Pin;
 use core::time::Duration;
-use core::{cmp, mem};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,8 +27,8 @@ use azure_core::http::{RequestContent, RetryOptions, StatusCode, Transport, Url}
 use azure_identity::WorkloadIdentityCredential;
 use azure_storage_blob::clients::{BlobContainerClient, BlobContainerClientOptions};
 use azure_storage_blob::models::{
-    BlobClientDownloadOptions, BlobClientGetPropertiesResultHeaders, BlockListType,
-    BlockLookupList, HttpRange, StorageErrorCode,
+    BlobClientDownloadOptions, BlobClientGetPropertiesResultHeaders, BlockLookupList, HttpRange,
+    StorageErrorCode,
 };
 use futures::future::FusedFuture;
 use futures::stream::{FuturesUnordered, unfold};
@@ -38,6 +38,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::adaptive_permits::{AdaptivePermit, AdaptivePermits};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{record_object_store_request_wait, record_object_store_throttle};
@@ -45,7 +46,6 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
-use nativelink_util::{background_spawn, fs};
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::time::sleep;
@@ -129,136 +129,6 @@ impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
 /// Azure SDK's own defaults, which this store's client replaces.
 const AZURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const AZURE_READ_TIMEOUT: Duration = Duration::from_mins(1);
-
-/// How long a cancelled upload's cleanup waits before it looks at the block
-/// list, so a block whose request was already in flight has landed and is
-/// seen rather than raced.
-const STAGED_BLOCK_DISCARD_DELAY: Duration = Duration::from_secs(5);
-
-/// Discards the blocks an upload staged if the upload never commits, from a
-/// background task in `Drop`: after an error, so the caller gets it without
-/// waiting for request permits, and when the upload future is dropped (the
-/// `ByteStream` it fed died and the server swept it), since a dropped future
-/// runs no code of its own. Only a committed upload disarms it.
-struct StagedBlocksGuard {
-    client: Arc<BlobContainerClient>,
-    requests: Option<Arc<Semaphore>>,
-    blob_path: String,
-    armed: bool,
-}
-
-impl StagedBlocksGuard {
-    const fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for StagedBlocksGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let client = Arc::clone(&self.client);
-        let requests = self.requests.take();
-        let blob_path = mem::take(&mut self.blob_path);
-        background_spawn!("azure_discard_staged_blocks", async move {
-            sleep(STAGED_BLOCK_DISCARD_DELAY).await;
-            discard_staged_blocks(&client, requests.as_ref(), &blob_path).await;
-        });
-    }
-}
-
-/// Best effort: drop the blocks an upload left staged under this name.
-/// Azure keeps uncommitted blocks, and bills them, for a week before
-/// collecting them, which adds up under an upload failure storm. A
-/// committed blob under the same name (a re-upload of a key that already
-/// exists) must survive: re-committing its own block list is what discards
-/// the staged blocks next to it. With nothing committed the name holds only
-/// staged blocks and deleting it removes them. Failure here is logged, never
-/// returned: the upload has already failed, and the blocks are collected
-/// eventually either way. Each request takes a permit from `requests`
-/// like any other the store sends.
-async fn discard_staged_blocks(
-    client: &BlobContainerClient,
-    requests: Option<&Arc<Semaphore>>,
-    blob_path: &str,
-) {
-    let blob_client = client.blob_client(blob_path);
-    let block_list_result = {
-        let _request_permit = request_permit(requests).await;
-        blob_client
-            .block_blob_client()
-            .get_block_list(BlockListType::All, None)
-            .await
-    };
-    let block_list = match block_list_result {
-        Ok(response) => match response.into_model() {
-            Ok(block_list) => block_list,
-            Err(err) => {
-                event!(
-                    Level::WARN,
-                    ?err,
-                    blob_path,
-                    "Could not read the block list after a failed Azure upload"
-                );
-                return;
-            }
-        },
-        Err(err) => {
-            if err.http_status() != Some(StatusCode::NotFound) {
-                event!(
-                    Level::WARN,
-                    ?err,
-                    blob_path,
-                    "Could not read the block list after a failed Azure upload"
-                );
-            }
-            return;
-        }
-    };
-    let uncommitted = block_list.uncommitted_blocks.unwrap_or_default();
-    if uncommitted.is_empty() {
-        return;
-    }
-    let committed: Vec<Vec<u8>> = block_list
-        .committed_blocks
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|block| block.name)
-        .collect();
-    let _request_permit = request_permit(requests).await;
-    let result = if committed.is_empty() {
-        blob_client.delete(None).await.map(|_| ())
-    } else {
-        let keep = BlockLookupList {
-            committed: Some(committed),
-            ..Default::default()
-        };
-        match RequestContent::try_from(keep) {
-            Ok(blocks) => blob_client
-                .block_blob_client()
-                .commit_block_list(blocks, None)
-                .await
-                .map(|_| ()),
-            Err(err) => Err(err),
-        }
-    };
-    match result {
-        Ok(()) => event!(
-            Level::INFO,
-            blob_path,
-            staged_blocks = uncommitted.len(),
-            "Discarded the blocks a failed Azure upload left staged"
-        ),
-        Err(err) => event!(
-            Level::WARN,
-            ?err,
-            blob_path,
-            staged_blocks = uncommitted.len(),
-            "Could not discard the blocks a failed Azure upload left staged"
-        ),
-    }
-}
 
 /// A permit from the store's request pool when requests are bounded,
 /// counted on `store.object.request_waits` when none was free. Every path
@@ -811,41 +681,25 @@ where
 
         tokio::pin!(read_stream_fut);
 
-        let mut failure: Option<Error> = None;
         loop {
             if read_stream_fut.is_terminated() && rx.is_empty() && upload_futures.is_empty() {
                 break;
             }
+            // Returning on an error drops the block requests still in flight,
+            // cancelling them. A request that already reached Azure may still
+            // stage its block, which Azure collects like any other.
             tokio::select! {
-                result = &mut read_stream_fut => match result {
-                    Ok(uploaded) => total_uploaded = uploaded,
-                    Err(err) => {
-                        failure = Some(err);
-                        break;
-                    }
+                result = &mut read_stream_fut => {
+                    total_uploaded = result?;
                 },
-                Some(block_id) = upload_futures.next() => match block_id {
-                    Ok(block_id) => block_ids.push(block_id),
-                    Err(err) => {
-                        failure = Some(err);
-                        break;
-                    }
-                },
+                Some(block_id) = upload_futures.next() => block_ids.push(block_id?),
                 Some(fut) = rx.recv() => upload_futures.push(fut),
             }
         }
-        if let Some(err) = failure {
-            // The read future is never polled again, so nothing new is
-            // staged; blocks already on their way to Azure are allowed to
-            // land so the discard that follows sees every one of them
-            // instead of racing a request still in flight.
-            drop(rx);
-            while upload_futures.next().await.is_some() {}
-            return Err(err);
-        }
 
         // Reject an incomplete transfer before publishing its staged blocks.
-        // The caller discards them using the same cleanup as other failures.
+        // Its staged blocks are left for Azure's collection, like any other
+        // failed upload's.
         upload_size.validate_size(total_uploaded)?;
 
         // Sorting block IDs to ensure consistent ordering of the committed blob.
@@ -1074,22 +928,19 @@ where
                 .await;
         }
 
-        // For larger files we stream the content as staged blocks and commit a block list.
-        // A block that is staged but never committed is billed until Azure collects it a
-        // week later, so a failure anywhere past this point discards what was staged.
-        let mut guard = StagedBlocksGuard {
-            client: Arc::clone(&self.client),
-            requests: self.request_permits.clone(),
-            blob_path: blob_path.clone(),
-            armed: true,
-        };
-        let result = self
-            .upload_staged_blocks(&blob_path, reader, upload_size)
-            .await;
-        if result.is_ok() {
-            guard.disarm();
-        }
-        result
+        // For larger files we stream the content as staged blocks and commit a block
+        // list. A block that is staged but never committed is billed until Azure
+        // garbage collects it a week later. No cleanup of staged blocks may run
+        // here: every upload of a digest targets the same blob name, and Azure's
+        // only two removal operations (Delete Blob, Put Block List) discard every
+        // uncommitted block under the name, so a cleanup for one failed or
+        // cancelled upload destroys the staged blocks of concurrent uploads of the
+        // same digest and fails their commits with InvalidBlockList. Orphaned
+        // blocks are reclaimed by Azure's collection, or earlier by an out-of-band
+        // sweep that only touches names left uncommitted far longer than any live
+        // upload can be.
+        self.upload_staged_blocks(&blob_path, reader, upload_size)
+            .await
     }
 
     async fn get_part(
