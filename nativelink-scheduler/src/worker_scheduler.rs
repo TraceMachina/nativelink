@@ -101,6 +101,15 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
+    /// The result the worker sent for `operation_id` is settled: applied, or
+    /// for an operation the worker no longer holds. A worker that named
+    /// itself is told, so it need not send it again; an older one is not.
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
     /// A keepalive said which operations the worker is running. An
     /// acknowledged operation the worker leaves out of two reports in a row
     /// finished without its result reaching the scheduler; it is released

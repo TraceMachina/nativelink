@@ -1835,6 +1835,16 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler.remove_worker(worker_id).await
     }
 
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_result_settled(worker_id, operation_id)
+            .await
+    }
+
     async fn worker_disconnected(
         &self,
         worker_id: &WorkerId,

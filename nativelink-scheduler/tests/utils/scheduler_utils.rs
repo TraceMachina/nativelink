@@ -240,6 +240,12 @@ pub(crate) fn update_eq(
             }
             _ => false,
         },
+        update_for_worker::Update::ExecuteResultAccepted(actual_update) => match expected_update {
+            update_for_worker::Update::ExecuteResultAccepted(expected_update) => {
+                expected_update == actual_update
+            }
+            _ => false,
+        },
         update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
             update_for_worker::Update::ConnectionResult(expected_update) => {
                 expected_update == actual_update
