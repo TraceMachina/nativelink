@@ -1391,64 +1391,69 @@ async fn connected_worker(
     Ok(tx_stream)
 }
 
-/// Keepalives go out every half timeout, on a fixed grid from the first:
-/// a send shorter than the interval does not push the next one later, so
-/// they never drift toward the scheduler's timeout. After a send longer
-/// than the interval the next goes at once, and the ticks it missed are not
-/// fired one after another.
-#[nativelink_test(start_paused = true)]
-async fn keepalives_stay_on_their_grid_when_a_send_is_slow() -> Result<(), Error> {
-    const SENDS: usize = 12;
-    // A timeout of 2 s sends every second.
-    let interval = Duration::from_secs(1);
-    for send_time_ms in [0u64, 500, 999, 1_000, 1_500] {
-        let send_time = Duration::from_millis(send_time_ms);
-        let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
-            platform_properties: HashMap::new(),
-            worker_api_endpoint: EndpointConfig {
-                timeout: Some(2.0),
-                ..Default::default()
-            },
+/// When each of the first `sends` keepalives started, measured from the
+/// first, with the n-th send taking `send_times[n]` (later ones the last).
+/// The worker's timeout is 2 s, so it sends every second.
+async fn keepalive_starts(send_times: &[Duration], sends: usize) -> Result<Vec<Duration>, Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(2.0),
             ..Default::default()
-        })
-        .await;
-        let client = test_context.client.clone();
-        client.keep_alives_succeed.store(true, Ordering::Release);
-        *client.keep_alive_send_time.lock().unwrap() = send_time;
-        let _tx_stream = connected_worker(&mut test_context).await?;
+        },
+        ..Default::default()
+    })
+    .await;
+    let client = test_context.client.clone();
+    client.keep_alives_succeed.store(true, Ordering::Release);
+    *client.keep_alive_send_times.lock().unwrap() = send_times.to_vec();
+    let _tx_stream = connected_worker(&mut test_context).await?;
 
-        while client.keep_alive_starts.lock().unwrap().len() < SENDS {
-            sleep(interval / 4).await;
-        }
-        let starts = client.keep_alive_starts.lock().unwrap().clone();
-        let first = starts[0];
-        for (nth, pair) in starts.windows(2).take(SENDS - 1).enumerate() {
-            let gap = pair[1] - pair[0];
-            if send_time < interval {
-                let since_first = pair[1] - first;
-                assert_eq!(
-                    since_first.as_nanos() % interval.as_nanos(),
-                    0,
-                    "send {send_time_ms} ms: keepalive {} started off the grid, {since_first:?} after the first",
-                    nth + 1
-                );
-                assert_eq!(
-                    gap, interval,
-                    "send {send_time_ms} ms: a send shorter than the interval does not move the next one"
-                );
-            } else {
-                assert!(
-                    gap >= interval,
-                    "send {send_time_ms} ms: two keepalives went out back to back, {gap:?} apart"
-                );
-                assert!(
-                    gap <= send_time + interval,
-                    "send {send_time_ms} ms: the worker was silent for {:?} after a send ended",
-                    gap.saturating_sub(send_time)
-                );
-            }
-        }
+    while client.keep_alive_starts.lock().unwrap().len() < sends {
+        sleep(Duration::from_millis(250)).await;
     }
+    let starts = client.keep_alive_starts.lock().unwrap().clone();
+    Ok(starts[..sends]
+        .iter()
+        .map(|&start| start - starts[0])
+        .collect())
+}
+
+/// Keepalives go out every half timeout, on a fixed grid from the first: a
+/// send that takes up to the interval does not push the next one later, so
+/// they never drift toward the scheduler's timeout.
+#[nativelink_test(start_paused = true)]
+async fn keepalives_stay_on_their_grid_when_each_send_is_slow() -> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    for send_time_ms in [0u64, 500, 999, 1_000] {
+        let starts = keepalive_starts(&[Duration::from_millis(send_time_ms)], 12).await?;
+        let grid: Vec<Duration> = (0..12u32).map(|nth| interval * nth).collect();
+        assert_eq!(
+            starts, grid,
+            "each send {send_time_ms} ms: keepalives left the grid"
+        );
+    }
+    Ok(())
+}
+
+/// One send that takes three and a half intervals, among fast ones. The
+/// next keepalive goes the moment it ends, the ticks it missed are dropped
+/// rather than fired one after another, and the rest are back on the grid.
+#[nativelink_test(start_paused = true)]
+async fn after_one_slow_keepalive_the_next_goes_at_once_and_the_rest_keep_the_grid()
+-> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    let slow = interval * 7 / 2;
+    let starts =
+        keepalive_starts(&[Duration::ZERO, Duration::ZERO, slow, Duration::ZERO], 8).await?;
+    // The third send starts at 2 s and ends at 5.5 s; the ticks at 3, 4 and
+    // 5 s are missed. Fired in a burst they would all start at 5.5 s; on a
+    // grid restarted from the late one they would start at 6.5, 7.5 s.
+    let expected: Vec<Duration> = [0, 1_000, 2_000, 5_500, 6_000, 7_000, 8_000, 9_000]
+        .into_iter()
+        .map(Duration::from_millis)
+        .collect();
+    assert_eq!(starts, expected);
     Ok(())
 }
 
