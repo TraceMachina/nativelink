@@ -15,7 +15,7 @@
 use core::future::Future;
 use core::ops::Bound;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,9 +51,9 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_store::redis_store::RedisSubscriptionManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId,
-    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, DirectoryInfo,
+    ExecutionMetadata, FileInfo, INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath,
+    OperationId, STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -70,7 +70,8 @@ use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
 use utils::scheduler_utils::{
-    Backend, BackendScheduler, INSTANCE_NAME, make_base_action_info, scheduler_on, update_eq,
+    Backend, BackendScheduler, GatedQueueDb, INSTANCE_NAME, gated_scheduler_on,
+    make_base_action_info, scheduler_on, update_eq,
 };
 
 mod utils {
@@ -4498,89 +4499,6 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     Ok(())
 }
 
-/// Wraps a real `AwaitedActionDb` and makes the matching pass read the
-/// queue one action per permit on `gate`, so a test can do things between
-/// two actions of the same pass. Only queued-range reads are gated.
-#[derive(MetricsComponent)]
-struct GatedQueueDb<A: AwaitedActionDb> {
-    inner: A,
-    gate: Arc<tokio::sync::Semaphore>,
-    /// When set, a queued listing also waits for one permit here before it
-    /// reads the queue at all, so a test can queue several actions and be
-    /// sure one pass lists them all.
-    listing_gate: Option<Arc<tokio::sync::Semaphore>>,
-}
-
-impl<A: AwaitedActionDb> AwaitedActionDb for GatedQueueDb<A> {
-    type Subscriber = A::Subscriber;
-
-    async fn get_awaited_action_by_id(
-        &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner
-            .get_awaited_action_by_id(client_operation_id)
-            .await
-    }
-
-    async fn get_all_awaited_actions(
-        &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        self.inner.get_all_awaited_actions().await
-    }
-
-    async fn get_by_operation_id(
-        &self,
-        operation_id: &OperationId,
-    ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner.get_by_operation_id(operation_id).await
-    }
-
-    async fn get_range_of_actions(
-        &self,
-        state: SortedAwaitedActionState,
-        start: Bound<SortedAwaitedAction>,
-        end: Bound<SortedAwaitedAction>,
-        desc: bool,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        if let (Some(listing_gate), SortedAwaitedActionState::Queued) = (&self.listing_gate, state)
-        {
-            listing_gate.acquire().await.expect("gate closed").forget();
-        }
-        let items = self
-            .inner
-            .get_range_of_actions(state, start, end, desc)
-            .await?
-            .collect::<Vec<_>>()
-            .await;
-        let gate = matches!(state, SortedAwaitedActionState::Queued).then(|| self.gate.clone());
-        Ok(futures::stream::iter(items).then(move |item| {
-            let gate = gate.clone();
-            async move {
-                if let Some(gate) = gate {
-                    gate.acquire_owned().await.expect("gate closed").forget();
-                }
-                item
-            }
-        }))
-    }
-
-    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
-        self.inner.update_awaited_action(new_awaited_action).await
-    }
-
-    async fn add_action(
-        &self,
-        client_operation_id: OperationId,
-        action_info: Arc<ActionInfo>,
-        no_event_action_timeout: Duration,
-    ) -> Result<Self::Subscriber, Error> {
-        self.inner
-            .add_action(client_operation_id, action_info, no_event_action_timeout)
-            .await
-    }
-}
-
 fn start_execute_digest(update: UpdateForWorker) -> (String, DigestInfo) {
     match update.update {
         Some(update_for_worker::Update::StartAction(start_execute)) => {
@@ -4944,6 +4862,331 @@ async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> 
         "the oldest waiting action takes the room a memory report opened"
     );
     Ok(())
+}
+
+/// How the insert times of a burst of actions are spread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spread {
+    /// Every action carries the same timestamp.
+    Identical,
+    NanosApart,
+    MillisApart,
+    /// Evenly over 999 ms.
+    OverASecond,
+}
+
+impl Spread {
+    const ALL: [Self; 4] = [
+        Self::Identical,
+        Self::NanosApart,
+        Self::MillisApart,
+        Self::OverASecond,
+    ];
+
+    /// Nanoseconds after the burst's first insert for action `index` of
+    /// `count`.
+    fn offset_nanos(self, index: usize, count: usize) -> u64 {
+        let index = index as u64;
+        match self {
+            Self::Identical => 0,
+            Self::NanosApart => index,
+            Self::MillisApart => index * 1_000_000,
+            Self::OverASecond => index * 999_000_000 / (count.max(2) as u64 - 1),
+        }
+    }
+}
+
+/// What opens room on the worker while a matching pass is under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// The running action finishes and frees the worker's only slot.
+    SlotFreed,
+    /// A keepalive reports more free memory, with the live memory veto on.
+    MoreMemoryReported,
+}
+
+/// The digest of action `index` of a burst: distinct, so nothing coalesces.
+fn burst_digest(index: usize) -> DigestInfo {
+    let mut hash = [0xb5u8; 32];
+    hash[..8].copy_from_slice(&(index as u64).to_be_bytes());
+    DigestInfo::new(hash, 512)
+}
+
+/// The next action the worker is told to start: its operation id and its
+/// place in the burst.
+async fn next_dispatch(
+    rx_from_worker: &mut mpsc::Receiver<UpdateForWorker>,
+    index_of: &HashMap<DigestInfo, usize>,
+    case: &str,
+) -> (String, usize) {
+    let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{case}: nothing was dispatched within a minute"))
+        .expect("the worker's stream stays open");
+    let (operation_id, digest) = start_execute_digest(update);
+    (operation_id, index_of[&digest])
+}
+
+/// `count` actions of one priority, queued before the pass lists them, on
+/// one worker with one slot. The pass reads `read_before_room` of them, room
+/// opens, and the pass reads on. The room must go to the oldest action
+/// waiting, not to the one the pass reads next; and so must the slot each
+/// time it frees after that.
+async fn check_room_opening_mid_pass(
+    backend: Backend,
+    count: usize,
+    spread: Spread,
+    read_before_room: usize,
+    room: Room,
+) -> Result<(), Error> {
+    let case = format!(
+        "{backend:?}, {count} actions, {spread:?}, room after {read_before_room} read, {room:?}"
+    );
+    let worker_id = WorkerId("worker_id".to_string());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let spec = match room {
+        Room::SlotFreed => SimpleSpec::default(),
+        Room::MoreMemoryReported => SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        },
+    };
+    // Operation ids count up with the burst, so equal timestamps have a
+    // known order: the queue lists equal sort keys highest id first.
+    let next_id = Arc::new(AtomicU64::new(0));
+    let built = gated_scheduler_on(
+        backend,
+        &spec,
+        gate.clone(),
+        Some(listing_gate.clone()),
+        move || OperationId::from(format!("op-{:06}", next_id.fetch_add(1, Ordering::AcqRel))),
+    )
+    .await?;
+    let scheduler = &built.scheduler;
+
+    let (worker_properties, action_properties) = match room {
+        Room::SlotFreed => (PlatformProperties::default(), HashMap::new()),
+        Room::MoreMemoryReported => (
+            PlatformProperties::new(HashMap::from([(
+                "memory_kb".to_string(),
+                PlatformPropertyValue::Minimum(100_000),
+            )])),
+            HashMap::from([("memory_kb".to_string(), "2000".to_string())]),
+        ),
+    };
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            worker_properties,
+            tx,
+            NOW_TIME,
+            1,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+    if room == Room::MoreMemoryReported {
+        // The worker says it has almost nothing free.
+        scheduler
+            .worker_keep_alive_received(
+                &worker_id,
+                NOW_TIME + 1,
+                Some(WorkerLoad {
+                    free_memory_kb: 1_000,
+                }),
+            )
+            .await?;
+    }
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(count);
+    let mut index_of = HashMap::with_capacity(count);
+    for index in 0..count {
+        let digest = burst_digest(index);
+        index_of.insert(digest, index);
+        let inserted = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(NOW_TIME)
+            + Duration::from_nanos(spread.offset_nanos(index, count));
+        let mut action_info = make_base_action_info(inserted, digest);
+        let action = Arc::make_mut(&mut action_info);
+        action.platform_properties.clone_from(&action_properties);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut oldest_first: Vec<usize> = (0..count).collect();
+    oldest_first
+        .sort_by_key(|&index| (spread.offset_nanos(index, count), core::cmp::Reverse(index)));
+    let finish = async |operation_id: String| {
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await
+    };
+
+    if let Some(fake_redis) = &built.fake_redis {
+        fake_redis.reset_command_counts();
+    }
+    // One pass lists the whole queue and reads `read_before_room` of it.
+    listing_gate.add_permits(1);
+    let mut waiting = oldest_first.as_slice();
+    let running = if room == Room::SlotFreed {
+        // The first action read takes the slot; the rest read so far wait.
+        gate.add_permits(1);
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, waiting[0],
+            "{case}: the oldest action takes the slot"
+        );
+        waiting = &waiting[1..];
+        gate.add_permits(read_before_room - 1);
+        Some(operation_id)
+    } else {
+        gate.add_permits(read_before_room);
+        None
+    };
+    tokio::time::timeout(Duration::from_mins(1), async {
+        while gate.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{case}: the pass did not read {read_before_room} actions"));
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "{case}: nothing is dispatched while the worker has no room"
+    );
+
+    if let Some(fake_redis) = &built.fake_redis {
+        // The pass listed the queue once and read each record once; the
+        // action it assigned costs a few reads more. A pass that read every
+        // record again for each action it placed would be far over this.
+        const READS_FOR_AN_ASSIGNMENT: u64 = 4;
+        let counts = fake_redis.command_counts();
+        let count_of = |command: &str| counts.get(command).copied().unwrap_or_default();
+        assert_eq!(count_of("FT.AGGREGATE"), 1, "{case}: one listing a pass");
+        assert!(
+            count_of("HMGET") <= read_before_room as u64 + READS_FOR_AN_ASSIGNMENT,
+            "{case}: {} record reads for {read_before_room} actions read",
+            count_of("HMGET")
+        );
+    }
+    match running {
+        Some(operation_id) => finish(operation_id).await?,
+        None => {
+            scheduler
+                .worker_keep_alive_received(
+                    &worker_id,
+                    NOW_TIME + 2,
+                    Some(WorkerLoad {
+                        free_memory_kb: 50_000,
+                    }),
+                )
+                .await?;
+        }
+    }
+    // The rest of this pass, and every pass after it, reads freely.
+    gate.add_permits(1 << 40);
+    listing_gate.add_permits(1 << 40);
+
+    for &oldest_waiting in waiting.iter().take(3) {
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, oldest_waiting,
+            "{case}: room goes to the oldest waiting action, in operation {operation_id}"
+        );
+        finish(operation_id).await?;
+    }
+    drop(listeners);
+    Ok(())
+}
+
+/// Where in a pass over `count` actions room opens: after the first read,
+/// half way, one before the end and at the end.
+fn positions_in_a_pass(count: usize) -> Vec<usize> {
+    let mut positions = vec![1, count / 2, count - 1, count];
+    positions.retain(|&position| position >= 1);
+    positions.dedup();
+    positions
+}
+
+/// A burst of equal-priority actions is served oldest first even when room
+/// opens in the middle of the pass that is reading it, on both backends:
+/// the room goes to the oldest action waiting, not to the one under the
+/// pass's cursor. Equal timestamps go in the order the queue lists them.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_burst_oldest_first() -> Result<(), Error> {
+    for backend in Backend::ALL {
+        for count in [1, 2, 16] {
+            for spread in Spread::ALL {
+                for read_before_room in positions_in_a_pass(count) {
+                    for room in [Room::SlotFreed, Room::MoreMemoryReported] {
+                        check_room_opening_mid_pass(backend, count, spread, read_before_room, room)
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The same at the size the order was first seen to break: 1,000 actions
+/// queued inside a second, and 2,000. Every combination runs on the memory
+/// backend at 1,000 and one of each spread and position at 2,000. On the
+/// fake Redis a burst of 1,000 takes seconds to queue, so it runs the one
+/// row: a millisecond apart, the slot freed half way through the pass.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_thousand_actions_oldest_first() -> Result<(), Error> {
+    let rooms = [Room::SlotFreed, Room::MoreMemoryReported];
+    for spread in Spread::ALL {
+        for read_before_room in positions_in_a_pass(1000) {
+            for room in rooms {
+                check_room_opening_mid_pass(Backend::Memory, 1000, spread, read_before_room, room)
+                    .await?;
+            }
+        }
+    }
+    for (nth, (spread, read_before_room)) in Spread::ALL
+        .into_iter()
+        .zip(positions_in_a_pass(2000))
+        .enumerate()
+    {
+        check_room_opening_mid_pass(
+            Backend::Memory,
+            2000,
+            spread,
+            read_before_room,
+            rooms[nth % 2],
+        )
+        .await?;
+    }
+    check_room_opening_mid_pass(
+        Backend::FakeRedis,
+        1000,
+        Spread::MillisApart,
+        500,
+        Room::SlotFreed,
+    )
+    .await
 }
 
 /// A peer wins exactly one assignment against a real awaited-action DB.
