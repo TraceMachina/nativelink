@@ -5189,6 +5189,160 @@ async fn room_opening_mid_pass_serves_a_thousand_actions_oldest_first() -> Resul
     .await
 }
 
+/// Yields until the fake Redis has seen no command for a while, so the
+/// commands counted next are the ones the step under test causes, not the
+/// tail of the work before it.
+async fn until_redis_is_quiet(fake_redis: &FakeRedisBackend<RedisSubscriptionManager>) {
+    let mut seen = fake_redis.commands_total();
+    let mut quiet = 0;
+    for _ in 0..100_000 {
+        tokio::task::yield_now().await;
+        let now = fake_redis.commands_total();
+        if now == seen {
+            quiet += 1;
+            if quiet == 256 {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet = 0;
+        }
+    }
+    panic!("the fake Redis never went quiet");
+}
+
+/// What one keepalive costs: the Redis commands it causes and the messages
+/// it sends the worker, for a worker holding `in_flight` operations. With
+/// `report` it is a keepalive of today's shape, with the worker's load and
+/// the operations it runs; without, an older worker's, with neither.
+async fn one_keepalive(in_flight: usize, report: bool) -> Result<(u64, usize), Error> {
+    let BackendScheduler {
+        scheduler,
+        fake_redis,
+        ..
+    } = scheduler_on(
+        Backend::FakeRedis,
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..SimpleSpec::default()
+        },
+    )
+    .await?;
+    let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+    let worker_id = WorkerId("worker_id".to_string());
+    let (tx, mut rx_from_worker) = mpsc::channel(in_flight + 16);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            PlatformProperties::default(),
+            tx,
+            NOW_TIME,
+            0,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(in_flight);
+    for index in 0..in_flight {
+        let mut action_info = make_base_action_info(make_system_time(1), burst_digest(index));
+        let action = Arc::make_mut(&mut action_info);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut running = Vec::with_capacity(in_flight);
+    while running.len() < in_flight {
+        let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{in_flight} in flight: only {} dispatched", running.len()))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        let operation_id = OperationId::from(operation_id);
+        scheduler
+            .worker_dispatch_accepted(&worker_id, &operation_id)
+            .await?;
+        running.push(operation_id);
+    }
+    until_redis_is_quiet(&fake_redis).await;
+
+    fake_redis.reset_command_counts();
+    let load = report.then_some(WorkerLoad {
+        free_memory_kb: 1_000_000,
+    });
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 1, load)
+        .await?;
+    if report {
+        scheduler
+            .worker_running_operations_reported(&worker_id, running)
+            .await?;
+    }
+    until_redis_is_quiet(&fake_redis).await;
+    // The total counts from the start; the counts by command are the ones a
+    // reset clears.
+    let commands: u64 = fake_redis.command_counts().values().sum();
+    let mut messages = 0;
+    while rx_from_worker.try_recv().is_ok() {
+        messages += 1;
+    }
+
+    // Whatever its shape, the keepalive keeps the worker alive: a timeout
+    // sweep just short of the worker timeout leaves it in the pool, so a
+    // keepalive after it still finds it.
+    drop(
+        scheduler
+            .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+            .await,
+    );
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + WORKER_TIMEOUT_S, None)
+        .await
+        .unwrap_or_else(|err| {
+            panic!("{in_flight} in flight, report {report}: the worker was evicted: {err:?}")
+        });
+    drop(listeners);
+    Ok((commands, messages))
+}
+
+/// One keepalive costs the store the same however many operations the
+/// worker holds: the operations it reports running need no write, so a
+/// worker with hundreds in flight does not make its own keepalive slow
+/// enough to time it out. It sends the worker at most one message, and an
+/// older worker's keepalive, with no load and no report, keeps it alive
+/// all the same.
+#[nativelink_test]
+async fn a_keepalive_costs_the_same_however_many_operations_the_worker_holds() -> Result<(), Error>
+{
+    // A keepalive can start a matching pass, which lists the queue; that is
+    // the whole of its store work.
+    const MOST_COMMANDS: u64 = 4;
+    for report in [true, false] {
+        let mut costs = Vec::new();
+        for in_flight in [0, 1, 100, 500] {
+            let (commands, messages) = one_keepalive(in_flight, report).await?;
+            assert!(
+                messages <= 1,
+                "{in_flight} in flight, report {report}: {messages} messages to the worker"
+            );
+            costs.push((in_flight, commands));
+        }
+        assert!(
+            costs.iter().all(|&(_, commands)| commands <= MOST_COMMANDS),
+            "report {report}: Redis commands for one keepalive by operations held: {costs:?}"
+        );
+    }
+    Ok(())
+}
+
 /// A peer wins exactly one assignment against a real awaited-action DB.
 #[derive(MetricsComponent)]
 struct AssignmentRaceDb<A: AwaitedActionDb> {
