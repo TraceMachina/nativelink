@@ -67,7 +67,9 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
-use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
+use utils::scheduler_utils::{
+    Backend, BackendScheduler, INSTANCE_NAME, make_base_action_info, scheduler_on, update_eq,
+};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -3257,67 +3259,59 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 #[nativelink_test]
 async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
     const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
-    let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &SimpleSpec {
-            worker_timeout_s: WORKER_TIMEOUT_S,
-            client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
-            ..Default::default()
-        },
-        memory_awaited_action_db_factory(
-            0,
-            &task_change_notify.clone(),
-            MockInstantWrapped::default,
-        ),
-        || async move {},
-        task_change_notify,
-        MockInstantWrapped::default,
-        None,
-    );
-    let action_digest = DigestInfo::new([99u8; 32], 512);
+    for backend in Backend::ALL {
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let action_digest = DigestInfo::new([99u8; 32], 512);
 
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
-        );
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
 
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
 
-        MockClock::advance(Duration::from_secs(2));
-        scheduler.do_try_match_for_test().await.unwrap();
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
-    }
+            MockClock::advance(Duration::from_secs(2));
+            scheduler.do_try_match_for_test().await?;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
 
-    MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
+        MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
 
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
 
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
-        );
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
 
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
 
-        MockClock::advance(Duration::from_secs(2));
-        tokio::task::yield_now().await;
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+            MockClock::advance(Duration::from_secs(2));
+            tokio::task::yield_now().await;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
     }
 
     Ok(())
