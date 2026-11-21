@@ -240,19 +240,45 @@ fn publish_attempt_ended(
 /// its requeue is not reported.
 const MAX_LOST_RESULTS: usize = 4096;
 
-/// The starts of attempts whose result the state manager refused, oldest
-/// first, so a store that refuses everything cannot grow it without bound.
+/// A result the state manager refused: the worker that sent it, its
+/// attempt's start, and the result.
+#[derive(Debug)]
+struct LostResult {
+    worker_id: WorkerId,
+    action_info: ActionInfoWithProps,
+    stage: ActionStage,
+}
+
+/// Results the state manager refused, oldest first, so a store that refuses
+/// everything cannot grow it without bound. The executing sweep writes each
+/// once the store takes writes again; one pushed out by the bound is
+/// requeued instead, as before results were kept.
+///
+/// A result belongs to one attempt, on the worker that sent it. It is only
+/// handed back for that worker, and it is dropped when the operation is
+/// dispatched again, so it never completes a later attempt.
 #[derive(Debug, Default)]
 struct LostResults {
-    by_operation: HashMap<OperationId, ActionInfoWithProps>,
+    by_operation: HashMap<OperationId, LostResult>,
     order: VecDeque<OperationId>,
 }
 
 impl LostResults {
-    fn insert(&mut self, operation_id: OperationId, action_info: ActionInfoWithProps) {
+    fn insert(
+        &mut self,
+        operation_id: OperationId,
+        worker_id: WorkerId,
+        action_info: ActionInfoWithProps,
+        stage: ActionStage,
+    ) {
+        let lost = LostResult {
+            worker_id,
+            action_info,
+            stage,
+        };
         if self
             .by_operation
-            .insert(operation_id.clone(), action_info)
+            .insert(operation_id.clone(), lost)
             .is_none()
         {
             self.order.push_back(operation_id);
@@ -264,10 +290,30 @@ impl LostResults {
         }
     }
 
-    fn take(&mut self, operation_id: &OperationId) -> Option<ActionInfoWithProps> {
-        let action_info = self.by_operation.remove(operation_id)?;
+    /// The result `worker_id` sent for `operation_id`, if one is held.
+    fn stage(&self, worker_id: &WorkerId, operation_id: &OperationId) -> Option<&ActionStage> {
+        self.by_operation
+            .get(operation_id)
+            .filter(|lost| lost.worker_id == *worker_id)
+            .map(|lost| &lost.stage)
+    }
+
+    /// Removes and returns the result `worker_id` sent for `operation_id`.
+    fn take(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<(ActionInfoWithProps, ActionStage)> {
+        self.stage(worker_id, operation_id)?;
+        self.forget(operation_id)
+            .map(|lost| (lost.action_info, lost.stage))
+    }
+
+    /// Removes whatever is held for `operation_id`, whoever sent it.
+    fn forget(&mut self, operation_id: &OperationId) -> Option<LostResult> {
+        let lost = self.by_operation.remove(operation_id)?;
         self.order.retain(|id| id != operation_id);
-        Some(action_info)
+        Some(lost)
     }
 }
 
@@ -360,6 +406,7 @@ use crate::match_outcome::{
 };
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
+use crate::simple_scheduler_state_manager::OnWorker;
 use crate::worker::{
     ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerTimestamp,
     WorkerUpdate,
@@ -2103,17 +2150,14 @@ impl ApiWorkerSchedulerImpl {
         // A result the store refuses leaves the record Executing, and the
         // executing sweep requeues it once this worker no longer runs it; by
         // then the worker has forgotten the attempt, so its start is kept here.
-        let lost_result = matches!(
-            &update,
-            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(_))
-        )
-        .then(|| {
-            worker
+        // The result itself is kept too, for the sweep to write.
+        let lost_result = match &update {
+            UpdateOperationType::UpdateWithActionStage(stage @ ActionStage::Completed(_)) => worker
                 .running_action_infos
                 .get(operation_id)
-                .map(|pending| pending.action_info.clone())
-        })
-        .flatten();
+                .map(|pending| (pending.action_info.clone(), stage.clone())),
+            _ => None,
+        };
 
         // Update the operation in the worker state manager.
         let update_operation_res = if worker.is_kill_requested(operation_id) {
@@ -2149,8 +2193,13 @@ impl ApiWorkerSchedulerImpl {
                         ?err,
                         "Failed to update_operation on update_action"
                     );
-                    if let Some(action_info) = lost_result {
-                        self.lost_results.insert(operation_id.clone(), action_info);
+                    if let Some((action_info, stage)) = lost_result {
+                        self.lost_results.insert(
+                            operation_id.clone(),
+                            worker_id.clone(),
+                            action_info,
+                            stage,
+                        );
                     }
                 }
             }
@@ -2165,8 +2214,8 @@ impl ApiWorkerSchedulerImpl {
         // timed out). The worker bookkeeping below must still run, or the
         // worker's platform properties leak until it can never match again.
         // A result the store refused (Redis at its memory ceiling, a
-        // failover) is lost with it; the record stays Executing on a worker
-        // that no longer runs it, which the executing sweep requeues.
+        // failover) is kept in `lost_results`; the record stays Executing on
+        // a worker that no longer runs it, and the executing sweep writes it.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -2209,6 +2258,9 @@ impl ApiWorkerSchedulerImpl {
         action_info: ActionInfoWithProps,
         dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
+        // A dispatch starts a new attempt. A result still held for this
+        // operation is an earlier attempt's, and must not complete this one.
+        self.lost_results.forget(&operation_id);
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction(Box::new((
@@ -2691,12 +2743,50 @@ impl ApiWorkerScheduler {
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
-    ) -> Option<bool> {
+    ) -> Option<OnWorker> {
         let inner = self.inner.lock().await;
-        inner
-            .workers
-            .peek(worker_id)
-            .map(|worker| worker.running_action_infos.contains_key(operation_id))
+        // Held whether or not the worker is still connected: its result is
+        // the attempt's outcome either way. Only for the worker that sent
+        // it, though: once the record is another worker's, that is a new
+        // attempt and the result is not its outcome.
+        if let Some(stage) = inner.lost_results.stage(worker_id, operation_id) {
+            return Some(OnWorker::ResultHeld(Box::new(stage.clone())));
+        }
+        inner.workers.peek(worker_id).map(|worker| {
+            if worker.running_action_infos.contains_key(operation_id) {
+                OnWorker::Running
+            } else {
+                OnWorker::NotRunning
+            }
+        })
+    }
+
+    /// Forgets a result the sweep held: written, it reports the attempt's
+    /// end as the worker's own update would have; stale, it is dropped.
+    pub async fn settle_held_result(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        written: bool,
+    ) {
+        let mut inner = self.inner.lock().await;
+        let Some((action_info, stage)) = inner.lost_results.take(worker_id, operation_id) else {
+            return;
+        };
+        let Some((reason, detail)) = written
+            .then(|| attempt_end_reason(&UpdateOperationType::UpdateWithActionStage(stage)))
+            .flatten()
+        else {
+            return;
+        };
+        publish_attempt_ended(
+            inner.attempt_events.as_ref(),
+            &action_info,
+            worker_id,
+            operation_id,
+            reason,
+            detail,
+        );
     }
 
     /// Reports an attempt the executing sweep ended on `worker_id`: timed out
@@ -2716,7 +2806,12 @@ impl ApiWorkerScheduler {
             .peek(worker_id)
             .and_then(|worker| worker.running_action_infos.get(operation_id))
             .map(|pending| pending.action_info.clone());
-        let Some(action_info) = held.or_else(|| inner.lost_results.take(operation_id)) else {
+        let Some(action_info) = held.or_else(|| {
+            inner
+                .lost_results
+                .take(worker_id, operation_id)
+                .map(|(action_info, _)| action_info)
+        }) else {
             return;
         };
         publish_attempt_ended(

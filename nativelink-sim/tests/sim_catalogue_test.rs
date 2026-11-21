@@ -311,28 +311,41 @@ fn clock_jump() -> Scenario {
 }
 
 /// Found by the harness on 2026-11-04: an hour's forward step evicts both
-/// live workers, the requeued action's client keepalive now reads an hour
-/// old, and the matching pass retires it as abandoned while its client is
-/// attached; on the memory backend the build fails with
-/// `DEADLINE_EXCEEDED`. No invariant names a healthy build that fails, so
-/// the outcome is asserted.
+/// live workers, and the requeued action's client keepalive then reads an
+/// hour old, so the matching pass retired it while its client was attached
+/// and the memory backend failed the build with `DEADLINE_EXCEEDED`. The
+/// scheduler now holds client timeouts after such a step until attached
+/// clients refresh, so both backends run the action again and complete it.
 #[test]
 fn clock_jumps_an_hour() -> Result<(), Error> {
-    let reports = clock_jump().backends(&[Backend::Memory]).run()?;
-    let memory = report(&reports, Backend::Memory);
-    assert_eq!(memory.outcomes()["c1"], Some(Outcome::Failed(4)));
+    let reports = clock_jump().run()?;
+    for backend in [Backend::Memory, Backend::FakeRedis] {
+        let outcomes = report(&reports, backend).outcomes();
+        assert_eq!(outcomes["c1"], Some(Outcome::Exited(0)), "{backend:?}");
+        assert_eq!(outcomes["c2"], Some(Outcome::Exited(0)), "{backend:?}");
+    }
     Ok(())
 }
 
-/// The Redis backend runs the requeued action again and completes it, so
-/// the backends disagree on c1.
+/// Refused for the update's whole budget, the result was thrown away: the
+/// executing sweep found the record still Executing on a worker that no
+/// longer ran it and requeued the action, which ran a second time and spent
+/// one of its retries. The scheduler now keeps the refused result and the
+/// sweep writes it, so the action runs once.
 #[test]
-fn clock_jumps_an_hour_on_redis() -> Result<(), Error> {
-    let reports = clock_jump()
-        .backends_disagree("unassigned: a clock step retires an attached client's requeued action")
+fn result_write_refused_past_the_update_budget() -> Result<(), Error> {
+    let reports = Scenario::new("result-write-refused-past-budget", 29)
+        .workers(1, WorkerSpec::default())
+        .at(0, Step::execute("c1", Action::new(1).run_ms(3_000)))
+        .at(
+            2_990,
+            Step::redis_fail("EVALSHA", Fault::Error("refused".into()), 5),
+        )
+        .settle(Duration::from_mins(3))
         .run()?;
-    let memory = report(&reports, Backend::Memory);
-    assert_eq!(memory.outcomes()["c1"], Some(Outcome::Failed(4)));
+    for r in &reports {
+        assert_eq!(executions(r, "a1"), 1, "{:?}", r.backend);
+    }
     Ok(())
 }
 

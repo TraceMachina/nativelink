@@ -887,3 +887,17 @@ fn oss_cname_defaults_to_false_and_round_trips() {
         assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
     }
 }
+
+/// `SimpleSpec::from_config_defaults` is what an empty section deserializes
+/// to, so a serde default added to the spec cannot be missed there.
+#[test]
+fn simple_spec_from_config_defaults_matches_an_empty_section() {
+    let empty: nativelink_config::schedulers::SimpleSpec = serde_json5::from_str("{}").unwrap();
+    assert_eq!(
+        format!("{empty:?}"),
+        format!(
+            "{:?}",
+            nativelink_config::schedulers::SimpleSpec::from_config_defaults()
+        )
+    );
+}
