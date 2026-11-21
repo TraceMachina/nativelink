@@ -3600,10 +3600,9 @@ async fn read_queued_as_the_scheduler_does(scheduler: &SimpleScheduler) -> Resul
     Ok(())
 }
 
-/// RFC-0064 `action-retention-tied-to-real-listeners/01`: a client waiting
-/// passively by `WaitExecution` keeps its queued action for as long as it
-/// waits, past the client timeout; an action nobody waits on is retired one
-/// timeout and one sweep after its client left.
+/// A client waiting passively by `WaitExecution` keeps its queued action
+/// for as long as it waits, past the client timeout; an action nobody waits
+/// on is retired one timeout and one sweep after its client left.
 #[nativelink_test]
 async fn a_passive_wait_execution_keeps_its_action_and_an_abandoned_one_goes() -> Result<(), Error>
 {
@@ -3681,11 +3680,10 @@ async fn a_passive_wait_execution_keeps_its_action_and_an_abandoned_one_goes() -
     Ok(())
 }
 
-/// RFC-0064 `action-retention-tied-to-real-listeners/03`: the scheduler's
-/// own readers (queued listings, matching passes, the abandoned-queue sweep)
-/// never refresh a client's keepalive. An abandoned action is retired at the
-/// same second however often they read it, and on Redis its keepalive key
-/// is never rewritten after the client left.
+/// The scheduler's own readers (queued listings, matching passes, the
+/// abandoned-queue sweep) never refresh a client's keepalive. An abandoned
+/// action is retired at the same second however often they read it, and on
+/// Redis its keepalive key is never rewritten after the client left.
 #[nativelink_test]
 async fn internal_readers_never_keep_an_abandoned_action_alive() -> Result<(), Error> {
     const TIMEOUT_S: u64 = 30;

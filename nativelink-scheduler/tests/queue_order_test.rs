@@ -195,15 +195,13 @@ async fn memory_backend_mints_operation_ids_from_the_given_fn() -> Result<(), Er
     Ok(())
 }
 
-/// RFC-0064 `queue-not-served-oldest-first/01`: during a rolling upgrade
-/// the Redis index holds sort keys in two widths. A scheduler before the
-/// nanosecond key writes 16 hex digits, this one 32 with leading zeros, and
-/// the index sorts the strings, so every action an older scheduler queued
-/// comes first, each block by priority and then age. That is the documented
-/// order (`AwaitedActionSortKey`), not a defect; this pins it, including
-/// its cost: a high-priority action queued after the upgrade waits behind a
-/// low-priority one queued before it. The journal (SCHEDULER-PLAN M5)
-/// retires the index and with it the two widths.
+/// During a rolling upgrade the Redis index holds sort keys in two widths.
+/// A scheduler before the nanosecond key writes 16 hex digits, this one 32
+/// with leading zeros, and the index sorts the strings, so every action an
+/// older scheduler queued comes first, each block by priority and then age.
+/// That is the documented order (`AwaitedActionSortKey`), not a defect; this
+/// pins it, including its cost: a high-priority action queued after the
+/// upgrade waits behind a low-priority one queued before it.
 #[nativelink_test]
 async fn redis_index_serves_older_schedulers_keys_first_during_an_upgrade() -> Result<(), Error> {
     let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
