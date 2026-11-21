@@ -5559,6 +5559,29 @@ async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<
     check_lost_assignment_skips_shape(true).await
 }
 
+/// Drives `future` while the mock clock moves forward in 100 ms steps, for
+/// at most `mock_limit` of mock time; `None` if it has not finished by then.
+/// Each step also gives it up to 10 ms of real time, for the work the mock
+/// clock does not move, such as a round trip to the fake Redis: one yield a
+/// step would run a minute of mock time in about a millisecond, and a slow
+/// machine could run out of steps before the reply came.
+async fn on_the_mock_clock<F: Future>(future: F, mock_limit: Duration) -> Option<F::Output> {
+    const STEP: Duration = Duration::from_millis(100);
+    const REAL_TIME_A_STEP: Duration = Duration::from_millis(10);
+    tokio::pin!(future);
+    let mut waited = Duration::ZERO;
+    loop {
+        if let Ok(output) = tokio::time::timeout(REAL_TIME_A_STEP, &mut future).await {
+            return Some(output);
+        }
+        if waited >= mock_limit {
+            return None;
+        }
+        MockClock::advance(STEP);
+        waited += STEP;
+    }
+}
+
 /// A change notice goes out after the write it announces has landed, so a
 /// notice Redis refuses must not undo the write: with every notice refused,
 /// the action still reaches a worker, found by the matcher's fallback pass,
@@ -5627,18 +5650,9 @@ async fn a_refused_change_notice_loses_neither_the_dispatch_nor_the_result() -> 
                 }
             }
         };
-        tokio::pin!(completed);
-        let mut read = false;
-        for _ in 0..600 {
-            if let Poll::Ready(result) = poll!(&mut completed) {
-                result?;
-                read = true;
-                break;
-            }
-            MockClock::advance(Duration::from_millis(100));
-            tokio::task::yield_now().await;
-        }
-        assert!(read, "{backend:?}: the client never read the result");
+        on_the_mock_clock(completed, Duration::from_mins(1))
+            .await
+            .unwrap_or_else(|| panic!("{backend:?}: the client never read the result"))?;
     }
     Ok(())
 }
@@ -5716,18 +5730,7 @@ async fn a_record_that_cannot_be_read_ends_the_client_stream_with_an_error() -> 
             }
 
             // The client polls on the mock clock; give it a minute.
-            let next = listener.changed();
-            tokio::pin!(next);
-            let mut outcome = None;
-            for _ in 0..600 {
-                if let Poll::Ready(result) = poll!(&mut next) {
-                    outcome = Some(result);
-                    break;
-                }
-                MockClock::advance(Duration::from_millis(100));
-                tokio::task::yield_now().await;
-            }
-            match outcome {
+            match on_the_mock_clock(listener.changed(), Duration::from_mins(1)).await {
                 None => panic!("{case}: the client's stream stayed silent for a minute"),
                 Some(Ok((state, _))) => {
                     panic!(
