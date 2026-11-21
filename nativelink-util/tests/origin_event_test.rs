@@ -145,6 +145,62 @@ async fn origin_event_publisher_retries_store_upload() {
     task.abort();
 }
 
+fn test_event_with_id(event_id: &str) -> OriginEvent {
+    OriginEvent {
+        version: 0,
+        event_id: event_id.to_string(),
+        parent_event_id: String::new(),
+        bazel_request_metadata: None,
+        identity: String::new(),
+        event: None,
+    }
+}
+
+// A publisher whose senders are all gone, as on a CAS that forwards to a
+// separate scheduler, must stop and write nothing, not loop writing empty
+// batches.
+#[nativelink_test]
+async fn origin_event_publisher_stops_when_its_senders_are_gone() {
+    let store = Arc::new(FlakyStore {
+        fail_until: 0,
+        attempts: AtomicUsize::new(0),
+    });
+    let (tx, rx) = mpsc::channel::<OriginEvent>(16);
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+    let publisher = OriginEventPublisher::new(Store::new(store.clone()), rx, shutdown_tx);
+    drop(tx);
+    tokio::time::timeout(Duration::from_secs(5), publisher.run())
+        .await
+        .expect("the publisher stops once no sender is left");
+    assert_eq!(
+        store.attempts.load(Ordering::SeqCst),
+        0,
+        "no batch, empty or not, is written"
+    );
+}
+
+// Events sent before the last sender goes are still written.
+#[nativelink_test]
+async fn origin_event_publisher_writes_what_was_sent_before_stopping() {
+    let store = Arc::new(FlakyStore {
+        fail_until: 0,
+        attempts: AtomicUsize::new(0),
+    });
+    let (tx, rx) = mpsc::channel::<OriginEvent>(16);
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+    let publisher = OriginEventPublisher::new(Store::new(store.clone()), rx, shutdown_tx);
+    tx.send(test_event_with_id("e1")).await.unwrap();
+    drop(tx);
+    tokio::time::timeout(Duration::from_secs(5), publisher.run())
+        .await
+        .expect("the publisher stops once it has written what it was sent");
+    assert_eq!(
+        store.attempts.load(Ordering::SeqCst),
+        1,
+        "one batch, written once"
+    );
+}
+
 macro_rules! event_assert {
     ($event:ident, $val:expr) => {
         assert_eq!(

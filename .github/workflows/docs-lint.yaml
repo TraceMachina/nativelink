@@ -30,12 +30,18 @@ on:
     - cron: 17 5 * * THU
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
-  # workflow_ref (not workflow name) so this file and vale.yaml can share the
-  # "CI / Docs" display prefix without cancelling each other.
-  group: ${{ github.workflow_ref }}-${{ github.ref }}
+  # A file-specific literal (not the workflow name) so this file and vale.yaml
+  # can share the "CI / Docs" display prefix without cancelling each other.
+  # github.workflow_ref is unavailable where the workflow is compiled ahead of
+  # run time.
+  group: docs-lint-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,8 +50,10 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Nothing in this job consumes an OIDC token; the Nix cache authenticates
+    # with an Attic token, and a pull-request build's GitHub token is capped
+    # at contents:read anyway.
     permissions:
-      id-token: write
       contents: read
     steps:
       - name: Checkout
@@ -139,8 +147,10 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Nothing in this job consumes an OIDC token; the Nix cache authenticates
+    # with an Attic token, and a pull-request build's GitHub token is capped
+    # at contents:read anyway.
     permissions:
-      id-token: write
       contents: read
     steps:
       - name: Checkout

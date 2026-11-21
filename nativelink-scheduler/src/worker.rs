@@ -92,6 +92,11 @@ pub struct PendingActionInfoData {
     /// operation resets it.
     #[metric(help = "Consecutive keepalive reports that left this operation out.")]
     pub missed_reports: u32,
+    /// The most memory the worker's keepalives have reported for this
+    /// operation, in KiB; 0 until one does. Read when the worker is lost,
+    /// to tell which of its actions grew past its reservation (RFC-0018).
+    #[metric(help = "The highest memory the worker reported for this operation, in KiB.")]
+    pub reported_peak_memory_kb: u64,
 }
 
 /// How many keepalive reports in a row may leave an acknowledged operation
@@ -473,6 +478,7 @@ impl Worker {
                         dispatched_at,
                         accepted: false,
                         last_usage: None,
+                        reported_peak_memory_kb: 0,
                     },
                 );
                 Ok(())

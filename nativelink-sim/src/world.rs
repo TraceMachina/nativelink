@@ -491,6 +491,9 @@ impl World {
             }),
             results_cache_policy: None,
             digest_function: digest_function::Value::Sha256.into(),
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         };
         let state = Arc::new(AtomicU8::new(CLIENT_RUNNING));
         let (gone, gone_rx) = watch::channel(false);

@@ -1,14 +1,22 @@
 ---
-name: CI / Docs
+# The "CI / Docs" prefix is shared with docs-lint.yaml on purpose; the
+# distinct full name lets externally brokered CI select workflows by name.
+name: CI / Docs / Vale
 
 on: [pull_request]
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
-  # workflow_ref (not workflow name) so this file and docs-lint.yaml can share
-  # the "CI / Docs" display prefix without cancelling each other.
-  group: ${{ github.workflow_ref }}-${{ github.ref }}
+  # A file-specific literal (not the workflow name) so this file and
+  # docs-lint.yaml can share the "CI / Docs" display prefix without cancelling
+  # each other. github.workflow_ref is unavailable where the workflow is
+  # compiled ahead of run time.
+  group: vale-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
