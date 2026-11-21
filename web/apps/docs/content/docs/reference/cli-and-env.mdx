@@ -42,7 +42,9 @@ looking for a knob, it is in the configuration file; see the
 ## Telemetry variables [#telemetry-variables]
 
 These are read once, at startup, by `nativelink-util`'s tracing initialiser.
-They are the only variables that change the binary's own behaviour.
+Apart from the one
+[runtime variable](#runtime-variables) below, they are the only variables
+that change the binary's own behaviour.
 
 <SourceLink file="nativelink-util/src/telemetry.rs" symbol="init_tracing" />
 
@@ -148,6 +150,23 @@ names explicitly.
   `Property` entries). Unless you pass `PATH` that way, use an absolute path,
   and shell syntax (pipes, globs, `&&`) is not interpreted.
 </Callout>
+
+## Runtime variables [#runtime-variables]
+
+<SourceLink file="src/bin/nativelink.rs" symbol="main" />
+
+NativeLink builds its Tokio runtime without setting a thread stack size, so
+the Rust standard library decides it.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `RUST_MIN_STACK` | `2097152` (2 MiB) | Stack size, in bytes, of every thread spawned without an explicit size. That includes the Tokio worker threads that poll every request and the blocking-pool threads. Read once, when the first such thread starts. |
+
+A request is polled through every store in its chain, so a deep chain of
+nested stores needs more stack on a single poll than a flat one. If a server
+aborts with `thread 'tokio-rt-worker' has overflowed its stack`, raising this
+(to `8388608`, 8 MiB, say) is a mitigation, not a fix. Please report the
+crash with your store configuration.
 
 ## What NativeLink does not read [#what-nativelink-does-not-read]
 
