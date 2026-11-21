@@ -650,3 +650,59 @@ fn lone_worker_retry_after_its_own_error() -> Result<(), Error> {
         .run()
         .map(drop)
 }
+
+/// A burst of results lands while every store reply is slow. The workers
+/// keep their links up and keep sending keepalives throughout, so none of
+/// them may be evicted and nothing may run twice, however slow the store is.
+fn slow_store_burst(latency_ms: u64, workers: u32, per_worker: u32) -> Scenario {
+    let mut scenario = Scenario::new(
+        &format!("slow-store-burst-{latency_ms}ms-{workers}x{per_worker}"),
+        41,
+    )
+    .workers(
+        workers as usize,
+        WorkerSpec::default().max_inflight(u64::from(per_worker)),
+    );
+    for action in 1..=workers * per_worker {
+        scenario = scenario.at(
+            0,
+            Step::execute(&format!("c{action}"), Action::new(action).run_ms(5_000)),
+        );
+    }
+    scenario
+        // The store slows down just before the results arrive together,
+        // and stays slow for half a minute, six worker timeouts.
+        .at(
+            4_000,
+            Step::RedisLatency {
+                ms: Some(latency_ms),
+            },
+        )
+        .at(34_000, Step::RedisLatency { ms: None })
+        .settle(Duration::from_mins(2))
+}
+
+/// One row for each way the burst can be shaped: every worker with a single
+/// result at half the worker timeout, one worker with ten at the timeout, and
+/// every worker with ten at twice the timeout.
+#[test]
+fn slow_store_burst_evicts_no_live_worker() -> Result<(), Error> {
+    for (latency_ms, workers, per_worker) in [(2_499, 20, 1), (5_000, 1, 10), (9_999, 20, 10)] {
+        let reports = slow_store_burst(latency_ms, workers, per_worker).run()?;
+        for report in &reports {
+            let case = format!(
+                "{:?}, {latency_ms} ms, {workers} workers with {per_worker} each",
+                report.backend
+            );
+            assert_eq!(
+                report.count(|e| matches!(e, Event::WorkerDisconnected { .. })),
+                0,
+                "{case}: a worker whose link was up lost its stream"
+            );
+            for action in 1..=workers * per_worker {
+                assert_eq!(executions(report, &format!("a{action}")), 1, "{case}");
+            }
+        }
+    }
+    Ok(())
+}

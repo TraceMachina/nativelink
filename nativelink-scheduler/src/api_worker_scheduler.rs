@@ -3438,6 +3438,15 @@ impl WorkerScheduler for ApiWorkerScheduler {
         self.refresh_worker(worker_id, timestamp, None, false).await
     }
 
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) {
+        // The registry has a lock of its own, so this does not wait behind
+        // whatever the scheduler's lock is held for. The timeout sweep
+        // reads it before it evicts.
+        self.worker_registry
+            .worker_heard_from(worker_id, UNIX_EPOCH + Duration::from_secs(timestamp))
+            .await;
+    }
+
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_registry.remove_worker(worker_id).await;
 

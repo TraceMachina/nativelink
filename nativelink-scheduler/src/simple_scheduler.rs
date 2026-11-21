@@ -1825,6 +1825,12 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) {
+        self.worker_scheduler
+            .worker_message_received(worker_id, timestamp)
+            .await;
+    }
+
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
     }
