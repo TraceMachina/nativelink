@@ -133,27 +133,6 @@ fn acquire_digest(lease: Option<&dyn DigestLease>, digest: &DigestInfo) {
     }
 }
 
-/// Sets the mode of a privately written input file. Read-only, matching the
-/// hermeticity contract for materialized inputs: 0o555 (r-xr-xr-x) for
-/// executables so the +x bit survives, 0o444 (r--r--r--) for data files. The
-/// file must have its own private inode (just written by the caller), so
-/// chmoding it cannot affect any CAS blob or another action's hardlink,
-/// unlike the hardlink path, where the shared read-only blob must never be
-/// chmod'd.
-async fn set_input_file_mode(file_path: &Path, executable: bool) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o555 } else { 0o444 };
-        fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
-            .await
-            .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
-    }
-    #[cfg(not(unix))]
-    let _ = (file_path, executable);
-    Ok(())
-}
-
 impl Default for DirectoryCacheConfig {
     fn default() -> Self {
         Self {
@@ -1469,7 +1448,22 @@ impl DirectoryCache {
             .await
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
-        set_input_file_mode(file_path, executable).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Read-only, matching the hermeticity contract for materialized
+            // inputs: 0o555 (r-xr-xr-x) for executables so the +x bit survives,
+            // 0o444 (r--r--r--) for data files. This file has its own private
+            // inode (just written above), so chmoding it cannot affect any CAS
+            // blob or another action's hardlink — unlike the hardlink path,
+            // where the shared read-only blob must never be chmod'd.
+            let mode = if executable { 0o555 } else { 0o444 };
+            fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
+                .await
+                .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
 
         self.file_copy_hits.fetch_add(1, Ordering::Relaxed);
         Ok(())
