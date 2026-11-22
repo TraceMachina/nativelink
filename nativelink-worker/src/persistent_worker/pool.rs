@@ -740,7 +740,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let pid_1 = &lease_1.worker().pid();
+        let pid_1 = &lease_1.worker().pid().expect("live worker has a PID");
         lease_1.release(true).await;
         assert_eq!(pool.live_workers(), 1);
 
@@ -759,7 +759,7 @@ mod tests {
             1,
             "Worker should have been reused across different instance_names but live_workers() != 1"
         );
-        let pid_2 = &lease_2.worker().pid();
+        let pid_2 = &lease_2.worker().pid().expect("live worker has a PID");
         lease_2.release(true).await;
 
         assert_eq!(
@@ -789,7 +789,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let pid_1 = &lease_1.worker().pid();
+        let pid_1 = &lease_1.worker().pid().expect("live worker has a PID");
         lease_1.release(true).await;
         assert_eq!(pool.live_workers(), 1);
 
@@ -808,7 +808,7 @@ mod tests {
             2,
             "Separate workers should be used for different instance_names but live_workers() != 2"
         );
-        let pid_2 = &lease_2.worker().pid();
+        let pid_2 = &lease_2.worker().pid().expect("live worker has a PID");
         lease_2.release(true).await;
 
         assert_ne!(
