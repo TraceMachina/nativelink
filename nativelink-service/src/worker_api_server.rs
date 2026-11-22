@@ -352,6 +352,8 @@ impl WorkerConnection {
             // exactly the stall.
             let (tx, mut rx) = mpsc::unbounded_channel();
             let reader_worker_id = instance.worker_id.clone();
+            let reader_scheduler = instance.scheduler.clone();
+            let reader_now_fn = instance.now_fn.clone();
             background_spawn!("worker_api_reader", async move {
                 while let Some(maybe_update) = connection.next().await {
                     let update = match maybe_update.map(|u| u.update) {
@@ -365,6 +367,14 @@ impl WorkerConnection {
                             break;
                         }
                     };
+                    // The worker is heard from now, whenever this message
+                    // gets processed: one queued behind a slow result must
+                    // not let the worker time out in the meantime.
+                    if let Ok(now) = reader_now_fn() {
+                        reader_scheduler
+                            .worker_message_received(&reader_worker_id, now.as_secs())
+                            .await;
+                    }
                     if tx.send(update).is_err() {
                         break;
                     }
