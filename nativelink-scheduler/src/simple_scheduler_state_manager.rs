@@ -46,8 +46,8 @@ use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PeerScheduler,
-    SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
+    PeerScheduler, SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
@@ -58,6 +58,17 @@ pub struct SweptAttempt {
     pub worker_id: WorkerId,
     pub reason: AttemptEndReason,
     pub detail: String,
+}
+
+/// What the worker scheduler knows of an executing operation's worker.
+#[derive(Debug, Clone)]
+pub enum OnWorker {
+    /// The worker runs it.
+    Running,
+    /// The worker no longer runs it, and no result of it is held.
+    NotRunning,
+    /// The worker sent this result and the store refused it.
+    ResultHeld(Box<ActionStage>),
 }
 
 /// What one executing sweep did.
@@ -74,6 +85,11 @@ pub struct ExecutingSweepReport {
     pub ages: AgeBuckets,
     /// The attempts it retired or requeued.
     pub ended: Vec<SweptAttempt>,
+    /// Held results it wrote, which completed their action.
+    pub results_written: Vec<(WorkerId, OperationId)>,
+    /// Held results the record had moved past (another worker took the
+    /// action, or it ended); there is nothing left to write them to.
+    pub results_stale: Vec<(WorkerId, OperationId)>,
 }
 
 /// Why the scheduler times out an executing action.
@@ -508,6 +524,19 @@ impl From<usize> for RetryLimits {
     }
 }
 
+/// The shortest gap between two judgements of elapsed time taken as a clock
+/// step. The matching pass judges every few seconds, so a longer gap is a
+/// step or a stalled process; shorter ones are left to the timeouts.
+const CLOCK_STEP_MIN: Duration = Duration::from_mins(10);
+
+/// The last time client keepalives were judged, and the end of a hold set by
+/// a forward clock step.
+#[derive(Debug)]
+struct ClientJudgement {
+    last: Option<SystemTime>,
+    held_until: Option<SystemTime>,
+}
+
 /// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
@@ -568,6 +597,10 @@ where
     // on this service.
     timeout_operation_mux: Mutex<()>,
 
+    /// When elapsed time was last judged, and until when a forward clock
+    /// step holds the judgement back (see `may_judge_elapsed`).
+    client_judgement: parking_lot::Mutex<ClientJudgement>,
+
     /// Weak reference to self.
     // We use a weak reference to reduce the risk of a memory leak from
     // future changes. If this becomes some kind of performance issue,
@@ -614,6 +647,11 @@ where
             client_action_timeout,
             max_executing_timeout,
             timeout_operation_mux: Mutex::new(()),
+            // Seeded here: a step before the first judgement is a step too.
+            client_judgement: parking_lot::Mutex::new(ClientJudgement {
+                last: Some((now_fn)().now()),
+                held_until: None,
+            }),
             weak_self: weak_self.clone(),
             now_fn,
             worker_registry,
@@ -653,15 +691,18 @@ where
     ///   moment between the store write of an assignment and the dispatch
     ///   that follows it. `lost_since` carries the first sighting between
     ///   sweeps and is pruned of actions no longer in that state.
+    /// - an action whose result the worker sent and the store refused, and
+    ///   which this scheduler still holds, gets that result written, so the
+    ///   action completes as it would have and is not run again.
     ///
     /// `running_on_worker` answers `None` for a worker this scheduler is not
-    /// connected to: a peer's worker, or one already gone, which the
-    /// timeout path handles. A record the listing names but cannot read is
-    /// skipped, so one bad entry does not stop the sweep.
+    /// connected to and holds no result of: a peer's worker, or one already
+    /// gone, which the timeout path handles. A record the listing names but
+    /// cannot read is skipped, so one bad entry does not stop the sweep.
     pub async fn sweep_executing_actions(
         &self,
         running_on_worker: &(
-             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<bool>> + Send + Sync
+             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<OnWorker>> + Send + Sync
          ),
         lost_since: &mut HashMap<OperationId, SystemTime>,
         lost_grace: Duration,
@@ -745,7 +786,43 @@ where
             {
                 continue;
             }
-            if running_on_worker(worker_id.clone(), operation_id.clone()).await == Some(false) {
+            let on_worker = running_on_worker(worker_id.clone(), operation_id.clone()).await;
+            if let Some(OnWorker::ResultHeld(stage)) = on_worker {
+                // The record is still the attempt the result came from, so
+                // the result completes it now as it would have then. A
+                // conflict means it has moved on, and the result with it.
+                match self
+                    .inner_update_operation(
+                        &operation_id,
+                        Some(worker_id),
+                        None,
+                        UpdateOperationType::UpdateWithActionStage(*stage),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        info!(
+                            %operation_id,
+                            ?worker_id,
+                            "Wrote a result the store had refused; the action is not run again"
+                        );
+                        report
+                            .results_written
+                            .push((worker_id.clone(), operation_id.clone()));
+                    }
+                    Err(err) if err.code == Code::Aborted => {
+                        report
+                            .results_stale
+                            .push((worker_id.clone(), operation_id.clone()));
+                    }
+                    Err(err) => {
+                        warn!(%operation_id, ?err, "Could not write a held result; the next sweep tries again");
+                        report.failed += 1;
+                    }
+                }
+                continue;
+            }
+            if matches!(on_worker, Some(OnWorker::NotRunning)) {
                 let first_seen = *lost_since.get(&operation_id).unwrap_or(&now);
                 if now
                     .duration_since(first_seen)
@@ -800,8 +877,35 @@ where
         Ok(report)
     }
 
+    /// Whether time measured on the clock may be judged at `now`: a client
+    /// keepalive older than `client_action_timeout`, or an executing action
+    /// past its `Action.timeout`. A forward step of the clock larger than
+    /// that timeout since the last judgement makes every keepalive and
+    /// every running action look old at once, while an attached client
+    /// refreshes only every `CLIENT_KEEPALIVE_DURATION`. After such a step
+    /// the judgement waits two of those, so attached clients refresh first
+    /// and only absent ones are retired, and no action fails for time it
+    /// never ran (F2).
+    fn may_judge_elapsed(&self, now: SystemTime) -> bool {
+        let mut judgement = self.client_judgement.lock();
+        let stepped = judgement
+            .last
+            .and_then(|last| now.duration_since(last).ok())
+            .is_some_and(|step| step > self.client_action_timeout.max(CLOCK_STEP_MIN));
+        judgement.last = Some(now);
+        if stepped {
+            judgement.held_until = Some(now + CLIENT_KEEPALIVE_DURATION * 2);
+            warn!(
+                timeout_secs = self.client_action_timeout.as_secs_f32(),
+                "The clock moved forward past the client timeout; holding timeouts until clients refresh"
+            );
+        }
+        judgement.held_until.is_none_or(|until| now >= until)
+    }
+
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
         let now = (self.now_fn)().now();
+        let may_judge_elapsed = self.may_judge_elapsed(now);
         let stream = self
             .action_db
             .get_range_of_actions(
@@ -844,7 +948,9 @@ where
             if !matches!(awaited_action.state().stage, ActionStage::Queued) {
                 continue;
             }
-            if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout >= now
+            if !may_judge_elapsed
+                || awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout
+                    >= now
             {
                 continue;
             }
@@ -1001,6 +1107,7 @@ where
                 .max(awaited_action.last_worker_updated_timestamp());
             if let Ok(elapsed) = now.duration_since(anchor)
                 && elapsed > action_timeout.saturating_add(self.no_event_action_timeout)
+                && self.may_judge_elapsed(now)
             {
                 return Some(TimeoutCause::ActionTimeout {
                     timeout: action_timeout,
@@ -1056,6 +1163,47 @@ where
         }
     }
 
+    /// A lookup by client operation id is a client asking for its action,
+    /// so the client is alive now: record that before the timeout predicate
+    /// judges the action abandoned. Without it, a client that came back
+    /// after a gap longer than `client_action_timeout` retired its own
+    /// action by asking for it (TRA-2340). The keepalive is persisted, so a
+    /// matching pass right after the rejoin sees it too; a finished action is
+    /// left as it is. A store that will not take the write leaves the record
+    /// unchanged and the predicate decides as before.
+    async fn refresh_client_keepalive(
+        &self,
+        subscriber: &T::Subscriber,
+    ) -> Result<AwaitedAction, Error> {
+        let mut awaited_action = subscriber.borrow().await?;
+        for attempt in 1..=MAX_UPDATE_RETRIES {
+            if awaited_action.state().stage.is_finished() {
+                return Ok(awaited_action);
+            }
+            awaited_action.update_client_keep_alive((self.now_fn)().now());
+            match self
+                .action_db
+                .update_awaited_action(awaited_action.clone())
+                .await
+            {
+                Ok(()) => return Ok(awaited_action),
+                Err(err) if err.code == Code::Aborted && attempt < MAX_UPDATE_RETRIES => {
+                    tokio::time::sleep(version_conflict_backoff(attempt)).await;
+                    awaited_action = subscriber.borrow().await?;
+                }
+                Err(err) => {
+                    warn!(
+                        operation_id = ?awaited_action.operation_id(),
+                        ?err,
+                        "Could not record a rejoining client's keepalive; judging the action on its stored keepalive"
+                    );
+                    break;
+                }
+            }
+        }
+        subscriber.borrow().await
+    }
+
     async fn apply_filter_predicate(
         &self,
         awaited_action: &AwaitedAction,
@@ -1068,7 +1216,9 @@ where
         let now = (self.now_fn)().now();
 
         // Check if client has timed out
-        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now {
+        if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout < now
+            && self.may_judge_elapsed(now)
+        {
             // This may change if the version is out of date.
             let mut timed_out = true;
             if !awaited_action.state().stage.is_finished() {
@@ -1774,8 +1924,8 @@ where
             let Some(subscriber) = maybe_subscriber else {
                 return Ok(Box::pin(stream::empty()));
             };
-            let awaited_action = subscriber
-                .borrow()
+            let awaited_action = self
+                .refresh_client_keepalive(&subscriber)
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
             if !self

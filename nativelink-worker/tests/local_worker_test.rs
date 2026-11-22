@@ -382,7 +382,9 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .await
             .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
     }
-    let running_action = Arc::new(MockRunningAction::new());
+    // The running action reports `do_not_cache`, as one created from an
+    // Action with `do_not_cache` set would.
+    let running_action = Arc::new(MockRunningAction::with_do_not_cache(true));
 
     // Send and wait for response from create_and_add_action to RunningActionsManager.
     test_context
@@ -397,11 +399,15 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (_stored_digest, _stored_result, digest_hasher) = test_context
+    let (_stored_digest, _stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(digest_hasher, DigestHasherFunc::Blake3);
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot
+    // be cached". The running action's flag must reach `cache_action_result`,
+    // which decides whether to write the Action Cache.
+    assert!(do_not_cache);
 
     Ok(())
 }
@@ -566,13 +572,14 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         .await?;
 
     // Expect the action to be updated in the action cache.
-    let (stored_digest, stored_result, digest_hasher) = test_context
+    let (stored_digest, stored_result, digest_hasher, do_not_cache) = test_context
         .actions_manager
         .expect_cache_action_result()
         .await;
     assert_eq!(stored_digest, action_digest);
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+    assert!(!do_not_cache);
     assert_eq!(
         test_context.client.going_away_count.load(Ordering::Relaxed),
         0
@@ -1057,6 +1064,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .with_context(ErrorContext::MissingDigest {
             hash: "0123456789abcdef".to_string(),
             size: 42,
+            digest_function: None,
         });
     running_action
         .expect_prepare_action(Err(missing_input.clone()))
@@ -1354,6 +1362,143 @@ async fn keepalive_reports_running_peaks() -> Result<(), Error> {
         sleep(Duration::from_millis(100)).await;
     }
     Err(make_err!(Code::DeadlineExceeded, "No keepalive was sent"))
+}
+
+/// Connects the test worker and answers its registration, so its keepalive
+/// task starts. Returns the scheduler's end of the stream.
+async fn connected_worker(
+    test_context: &mut TestContext,
+) -> Result<tokio::sync::mpsc::Sender<Frame<bytes::Bytes>>, Error> {
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    Ok(tx_stream)
+}
+
+/// When each of the first `sends` keepalives started, measured from the
+/// first, with the n-th send taking `send_times[n]` (later ones the last).
+/// The worker's timeout is 2 s, so it sends every second.
+async fn keepalive_starts(send_times: &[Duration], sends: usize) -> Result<Vec<Duration>, Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(2.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let client = test_context.client.clone();
+    client.keep_alives_succeed.store(true, Ordering::Release);
+    *client.keep_alive_send_times.lock().unwrap() = send_times.to_vec();
+    let _tx_stream = connected_worker(&mut test_context).await?;
+
+    while client.keep_alive_starts.lock().unwrap().len() < sends {
+        sleep(Duration::from_millis(250)).await;
+    }
+    let starts = client.keep_alive_starts.lock().unwrap().clone();
+    Ok(starts[..sends]
+        .iter()
+        .map(|&start| start - starts[0])
+        .collect())
+}
+
+/// Keepalives go out every half timeout, on a fixed grid from the first: a
+/// send that takes up to the interval does not push the next one later, so
+/// they never drift toward the scheduler's timeout.
+#[nativelink_test(start_paused = true)]
+async fn keepalives_stay_on_their_grid_when_each_send_is_slow() -> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    for send_time_ms in [0u64, 500, 999, 1_000] {
+        let starts = keepalive_starts(&[Duration::from_millis(send_time_ms)], 12).await?;
+        let grid: Vec<Duration> = (0..12u32).map(|nth| interval * nth).collect();
+        assert_eq!(
+            starts, grid,
+            "each send {send_time_ms} ms: keepalives left the grid"
+        );
+    }
+    Ok(())
+}
+
+/// One send that takes three and a half intervals, among fast ones. The
+/// next keepalive goes the moment it ends, the ticks it missed are dropped
+/// rather than fired one after another, and the rest are back on the grid.
+#[nativelink_test(start_paused = true)]
+async fn after_one_slow_keepalive_the_next_goes_at_once_and_the_rest_keep_the_grid()
+-> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    let slow = interval * 7 / 2;
+    let starts =
+        keepalive_starts(&[Duration::ZERO, Duration::ZERO, slow, Duration::ZERO], 8).await?;
+    // The third send starts at 2 s and ends at 5.5 s; the ticks at 3, 4 and
+    // 5 s are missed. Fired in a burst they would all start at 5.5 s; on a
+    // grid restarted from the late one they would start at 6.5, 7.5 s.
+    let expected: Vec<Duration> = [0, 1_000, 2_000, 5_500, 6_000, 7_000, 8_000, 9_000]
+        .into_iter()
+        .map(Duration::from_millis)
+        .collect();
+    assert_eq!(starts, expected);
+    Ok(())
+}
+
+/// A keepalive task that fails or panics is this worker's failure: the
+/// connection ends, the running actions are killed, and the worker
+/// registers again, rather than running on without keepalives until the
+/// scheduler evicts it.
+#[nativelink_test]
+async fn a_failed_or_panicking_keepalive_ends_the_connection_and_the_worker_reconnects()
+-> Result<(), Error> {
+    for panics in [false, true] {
+        let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+            platform_properties: HashMap::new(),
+            worker_api_endpoint: EndpointConfig {
+                timeout: Some(0.2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await;
+        // Without a panic the second keepalive fails.
+        test_context
+            .client
+            .keep_alive_panics
+            .store(panics, Ordering::Release);
+        let _tx_stream = connected_worker(&mut test_context).await?;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            test_context.actions_manager.expect_kill_all().await;
+            let (tx_stream2, streaming_response2) = setup_grpc_stream();
+            test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response2))
+                .await;
+            drop(tx_stream2);
+        })
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "panics={panics}: the worker did not end the connection and register again"
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// A keepalive that never completes does not end the connection by itself:

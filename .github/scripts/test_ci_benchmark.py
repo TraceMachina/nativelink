@@ -17,7 +17,6 @@ from unittest.mock import patch
 import benchmark_credentials
 import ci_benchmark
 import cluster_ci
-import cluster_credentials
 
 
 class BenchmarkTest(unittest.TestCase):
@@ -34,8 +33,7 @@ class BenchmarkTest(unittest.TestCase):
         cluster_job = workflow.split('  cluster:', 1)[1]
         for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
             self.assertNotIn(hosted_build, cluster_job)
-        # Once for the primary lane and once for the optional AWS lane.
-        self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 2)
+        self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
         self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
         self.assertNotIn('flock -n', cluster_ci.BOOTSTRAP)
@@ -201,37 +199,35 @@ class BenchmarkTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 cluster_ci.payload({**env, **change}, 3)
 
-    def test_aws_lane_is_optional_and_uses_only_short_lived_credentials(self):
+    def test_cluster_lane_runs_on_aws_with_only_short_lived_credentials(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
-        primary, aws_job = workflow.split('  cluster:', 1)[1].split('  cluster-aws:', 1)
-        # The primary lane is unchanged: it neither waits for nor depends on AWS.
-        for setting in ('NL_EKS_CLUSTER', 'configure-aws-credentials', 'cluster-ci-aws', 'continue-on-error'):
-            self.assertNotIn(setting, primary.split('\n  # The same build on the AWS deployment')[0])
-        self.assertIn('environment: cluster-ci-aws', aws_job)
-        self.assertIn('continue-on-error: true', aws_job)
-        self.assertIn("vars.NL_AWS_LANE == 'true'", aws_job)
-        # Reviewed code only: a pushed branch is built by the primary lane.
-        self.assertIn("github.ref == 'refs/heads/main'", aws_job)
-        self.assertNotIn('startsWith(github.ref', aws_job)
-        self.assertIn('id-token: write', aws_job)
+        job = workflow.split('  cluster:', 1)[1]
+        # One cluster lane, on the AWS deployment, for every repository branch.
+        self.assertNotIn('  cluster-aws:', workflow)
+        self.assertIn('environment: cluster-ci-aws', job)
+        self.assertIn('name: NativeLink / Linux\n', job)
+        self.assertIn("startsWith(github.ref, 'refs/heads/')", job)
+        for removed in ('continue-on-error', 'NL_AWS_LANE', 'cluster-ci-benchmark'):
+            self.assertNotIn(removed, workflow)
+        self.assertIn('id-token: write', job)
         # The log of this public repository shows a variable and masks a
         # secret, so what locates the deployment is read from secrets.
         for located in ('NL_AWS_DISPATCH_ROLE_ARN', 'NL_GKE_SERVER', 'NL_GKE_CA_DATA'):
-            self.assertIn('${{ secrets.%s }}' % located, aws_job)
-            self.assertNotIn('vars.%s ' % located, aws_job)
-        self.assertIn('mask-aws-account-id: true', aws_job)
-        self.assertRegex(aws_job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
+            self.assertIn('${{ secrets.%s }}' % located, job)
+            self.assertNotIn('vars.%s ' % located, job)
+        self.assertIn('mask-aws-account-id: true', job)
+        self.assertRegex(job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
         # The result is read with a new token after the build, so the
         # credentials must outlast the job.
-        session = int(re.search(r'role-duration-seconds: (\d+)', aws_job).group(1))
-        limit = int(re.search(r'timeout-minutes: (\d+)', aws_job).group(1))
+        session = int(re.search(r'role-duration-seconds: (\d+)', job).group(1))
+        limit = int(re.search(r'timeout-minutes: (\d+)', job).group(1))
         self.assertGreater(session, limit * 60)
         for stored_key in ('aws-access-key-id', 'aws-secret-access-key', 'AWS_SECRET_ACCESS_KEY'):
             self.assertNotIn(stored_key, workflow)
-        self.assertNotIn('NL_GCP_', aws_job)
+        self.assertNotIn('NL_GCP_', workflow)
         # The Bazel client by its own name: the Nix lane has a client of its own.
-        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}', aws_job)
-        self.assertIn('name: cluster-ci-aws', aws_job)
+        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}', job)
+        self.assertIn('name: cluster-ci\n', job)
 
     def test_eks_tokens_come_from_the_job_role_and_stay_out_of_kubeconfig(self):
         env = {'NL_EKS_CLUSTER': 'ci-acceleration', 'NL_AWS_REGION': 'us-east-2',
@@ -249,37 +245,10 @@ class BenchmarkTest(unittest.TestCase):
         for change in ({'NL_EKS_CLUSTER': 'ci; rm -rf /'}, {'NL_AWS_REGION': 'us-east-2 --profile x'}):
             with self.assertRaises(ValueError):
                 cluster_ci.kubeconfig({**env, **change})
-        # Without an EKS cluster name the original federation plugin is used.
+        # Without an EKS cluster there is no way to a token.
         del env['NL_EKS_CLUSTER']
-        self.assertEqual(cluster_ci.kubeconfig(env)['users'][0]['user']['exec']['command'], sys.executable)
-
-    def test_federation_keeps_tokens_out_of_kubeconfig(self):
-        env = {'NL_GCP_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/ci/providers/github',
-               'NL_GCP_SERVICE_ACCOUNT': 'ci-test@example.iam.gserviceaccount.com',
-               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://example.actions.githubusercontent.com/token?x=1',
-               'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'request-secret', 'NL_GKE_SERVER': 'https://cluster.example',
-               'NL_GKE_CA_DATA': 'public-ca', 'NL_GKE_NAMESPACE': 'test'}
-        responses = [{'value': 'identity-secret'}, {'access_token': 'sts-secret'},
-                     {'accessToken': 'short-lived-secret', 'expireTime': '2026-10-22T23:00:00Z'}]
-        with patch.object(cluster_credentials, 'request_json', side_effect=responses) as request:
-            result = cluster_credentials.credential(env)
-        self.assertEqual(result['status']['token'], 'short-lived-secret')
-        self.assertIn('audience=', request.call_args_list[0].args[0])
-        self.assertEqual(request.call_args_list[1].args[2]['subjectToken'], 'identity-secret')
-        self.assertIn('https://www.googleapis.com/auth/userinfo.email',
-                      request.call_args_list[2].args[2]['scope'])
-        config = json.dumps(cluster_ci.kubeconfig(env))
-        for secret in ('request-secret', 'identity-secret', 'sts-secret', 'short-lived-secret'):
-            self.assertNotIn(secret, config)
-        self.assertNotIn('token', cluster_ci.kubeconfig(env)['users'][0]['user'])
-
-    def test_oidc_rejects_untrusted_token_destinations(self):
-        env = {'NL_GCP_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/ci/providers/github',
-               'NL_GCP_SERVICE_ACCOUNT': 'ci-test@example.iam.gserviceaccount.com',
-               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://evil.example/token'}
-        with patch.object(cluster_credentials, 'request_json') as request, self.assertRaises(ValueError):
-            cluster_credentials.credential(env)
-        request.assert_not_called()
+        with self.assertRaises(ValueError):
+            cluster_ci.kubeconfig(env)
 
     def test_total_reuse_counts_local_hits_once_and_uses_spawn_outcomes(self):
         # One action may spawn multiple processes; total-internal is not a
