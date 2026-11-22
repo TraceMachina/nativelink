@@ -29,7 +29,7 @@ use crate::actions::Action;
 use crate::checker::{Facts, Invariant, Violation, check, verdict};
 use crate::clock::SimClock;
 use crate::net::Link;
-use crate::trace::{Event, Outcome, Record, Trace, render};
+use crate::trace::{Event, Outcome, Record, Rejoin, Trace, render};
 use crate::world::{Backend, WorkerSpec, World};
 
 /// One thing that happens at a point of the timeline.
@@ -48,6 +48,13 @@ pub enum Step {
     /// Client `op` drops its stream and does not come back.
     ClientGone {
         op: String,
+    },
+    /// Client `op` drops its stream and comes back `for_ms` later `via`
+    /// `WaitExecution` or a new `Execute` of the same action.
+    ClientAway {
+        op: String,
+        for_ms: u64,
+        via: Rejoin,
     },
     AddWorkers {
         count: usize,
@@ -117,6 +124,14 @@ impl Step {
         Self::ClientGone { op: op.to_string() }
     }
 
+    pub fn client_away(op: &str, for_ms: u64, via: Rejoin) -> Self {
+        Self::ClientAway {
+            op: op.to_string(),
+            for_ms,
+            via,
+        }
+    }
+
     pub const fn add_workers(count: usize, spec: WorkerSpec) -> Self {
         Self::AddWorkers { count, spec }
     }
@@ -167,6 +182,9 @@ impl Step {
             }
             Self::ExecuteSame { op, of } => format!("Step::execute_same({op:?}, {of:?})"),
             Self::ClientGone { op } => format!("Step::client_gone({op:?})"),
+            Self::ClientAway { op, for_ms, via } => {
+                format!("Step::client_away({op:?}, {for_ms}, Rejoin::{via:?})")
+            }
             Self::AddWorkers { count, spec } => format!(
                 "Step::add_workers({count}, WorkerSpec::default().max_inflight({}))",
                 spec.max_inflight
@@ -233,7 +251,7 @@ pub struct Scenario {
     name: String,
     seed: u64,
     backends: Vec<Backend>,
-    /// Applied in order to the default `SimpleSpec`; the spec itself is not
+    /// Applied in order to `SimpleSpec::from_config_defaults()`; the spec is not
     /// `Clone`.
     spec_edits: Vec<SpecEdit>,
     steps: Vec<(u64, Step)>,
@@ -298,7 +316,10 @@ impl Scenario {
     }
 
     fn make_spec(&self) -> SimpleSpec {
-        let mut spec = SimpleSpec::default();
+        // An empty config section's spec, so the simulated scheduler runs
+        // the executing sweep and the fallback matching pass as production
+        // does; `Default` alone leaves both off.
+        let mut spec = SimpleSpec::from_config_defaults();
         for edit in &self.spec_edits {
             edit(&mut spec);
         }
@@ -713,6 +734,9 @@ async fn apply(world: &mut World, step: &Step) -> Result<(), Error> {
             world.execute(op, &action).await?;
         }
         Step::ClientGone { op } => world.client_gone(op),
+        Step::ClientAway { op, for_ms, via } => {
+            world.client_away(op, Duration::from_millis(*for_ms), *via);
+        }
         Step::AddWorkers { count, spec } => world.add_workers(*count, spec),
         Step::KillWorker { worker } => world.kill_worker(*worker),
         Step::CutWorker { worker } => {

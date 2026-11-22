@@ -1364,6 +1364,143 @@ async fn keepalive_reports_running_peaks() -> Result<(), Error> {
     Err(make_err!(Code::DeadlineExceeded, "No keepalive was sent"))
 }
 
+/// Connects the test worker and answers its registration, so its keepalive
+/// task starts. Returns the scheduler's end of the stream.
+async fn connected_worker(
+    test_context: &mut TestContext,
+) -> Result<tokio::sync::mpsc::Sender<Frame<bytes::Bytes>>, Error> {
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    Ok(tx_stream)
+}
+
+/// When each of the first `sends` keepalives started, measured from the
+/// first, with the n-th send taking `send_times[n]` (later ones the last).
+/// The worker's timeout is 2 s, so it sends every second.
+async fn keepalive_starts(send_times: &[Duration], sends: usize) -> Result<Vec<Duration>, Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(2.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let client = test_context.client.clone();
+    client.keep_alives_succeed.store(true, Ordering::Release);
+    *client.keep_alive_send_times.lock().unwrap() = send_times.to_vec();
+    let _tx_stream = connected_worker(&mut test_context).await?;
+
+    while client.keep_alive_starts.lock().unwrap().len() < sends {
+        sleep(Duration::from_millis(250)).await;
+    }
+    let starts = client.keep_alive_starts.lock().unwrap().clone();
+    Ok(starts[..sends]
+        .iter()
+        .map(|&start| start - starts[0])
+        .collect())
+}
+
+/// Keepalives go out every half timeout, on a fixed grid from the first: a
+/// send that takes up to the interval does not push the next one later, so
+/// they never drift toward the scheduler's timeout.
+#[nativelink_test(start_paused = true)]
+async fn keepalives_stay_on_their_grid_when_each_send_is_slow() -> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    for send_time_ms in [0u64, 500, 999, 1_000] {
+        let starts = keepalive_starts(&[Duration::from_millis(send_time_ms)], 12).await?;
+        let grid: Vec<Duration> = (0..12u32).map(|nth| interval * nth).collect();
+        assert_eq!(
+            starts, grid,
+            "each send {send_time_ms} ms: keepalives left the grid"
+        );
+    }
+    Ok(())
+}
+
+/// One send that takes three and a half intervals, among fast ones. The
+/// next keepalive goes the moment it ends, the ticks it missed are dropped
+/// rather than fired one after another, and the rest are back on the grid.
+#[nativelink_test(start_paused = true)]
+async fn after_one_slow_keepalive_the_next_goes_at_once_and_the_rest_keep_the_grid()
+-> Result<(), Error> {
+    let interval = Duration::from_secs(1);
+    let slow = interval * 7 / 2;
+    let starts =
+        keepalive_starts(&[Duration::ZERO, Duration::ZERO, slow, Duration::ZERO], 8).await?;
+    // The third send starts at 2 s and ends at 5.5 s; the ticks at 3, 4 and
+    // 5 s are missed. Fired in a burst they would all start at 5.5 s; on a
+    // grid restarted from the late one they would start at 6.5, 7.5 s.
+    let expected: Vec<Duration> = [0, 1_000, 2_000, 5_500, 6_000, 7_000, 8_000, 9_000]
+        .into_iter()
+        .map(Duration::from_millis)
+        .collect();
+    assert_eq!(starts, expected);
+    Ok(())
+}
+
+/// A keepalive task that fails or panics is this worker's failure: the
+/// connection ends, the running actions are killed, and the worker
+/// registers again, rather than running on without keepalives until the
+/// scheduler evicts it.
+#[nativelink_test]
+async fn a_failed_or_panicking_keepalive_ends_the_connection_and_the_worker_reconnects()
+-> Result<(), Error> {
+    for panics in [false, true] {
+        let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+            platform_properties: HashMap::new(),
+            worker_api_endpoint: EndpointConfig {
+                timeout: Some(0.2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await;
+        // Without a panic the second keepalive fails.
+        test_context
+            .client
+            .keep_alive_panics
+            .store(panics, Ordering::Release);
+        let _tx_stream = connected_worker(&mut test_context).await?;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            test_context.actions_manager.expect_kill_all().await;
+            let (tx_stream2, streaming_response2) = setup_grpc_stream();
+            test_context
+                .client
+                .expect_connect_worker(Ok(streaming_response2))
+                .await;
+            drop(tx_stream2);
+        })
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "panics={panics}: the worker did not end the connection and register again"
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// A keepalive that never completes does not end the connection by itself:
 /// a send waits behind whatever the scheduler is still processing, and the
 /// scheduler's liveness timeout is the clock. When the scheduler closes the

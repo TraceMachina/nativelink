@@ -573,6 +573,19 @@ pub fn decode_key<'a>(
     }
 }
 
+/// A change notice goes out after the write it announces has landed. When
+/// it fails the write still stands, so the failure is logged rather than
+/// returned: a caller told its write failed treats a stored update as lost
+/// (the scheduler would never send a worker the action it had just marked
+/// Executing), while subscribers read the change on their next poll anyway.
+fn warn_publish_failed(key: &str, err: &RedisError) {
+    warn!(
+        %key,
+        ?err,
+        "Could not publish a change notice; subscribers see the change on their next poll"
+    );
+}
+
 impl<C, M> RedisStore<C, M>
 where
     C: ConnectionLike + Clone + Sync,
@@ -1372,11 +1385,13 @@ where
         }
 
         // If we have a publish channel configured, send a notice that the key has been set.
-        if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            client
+        if let Some(pub_sub_channel) = &self.pub_sub_channel
+            && let Err(err) = client
                 .connection_manager
                 .publish::<_, _, ()>(pub_sub_channel, final_key)
-                .await?;
+                .await
+        {
+            warn_publish_failed(final_key, &err);
         }
 
         Ok(blob_len.try_into().unwrap_or(0))
@@ -2935,11 +2950,13 @@ where
                 "Updated redis key to new version"
             );
             // If we have a publish channel configured, send a notice that the key has been set.
-            if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client
+            if let Some(pub_sub_channel) = &self.pub_sub_channel
+                && let Err(err) = client
                     .connection_manager
-                    .publish(pub_sub_channel, redis_key.as_ref())
-                    .await?);
+                    .publish::<_, _, ()>(pub_sub_channel, redis_key.as_ref())
+                    .await
+            {
+                warn_publish_failed(redis_key.as_ref(), &err);
             }
             Ok(Some(new_version))
         } else {
@@ -3004,11 +3021,13 @@ where
                 }
             }
             // If we have a publish channel configured, send a notice that the key has been set.
-            if let Some(pub_sub_channel) = &self.pub_sub_channel {
-                return Ok(client
+            if let Some(pub_sub_channel) = &self.pub_sub_channel
+                && let Err(err) = client
                     .connection_manager
-                    .publish(pub_sub_channel, redis_key.as_ref())
-                    .await?);
+                    .publish::<_, _, ()>(pub_sub_channel, redis_key.as_ref())
+                    .await
+            {
+                warn_publish_failed(redis_key.as_ref(), &err);
             }
             Ok(Some(0)) // Always use "0" version since this is not a versioned request.
         }
