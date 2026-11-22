@@ -10,11 +10,9 @@ on:
     workflows: [CI / NativeLink, CI / Nix]
     types: [in_progress, completed]
 
+# New jobs get read-only access unless they explicitly request more.
 permissions:
-  contents: write # create an immutable branch for an allowlisted fork revision
-  actions: write # dispatch the two existing branch workflows
-  pull-requests: read
-  statuses: write
+  contents: read
 
 # Serialize updates for the same commit. Every update reads the current API
 # state, so a late event cannot restore a superseded build's success.
@@ -33,6 +31,11 @@ jobs:
     name: Report trusted build results
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write # create an immutable branch for an allowlisted fork revision
+      actions: write # dispatch the two existing branch workflows
+      pull-requests: read
+      statuses: write # report the trusted builds on the PR commit
     steps:
       - name: Check out trusted status reporter
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

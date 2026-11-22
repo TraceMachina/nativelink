@@ -294,6 +294,18 @@ class TrustedBuildsTest(unittest.TestCase):
 
 
 class ApiTest(unittest.TestCase):
+    def test_status_reporter_scopes_write_permissions_to_its_job(self):
+        workflow = Path('.github/workflows/trusted-build-status.yaml').read_text()
+        defaults, jobs = workflow.split('\njobs:\n', 1)
+        # Future jobs must not inherit the coordinator's write permissions.
+        self.assertIn('\npermissions:\n  contents: read\n', defaults)
+        self.assertNotIn(': write', defaults)
+        report = jobs.split('  report:\n', 1)[1]
+        permissions = report.split('    permissions:\n', 1)[1].split('    steps:\n', 1)[0]
+        grants = {line.split('#', 1)[0].strip() for line in permissions.splitlines()}
+        self.assertEqual(grants, {'contents: write', 'actions: write',
+                                  'pull-requests: read', 'statuses: write'})
+
     def test_dispatch_accepts_githubs_empty_204_response(self):
         with patch.object(ci.subprocess, 'run', return_value=SimpleNamespace(stdout='')) as call:
             self.assertIsNone(ci.api('actions/workflows/nix.yaml/dispatches',
