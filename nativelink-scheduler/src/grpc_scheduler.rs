@@ -52,6 +52,8 @@ use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 struct GrpcActionStateResult {
     client_operation_id: OperationId,
     rx: watch::Receiver<Arc<ActionState>>,
+    /// Why the upstream's stream ended, when it ended with an error.
+    ended_by: Arc<Mutex<Option<Error>>>,
 }
 
 #[async_trait]
@@ -65,10 +67,24 @@ impl ActionStateResult for GrpcActionStateResult {
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
-        self.rx.changed().await.map_err(|e| {
-            Error::from_std_err(Code::Internal, &e)
-                .append("Channel closed in GrpcActionStateResult::changed")
-        })?;
+        // The channel closes when the upstream's stream ends, which before
+        // the operation finishes means the upstream scheduler went away. That
+        // is `Unavailable`, so the client retries; `Internal` it would not.
+        if self.rx.changed().await.is_err() {
+            let err = make_err!(
+                Code::Unavailable,
+                "The upstream scheduler's stream ended before the operation finished"
+            );
+            let upstream = self.ended_by.lock().take();
+            return Err(match upstream {
+                Some(upstream) => err.append(format!(
+                    "upstream: {:?}: {}",
+                    upstream.code,
+                    upstream.message_string()
+                )),
+                None => err,
+            });
+        }
         let mut action_state = self.rx.borrow().clone();
         Arc::make_mut(&mut action_state).client_operation_id = self.client_operation_id.clone();
         // TODO(palfrey) We currently don't support OriginMetadata in this implementation, but
@@ -177,6 +193,8 @@ impl GrpcScheduler {
                     .err_tip(|| "In GrpcScheduler::stream_state")?;
             let (tx, mut rx) = watch::channel(Arc::new(action_state));
             rx.mark_changed();
+            let ended_by = Arc::new(Mutex::new(None));
+            let stream_ended_by = ended_by.clone();
             background_spawn!("grpc_scheduler_stream_state", async move {
                 loop {
                     select!(
@@ -188,9 +206,14 @@ impl GrpcScheduler {
                         }
                         response = result_stream.message() => {
                             // When the upstream closes the channel, close the
-                            // downstream too.
-                            let Ok(Some(response)) = response else {
-                                return;
+                            // downstream too, saying why if it said.
+                            let response = match response {
+                                Ok(Some(response)) => response,
+                                Ok(None) => return,
+                                Err(status) => {
+                                    *stream_ended_by.lock() = Some(status.into());
+                                    return;
+                                }
                             };
                             let maybe_action_state = ActionState::try_from_operation(response, operation_id.clone());
                             match maybe_action_state {
@@ -218,11 +241,13 @@ impl GrpcScheduler {
             return Ok(Box::new(GrpcActionStateResult {
                 client_operation_id,
                 rx,
+                ended_by,
             }));
         }
+        // Closed before its first message: the upstream went away.
         Err(make_err!(
-            Code::Internal,
-            "Upstream scheduler didn't accept action."
+            Code::Unavailable,
+            "Upstream scheduler closed the stream before answering"
         ))
     }
 
@@ -288,6 +313,11 @@ impl GrpcScheduler {
                 .digest_function()
                 .proto_digest_func()
                 .into(),
+            // Hints only (REAPI v2.9), and not carried in `ActionInfo`, so a
+            // forwarded request does not ask the upstream to inline outputs.
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {

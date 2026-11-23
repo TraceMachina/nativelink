@@ -71,7 +71,27 @@ message KeepAliveRequest {
 message RunningOperations {
     repeated string operation_ids = 1;
 
-    reserved 2; // NextId.
+    /// The most memory the worker has sampled for each running operation
+    /// so far, in KiB. Lets the scheduler tell, if the worker is lost, which
+    /// of its actions grew past its reservation: one reported above it is
+    /// given a larger reservation on that loss. The report is only as fresh
+    /// as the keepalive, sent every half of the worker API timeout (2.5 s by
+    /// default); growth that outruns it, or a worker that does not report,
+    /// leaves the scheduler to its repeated-loss rule instead. Only sampled
+    /// operations appear.
+    repeated OperationMemory memory = 2;
+
+    reserved 3; // NextId.
+}
+
+/// One running operation's sampled memory.
+message OperationMemory {
+    string operation_id = 1;
+
+    /// The highest figure the sampler has read for the operation so far.
+    uint64 peak_memory_kb = 2;
+
+    reserved 3; // NextId.
 }
 
 /// Request object for going away requests.
@@ -100,8 +120,8 @@ message ConnectWorkerRequest {
     repeated build.bazel.remote.execution.v2.Platform.Property properties = 1;
 
     /// Prefix to use for worker IDs. This is primarily used for debugging
-    /// or for other systems to identify workers. The scheduler will always
-    /// append this prefix to the assigned worker_id followed by a UUIDv6.
+    /// or for other systems to identify workers. When `worker_id` is empty,
+    /// the scheduler names the worker this prefix followed by a UUIDv6.
     string worker_id_prefix = 2;
 
     /// Maximum number of inflight tasks this worker can cope with at one time
@@ -114,7 +134,12 @@ message ConnectWorkerRequest {
     /// (false) from older workers.
     bool admits_when_idle = 4;
 
-    reserved 5; // NextId.
+    /// The id the worker chose for itself, kept across reconnects for the
+    /// life of the process. The scheduler uses it as given; empty (an older
+    /// worker) and the scheduler names the worker from `worker_id_prefix`.
+    string worker_id = 5;
+
+    reserved 6; // NextId.
 }
 
 /// The result of an ExecutionRequest.
@@ -236,7 +261,14 @@ message ActionResourceUsage {
     /// An output directory counts its tree digest, not its contents.
     uint64 output_bytes = 15;
 
-    reserved 16; // NextId.
+    /// Peak device memory the action held on its GPU, in KiB, as measured
+    /// by whatever wraps the action and reported through the side channel
+    /// file. The worker does not read a device itself. Zero when nothing
+    /// measured it, which is every action on a worker without a wrapper
+    /// that does.
+    uint64 peak_gpu_memory_kb = 16;
+
+    reserved 17; // NextId.
 }
 
 /// Why one attempt at an action ended without the result it was run for.
@@ -351,6 +383,15 @@ message ExecuteDeclined {
     reserved 6; // NextId.
 }
 
+/// The scheduler has the result the worker sent for this operation: it
+/// applied it, or the operation is no longer the worker's. The worker need
+/// not send it again. Sent only to a worker that named itself
+/// (`ConnectWorkerRequest.worker_id`); an older worker does not know it.
+message ExecuteResultAccepted {
+    string operation_id = 1;
+    reserved 2; // NextId.
+}
+
 /// Request to kill a running operation sent from the scheduler to a worker.
 message KillOperationRequest {
     /// The the operation id for the operation to be killed.
@@ -381,8 +422,11 @@ message UpdateForWorker {
 
         /// Instructs the worker to kill a specific running operation.
         KillOperationRequest kill_operation_request = 5;
+
+        /// The scheduler has the result of an operation.
+        ExecuteResultAccepted execute_result_accepted = 6;
     }
-    reserved 6; // NextId.
+    reserved 7; // NextId.
 }
 
 /// Communication from the worker to the scheduler.

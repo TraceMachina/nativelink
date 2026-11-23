@@ -132,6 +132,7 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
             action_digest: None,
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .await;
 
@@ -141,6 +142,9 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
                 response_err.message(),
                 "'instance_name' not configured for 'foo' : Failed on execute() command"
             );
+            // A bad argument, not a server fault: clients such as Bazel
+            // retry INTERNAL but fail fast on INVALID_ARGUMENT.
+            assert_eq!(response_err.code(), TonicCode::InvalidArgument);
         }
         Ok(_) => {
             panic!("Not expecting ok!");
@@ -513,6 +517,7 @@ fn make_execute_request(action_digest: DigestInfo) -> ExecuteRequest {
         action_digest: Some(action_digest.into()),
         execution_policy: None,
         results_cache_policy: None,
+        ..Default::default()
     }
 }
 
@@ -699,6 +704,94 @@ async fn execute_missing_command_returns_precondition_failure()
     assert_eq!(pf.violations[0].r#type, "MISSING");
     assert_eq!(pf.violations[0].subject, blob_subject(&command_digest));
     assert_eq!(pf.violations[0].description, "Action.command_digest");
+    Ok(())
+}
+
+// REv2 (remote_execution.proto, Execution.Execute): the MISSING subject is
+// `blobs/{digest_function/}{hash}/{size}`, and the digest function may only
+// be omitted for MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512 or VSO. A BLAKE3
+// hash has the same length as a SHA256 one, so leaving it out would tell
+// the client to upload a SHA256 blob.
+#[nativelink_test]
+async fn execute_missing_blake3_command_names_the_digest_function()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    let command_digest = make_fake_digest(0xc2, 8);
+    let input_root_digest = serialize_and_upload_message(
+        &Action::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Blake3.hasher(),
+    )
+    .await?;
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = serialize_and_upload_message(
+        &action,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Blake3.hasher(),
+    )
+    .await?;
+
+    let mut request = make_execute_request(action_digest);
+    request.digest_function = digest_function::Value::Blake3.into();
+    let Err(status) = execution_server.execute(Request::new(request)).await else {
+        panic!("execute should fail when command_digest is missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 1);
+    assert_eq!(
+        pf.violations[0].subject,
+        format!(
+            "blobs/blake3/{}/{}",
+            command_digest.packed_hash(),
+            command_digest.size_bytes()
+        ),
+    );
+    Ok(())
+}
+
+// REAPI `Action.timeout` is a `google.protobuf.Duration`. A negative field, or
+// `nanos` outside 0..1e9, is malformed: the server must reject it rather than
+// read it as a huge timeout. `seconds: -1, nanos: -1` used to panic.
+#[nativelink_test]
+async fn execute_malformed_timeout_returns_invalid_argument()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    // An empty message decodes as both an empty Command and an empty Directory.
+    let empty_digest = upload_action(&cas_store, &Action::default()).await?;
+
+    for (seconds, nanos) in [(-1, -1), (-5, 0), (0, -1), (1, 1_000_000_000)] {
+        let action = Action {
+            command_digest: Some(empty_digest.into()),
+            input_root_digest: Some(empty_digest.into()),
+            timeout: Some(prost_types::Duration { seconds, nanos }),
+            ..Default::default()
+        };
+        let action_digest = upload_action(&cas_store, &action).await?;
+
+        let Err(status) = execution_server
+            .execute(Request::new(make_execute_request(action_digest)))
+            .await
+        else {
+            panic!("execute should reject timeout {seconds}s {nanos}ns");
+        };
+        assert_eq!(
+            status.code(),
+            TonicCode::InvalidArgument,
+            "timeout {seconds}s {nanos}ns: {status:?}",
+        );
+    }
     Ok(())
 }
 
@@ -937,6 +1030,7 @@ async fn missing_input_drops_the_blob_from_the_existence_cache()
     error.context = ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
         size: 3,
+        digest_function: None,
     };
     let failed = Arc::new(ActionState {
         client_operation_id: OperationId::from("some_operation_id"),

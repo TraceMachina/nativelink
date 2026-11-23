@@ -7303,6 +7303,148 @@ exit 1
         Ok(())
     }
 
+    /// The worker reads no device. A wrapper that measured what the action
+    /// held on its GPU says so in the side channel file, and the figure
+    /// travels to the scheduler in the action's resource usage, beside the
+    /// memory and disk the worker sampled itself.
+    #[cfg(target_family = "unix")]
+    #[cfg_attr(feature = "nix", ignore)]
+    #[nativelink_test]
+    async fn entrypoint_reports_gpu_memory_via_side_channel()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const TEST_WRAPPER_SCRIPT_CONTENT: &str = "\
+#!/bin/bash
+echo '{\"peak_gpu_memory_kb\": 5242880}' > \"$SIDE_CHANNEL_FILE\"
+exec \"$@\"
+";
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let test_wrapper_script = {
+            let test_wrapper_dir = make_temp_path("wrapper_dir");
+            fs::create_dir_all(&test_wrapper_dir).await?;
+            let test_wrapper_script = OsString::from(test_wrapper_dir + "/test_wrapper_script.sh");
+            {
+                let mut file_options = std::fs::OpenOptions::new();
+                file_options.create(true);
+                file_options.truncate(true);
+                file_options.write(true);
+                file_options.mode(0o777);
+                let mut test_wrapper_script_handle = file_options
+                    .open(OsString::from(&test_wrapper_script))
+                    .unwrap();
+                test_wrapper_script_handle
+                    .write_all(TEST_WRAPPER_SCRIPT_CONTENT.as_bytes())
+                    .unwrap();
+                test_wrapper_script_handle.sync_all().unwrap();
+                // See `entrypoint_sends_timeout_via_side_channel`.
+                std::process::Command::new("sync").output().unwrap();
+            }
+            test_wrapper_script
+        };
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
+                    persistent_workers: PersistentWorkersSettings::default(),
+                    max_captured_output_bytes: 0,
+                    resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
+                    buck2_file_capture: None,
+                    entrypoint: Some(test_wrapper_script.into_string().unwrap()),
+                    additional_environment: Some(HashMap::from([(
+                        "SIDE_CHANNEL_FILE".to_string(),
+                        EnvironmentSource::SideChannelFile,
+                    )])),
+                },
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .clone()
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: Some(make_system_time(1000).into()),
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(result.exit_code, 0, "the wrapped command ran: {result:?}");
+        assert!(result.error.is_none(), "a report is not a failure");
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(usage.peak_gpu_memory_kb, 5_242_880, "{usage:?}");
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn caches_results_in_action_cache_store() -> Result<(), Box<dyn core::error::Error>> {
         let (_, _, cas_store, ac_store) = setup_stores().await?;
@@ -7371,7 +7513,12 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         let retrieved_result =
@@ -7453,7 +7600,12 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         let retrieved_result =
@@ -7462,6 +7614,220 @@ exit 1
 
         let proto_result: ProtoActionResult = action_result.try_into()?;
         assert_eq!(proto_result, retrieved_result);
+
+        Ok(())
+    }
+
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot be
+    // cached". The worker reads the flag from the Action it fetches.
+    #[nativelink_test]
+    async fn create_and_add_action_reads_do_not_cache() -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig::default(),
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        for do_not_cache in [true, false] {
+            let action_digest = serialize_and_upload_message(
+                &Action {
+                    command_digest: Some(command_digest.into()),
+                    input_root_digest: Some(input_root_digest.into()),
+                    do_not_cache,
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let running_action = running_actions_manager
+                .create_and_add_action(
+                    "test-worker".into(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: OperationId::default().to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            assert_eq!(running_action.do_not_cache(), do_not_cache);
+        }
+
+        Ok(())
+    }
+
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot be
+    // cached, and in-flight requests for the same Action may not be merged."
+    #[nativelink_test]
+    async fn do_not_cache_skips_action_cache() -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let ac = Store::new(ac_store.clone());
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(ac.clone()),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Everything,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action_digest = DigestInfo::new([2u8; 32], 32);
+        let action_result = ActionResult::default();
+
+        // A strategy that caches every result leaves the Action Cache
+        // untouched when the action set `do_not_cache`.
+        running_actions_manager
+            .cache_action_result(
+                action_digest,
+                &mut action_result.clone(),
+                DigestHasherFunc::Sha256,
+                true,
+            )
+            .await?;
+        assert_eq!(ac.has(action_digest).await?, None);
+
+        // The same result without `do_not_cache` is written.
+        running_actions_manager
+            .cache_action_result(
+                action_digest,
+                &mut action_result.clone(),
+                DigestHasherFunc::Sha256,
+                false,
+            )
+            .await?;
+        assert!(ac.has(action_digest).await?.is_some());
+
+        Ok(())
+    }
+
+    // REv2 `Action.do_not_cache`: "If true, then the Action's result cannot be
+    // cached". The historical results store is a debugging record under its
+    // own digest, not the Action Cache, so it still gets the result.
+    #[nativelink_test]
+    async fn do_not_cache_still_uploads_historical_results()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let ac = Store::new(ac_store.clone());
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(ac.clone()),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Everything,
+                    upload_historical_results_strategy: Some(
+                        UploadCacheResultsStrategy::FailuresOnly,
+                    ),
+                    #[expect(
+                        clippy::literal_string_with_formatting_args,
+                        reason = "passed to `formatx` crate for runtime interpretation"
+                    )]
+                    failure_message_template: "{historical_results_hash}-{historical_results_size}"
+                        .to_string(),
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action_digest = DigestInfo::new([2u8; 32], 32);
+        let mut action_result = ActionResult {
+            exit_code: 1,
+            ..ActionResult::default()
+        };
+        running_actions_manager
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                true,
+            )
+            .await?;
+
+        assert_eq!(ac.has(action_digest).await?, None);
+
+        let historical_digest = {
+            let (historical_results_hash, historical_results_size) = action_result
+                .message
+                .split_once('-')
+                .expect("Message should be in format {hash}-{size}");
+            DigestInfo::try_new(
+                historical_results_hash,
+                historical_results_size.parse::<i64>()?,
+            )?
+        };
+        let retrieved_result = get_and_decode_digest::<HistoricalExecuteResponse>(
+            cas_store.as_ref(),
+            historical_digest.into(),
+        )
+        .await?;
+        assert_eq!(retrieved_result.action_digest, Some(action_digest.into()));
 
         Ok(())
     }
@@ -7542,7 +7908,12 @@ exit 1
             message: String::new(),
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
@@ -7619,7 +7990,12 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         assert!(
@@ -7674,7 +8050,12 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
@@ -7748,7 +8129,12 @@ exit 1
             ..Default::default()
         };
         running_actions_manager
-            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .cache_action_result(
+                action_digest,
+                &mut action_result,
+                DigestHasherFunc::Sha256,
+                false,
+            )
             .await?;
 
         assert!(!action_result.message.is_empty(), "Message should be set");
@@ -10882,6 +11268,20 @@ done
         assert_eq!(unlimited.reuse(50_000, at(250)), Some(40_000));
     }
 
+    /// RFC-0018: the peak the keepalive reports only rises; the last figure
+    /// follows every sample.
+    #[test]
+    fn memory_watch_peak_is_monotonic() {
+        use nativelink_worker::running_actions_manager::ActionMemoryWatch;
+        let watch = ActionMemoryWatch::default();
+        assert_eq!(watch.peak_memory_kb(), 0, "nothing sampled yet");
+        for (sample, peak) in [(100, 100), (400, 400), (250, 400), (0, 400), (401, 401)] {
+            watch.observe(sample);
+            assert_eq!(watch.last_memory_kb(), sample);
+            assert_eq!(watch.peak_memory_kb(), peak, "after sampling {sample}");
+        }
+    }
+
     /// The kill lands on the action furthest over its reservation, or the
     /// largest when none is over, never on one without a sample, one
     /// already asked to die, or one that reserves the whole worker;
@@ -10995,6 +11395,8 @@ done
     async fn pressure_armed_action(
         arguments: Vec<String>,
     ) -> Result<Arc<RunningActionImpl>, Box<dyn core::error::Error>> {
+        #[cfg(target_os = "linux")]
+        use nativelink_worker::running_actions_manager::UseNamespaces;
         use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
         const WORKER_ID: &str = "foo_worker_id";
         let (_, _, cas_store, _ac_store) = setup_stores().await?;
@@ -11041,7 +11443,7 @@ done
                 readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: use_namespaces(),
+                use_namespaces: UseNamespaces::No,
             })?);
         let command = Command {
             arguments,
@@ -11219,8 +11621,10 @@ done
         }
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
-            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            let res = unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            info!(job_pid, res, "Kill result");
         }
         assert!(!survived, "the set -m job survived the kill");
         Ok(())
@@ -11243,8 +11647,10 @@ done
         let job_pid = read_job_pid(&pid_file).await;
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
-            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            let res = unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            info!(job_pid, res, "Kill result");
         }
         assert!(!survived, "the orphaned set -m job survived the sweep");
         Ok(())

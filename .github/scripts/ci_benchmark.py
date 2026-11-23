@@ -157,13 +157,44 @@ def run(args):
     return status
 
 
+def results_link(prefix, invocation):
+    """Invocation URL in the build-results UI, or None when unconfigured."""
+    if not prefix or not invocation:
+        return None
+    parsed = urlsplit(prefix)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Expected an http(s) build results prefix")
+    return prefix.rstrip("/") + "/" + invocation
+
+
+# The hops between --bes_backend and the UI page. Kept hostname-free: the
+# cluster endpoints come from repository variables and are not echoed here,
+# only the clickable build-results links derived from the public prefix.
+BEP_PIPELINE = (
+    ("Bazel client", "publishes Build Event Protocol records to `--bes_backend`"),
+    ("NativeLink `bep_server`", "accepts `PublishBuildEvent` and fans events out to Redis"),
+    ("Redis `BEP` channel", "transports events from ingest to consumer"),
+    ("ETL consumer", "batches events into the `bep_v2` Postgres schema"),
+    ("API", "serves `/bep/v2/*` from Postgres"),
+    ("Build-results UI", "renders the invocation pages linked above"),
+)
+
+
 def summarize(path):
     result = json.loads(path.read_text())
+    prefix = os.environ.get("NL_RESULTS_URL")
     print("## NativeLink cluster CI\n")
     print(f"Source: `{result['revision']}`\n")
     print(f"Setup plus all iterations: {result['total_seconds']:.2f}s\n")
-    print("| Iteration | Build/test (s) | Total reuse | Local hits | Disk hits | Remote hits | Cached test targets | Result |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    with_links = bool(prefix)
+    columns = ["Iteration", "Build/test (s)", "Total reuse", "Local hits", "Disk hits",
+               "Remote hits", "Cached test targets", "Result"]
+    align = ["---", "---:", "---:", "---:", "---:", "---:", "---:", "---"]
+    if with_links:
+        columns.append("Build results")
+        align.append("---")
+    print("| " + " | ".join(columns) + " |")
+    print("| " + " | ".join(align) + " |")
     for run in result['runs']:
         cache, tests = run['cache'], run['tests']
         ratio = cache['total_reuse_percent']
@@ -171,8 +202,20 @@ def summarize(path):
         counts = [str(cache[name]) if cache[name] is not None else 'Unknown'
                   for name in ('local_action_hits', 'disk_hits', 'remote_hits')]
         status = 'failed' if run['exit_code'] else 'passed'
-        print(f"| {run['iteration']} | {run['seconds']:.2f} | {percentage} | "
-              f"{' | '.join(counts)} | {tests['cached']}/{tests['total']} | {status} |")
+        row = (f"| {run['iteration']} | {run['seconds']:.2f} | {percentage} | "
+               f"{' | '.join(counts)} | {tests['cached']}/{tests['total']} | {status}")
+        if with_links:
+            link = results_link(prefix, run.get('invocation_id'))
+            cell = f'[invocation]({link})' if link else 'Not captured'
+            row += f" | {cell}"
+        print(row + " |")
+    print("\n### Where this telemetry goes\n")
+    print("| Hop | What it does |")
+    print("| --- | --- |")
+    for component, purpose in BEP_PIPELINE:
+        print(f"| {component} | {purpose} |")
+    if not with_links:
+        print("\nBuild-results links are unavailable because the results URL is unset.")
 
 
 def compare(directory):

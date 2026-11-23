@@ -23,7 +23,11 @@ on:
         required: true
         type: string
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
@@ -210,9 +214,166 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  build-windows:
+    name: Build x86_64-pc-windows-msvc
+    needs: setup
+    permissions:
+      contents: write # upload assets to the release
+      id-token: write # keyless cosign signing via Sigstore
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AWS_LC_SYS_PREBUILT_NASM: 1
+      # Statically link the MSVC CRT so the release binary does not require the
+      # Visual C++ Redistributable (`VCRUNTIME140.dll`) on clean Windows Server
+      # Core / container hosts (Windows equivalent of Linux `+crt-static` and
+      # macOS #2727).
+      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_PROFILE_RELEASE_STRIP: "true"
+    steps:
+      - name: Checkout ${{ needs.setup.outputs.tag }}
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_VERSION="$(sed -nE 's/^rust-version = "([^"]+)".*/\1/p' Cargo.toml | head -n1 | tr -d '\r')"
+          if [[ -z "${RUST_VERSION}" ]]; then
+            echo "::error::Could not determine rust-version from Cargo.toml."
+            exit 1
+          fi
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup default "${RUST_VERSION}"
+
+      - name: Install Cosign
+        uses: >- # v4.1.2
+          sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          # Pinned to v2.5.3 so cosign emits split .sig/.pem files (see `build` job).
+          cosign-release: v2.5.3
+
+      - name: Build Windows binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin nativelink --release
+
+      - name: Package artifact
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = "${{ needs.setup.outputs.version }}"
+          $asset = "nativelink-${version}-x86_64-pc-windows-msvc"
+          $stage = Join-Path $env:RUNNER_TEMP "stage-win"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/nativelink.exe "$stage/nativelink.exe"
+          Copy-Item LICENSE "$stage/LICENSE"
+          Copy-Item README.md "$stage/README.md"
+          Compress-Archive -Path "$stage/*" -DestinationPath "${asset}.zip" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -Path "${asset}.zip").Hash.ToLowerInvariant()
+          $line = "${hash}  ${asset}.zip"
+          Write-Output $line
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "${asset}.zip.sha256"),
+            "${line}`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          "asset=${asset}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Smoke test packaged binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $asset = "${{ steps.package.outputs.asset }}"
+          $check = Join-Path $env:RUNNER_TEMP "check-win"
+          Expand-Archive -Path "${asset}.zip" -DestinationPath $check -Force
+
+          # Verify the MSVC CRT was statically linked (no VCRUNTIME140.dll import).
+          $dumpbin = Get-ChildItem -Path "${env:ProgramFiles}\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          if (-not $dumpbin) {
+            Write-Error "Could not locate dumpbin.exe to verify static CRT linkage."
+            exit 1
+          }
+          $imports = (& $dumpbin.FullName /dependents "$check/nativelink.exe" | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "dumpbin /dependents failed with exit code $LASTEXITCODE."
+            exit 1
+          }
+          Write-Output $imports
+          if ($imports -match 'VCRUNTIME140|MSVCP140|ucrtbase|api-ms-win-crt-') {
+            Write-Error "Packaged Windows binary dynamically imports MSVC CRT DLLs."
+            exit 1
+          }
+
+          $out = (& "$check/nativelink.exe" 2>&1 | Out-String)
+          Write-Output $out
+          if ($out -notmatch 'Usage: nativelink') {
+            Write-Error "Packaged Windows binary did not start."
+            exit 1
+          }
+          # Clear LASTEXITCODE (clap exits 2 with no arguments) so the GitHub
+          # Actions pwsh epilogue does not fail the step.
+          $global:LASTEXITCODE = 0
+
+      - name: Generate SBOM
+        uses: >- # v0.24.0
+          anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: target/release/nativelink.exe
+          format: spdx-json
+          output-file: ${{ steps.package.outputs.asset }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Sign artifact and SBOM (keyless)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.package.outputs.asset }}"
+          for f in "${ASSET}.zip" "${ASSET}.spdx.json"; do
+            cosign sign-blob --yes \
+              --new-bundle-format=false \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "${f}"
+          done
+
+      - name: Upload assets to release
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.package.outputs.asset }}"
+          gh release upload "${{ needs.setup.outputs.tag }}" \
+            "${ASSET}.zip" \
+            "${ASSET}.zip.sig" \
+            "${ASSET}.zip.pem" \
+            "${ASSET}.spdx.json" \
+            "${ASSET}.spdx.json.sig" \
+            "${ASSET}.spdx.json.pem" \
+            --clobber
+
+      - name: Upload hash for provenance
+        uses: >- # v4.6.0
+          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: sha256-x86_64-pc-windows-msvc
+          path: ${{ steps.package.outputs.asset }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 5
+
   combine-hashes:
     name: Combine artifact hashes
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

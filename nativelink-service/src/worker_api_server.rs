@@ -16,6 +16,7 @@ use core::convert::Into;
 use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,7 +31,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_declined, execute_result, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
-use nativelink_scheduler::worker::Worker;
+use nativelink_scheduler::worker::{Worker, WorkerIdChosenBy};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
 use nativelink_util::action_messages::{OperationId, WorkerId};
@@ -61,6 +62,9 @@ pub struct WorkerApiServer {
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
     worker_id_fn: Option<WorkerIdFn>,
+    /// Stamps each connection, so the end of a worker's earlier connection
+    /// can be told from its current one when it keeps its id.
+    next_connection: AtomicU64,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -183,6 +187,7 @@ impl WorkerApiServer {
             now_fn,
             node_id,
             worker_id_fn: None,
+            next_connection: AtomicU64::new(1),
         })
     }
 
@@ -238,16 +243,24 @@ impl WorkerApiServer {
             platform_properties
         };
 
-        // Now register the worker with the scheduler.
+        // Now register the worker with the scheduler, under the id it chose
+        // when it chose one.
+        let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        let named = !connect_worker_request.worker_id.is_empty();
         let worker_id = {
-            let unique = self.worker_id_fn.as_ref().map_or_else(
-                || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
-                |worker_id_fn| worker_id_fn(),
-            );
-            let worker_id = WorkerId(format!(
-                "{}{unique}",
-                connect_worker_request.worker_id_prefix,
-            ));
+            let worker_id = if named {
+                check_worker_id(&connect_worker_request.worker_id)?;
+                WorkerId(connect_worker_request.worker_id)
+            } else {
+                let unique = self.worker_id_fn.as_ref().map_or_else(
+                    || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
+                    |worker_id_fn| worker_id_fn(),
+                );
+                WorkerId(format!(
+                    "{}{unique}",
+                    connect_worker_request.worker_id_prefix,
+                ))
+            };
             let mut worker = Worker::new(
                 worker_id.clone(),
                 platform_properties,
@@ -256,6 +269,12 @@ impl WorkerApiServer {
                 connect_worker_request.max_inflight_tasks,
             );
             worker.admits_when_idle = connect_worker_request.admits_when_idle;
+            worker.connection = connection;
+            worker.id_chosen_by = if named {
+                WorkerIdChosenBy::Worker
+            } else {
+                WorkerIdChosenBy::Scheduler
+            };
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -267,6 +286,7 @@ impl WorkerApiServer {
             self.scheduler.clone(),
             self.now_fn.clone(),
             worker_id.clone(),
+            connection,
             update_stream,
         );
 
@@ -320,10 +340,31 @@ impl WorkerApi for WorkerApiServer {
     }
 }
 
+/// The longest worker id a worker may choose.
+const MAX_WORKER_ID_LEN: usize = 256;
+
+/// A worker-chosen id goes into logs, metrics and store keys: it must be
+/// bounded and printable.
+fn check_worker_id(worker_id: &str) -> Result<(), Error> {
+    if worker_id.len() > MAX_WORKER_ID_LEN
+        || worker_id
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(make_err!(
+            Code::InvalidArgument,
+            "A worker id must be at most {MAX_WORKER_ID_LEN} bytes with no spaces or control characters"
+        ));
+    }
+    Ok(())
+}
+
 struct WorkerConnection {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     worker_id: WorkerId,
+    /// The stamp the scheduler's entry for this connection carries.
+    connection: u64,
 }
 
 impl WorkerConnection {
@@ -331,12 +372,14 @@ impl WorkerConnection {
         scheduler: Arc<dyn WorkerScheduler>,
         now_fn: Arc<NowFn>,
         worker_id: WorkerId,
+        connection_stamp: u64,
         mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
     ) {
         let instance = Self {
             scheduler,
             now_fn,
             worker_id,
+            connection: connection_stamp,
         };
 
         background_spawn!("worker_api", async move {
@@ -352,6 +395,8 @@ impl WorkerConnection {
             // exactly the stall.
             let (tx, mut rx) = mpsc::unbounded_channel();
             let reader_worker_id = instance.worker_id.clone();
+            let reader_scheduler = instance.scheduler.clone();
+            let reader_now_fn = instance.now_fn.clone();
             background_spawn!("worker_api_reader", async move {
                 while let Some(maybe_update) = connection.next().await {
                     let update = match maybe_update.map(|u| u.update) {
@@ -365,6 +410,14 @@ impl WorkerConnection {
                             break;
                         }
                     };
+                    // The worker is heard from now, whenever this message
+                    // gets processed: one queued behind a slow result must
+                    // not let the worker time out in the meantime.
+                    if let Ok(now) = reader_now_fn() {
+                        reader_scheduler
+                            .worker_message_received(&reader_worker_id, now.as_secs())
+                            .await;
+                    }
                     if tx.send(update).is_err() {
                         break;
                     }
@@ -409,7 +462,7 @@ impl WorkerConnection {
                 drop(
                     instance
                         .scheduler
-                        .worker_disconnected(&instance.worker_id)
+                        .worker_disconnected(&instance.worker_id, instance.connection)
                         .await,
                 );
             }
@@ -426,6 +479,24 @@ impl WorkerConnection {
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         if let Some(running) = keep_alive_request.running_operations {
+            // The memory first: the running report can release an operation
+            // the worker left out, and a peak for it is then dropped anyway.
+            let peaks: Vec<(OperationId, u64)> = running
+                .memory
+                .into_iter()
+                .map(|memory| {
+                    (
+                        OperationId::from(memory.operation_id),
+                        memory.peak_memory_kb,
+                    )
+                })
+                .collect();
+            if !peaks.is_empty() {
+                self.scheduler
+                    .worker_operation_memory_reported(&self.worker_id, peaks)
+                    .await
+                    .err_tip(|| "Could not process the memory report in inner_keep_alive()")?;
+            }
             self.scheduler
                 .worker_running_operations_reported(
                     &self.worker_id,
@@ -497,35 +568,38 @@ impl WorkerConnection {
                 })?;
         }
 
-        match execute_result
+        let update = match execute_result
             .result
             .err_tip(|| "Expected result to exist in ExecuteResult")?
         {
             execute_result::Result::ExecuteResponse(finished_result) => {
-                let action_stage = finished_result
-                    .try_into()
-                    .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithActionStage(action_stage),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithActionStage(
+                    finished_result
+                        .try_into()
+                        .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?,
+                )
             }
             execute_result::Result::InternalError(e) => {
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithError(e.into()),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithError(e.into())
             }
+        };
+        match self
+            .scheduler
+            .update_action(&self.worker_id, &operation_id, update)
+            .await
+        {
+            Ok(()) => {}
+            // The worker no longer holds the operation: its result was
+            // applied before (this is a resend), or it moved on.
+            Err(err) if err.code == Code::FailedPrecondition => {}
+            // Not settled: a result the store refused is held and written
+            // later, and the worker keeps its copy until then.
+            Err(err) => return Err(err).err_tip(|| format!("Failed to operation {operation_id}")),
         }
-        Ok(())
+        self.scheduler
+            .worker_result_settled(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Acknowledging the result of {operation_id}"))
     }
 
     /// The answer is recorded before the liveness refresh: the refresh runs

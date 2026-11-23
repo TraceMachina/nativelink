@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
-use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err};
+use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err, missing_blob_subject};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -78,7 +78,7 @@ async fn forget_missing_input(cas_store: &Store, stage: &ActionStage) {
     let ActionStage::Completed(result) = stage else {
         return;
     };
-    let Some(ErrorContext::MissingDigest { hash, size }) =
+    let Some(ErrorContext::MissingDigest { hash, size, .. }) =
         result.error.as_ref().map(|err| &err.context)
     else {
         return;
@@ -95,6 +95,34 @@ async fn forget_missing_input(cas_store: &Store, stage: &ActionStage) {
 enum ExecuteOutcome<S> {
     Stream(S),
     Reject(Status),
+}
+
+/// Converts `Action.timeout` to a [`Duration`]. An absent timeout means "as
+/// long as the server allows", which the worker maps to its maximum.
+///
+/// A `google.protobuf.Duration` with a negative field, or `nanos` outside
+/// `0..1_000_000_000`, is not a usable timeout. Casting it straight to
+/// unsigned integers turned a negative timeout into a near-infinite one, and
+/// `seconds: -1, nanos: -1` panicked in `Duration::new` when the nanosecond
+/// carry overflowed. Such a timeout is now rejected with `INVALID_ARGUMENT`.
+fn action_timeout(timeout: Option<prost_types::Duration>) -> Result<Duration, Error> {
+    let Some(timeout) = timeout else {
+        return Ok(Duration::MAX);
+    };
+    let (Ok(seconds), Ok(nanos)) = (u64::try_from(timeout.seconds), u32::try_from(timeout.nanos))
+    else {
+        return Err(make_input_err!(
+            "Action.timeout must not be negative, got {}s {}ns",
+            timeout.seconds,
+            timeout.nanos
+        ));
+    };
+    if nanos >= 1_000_000_000 {
+        return Err(make_input_err!(
+            "Action.timeout nanos must be less than 1000000000, got {nanos}"
+        ));
+    }
+    Ok(Duration::new(seconds, nanos))
 }
 
 /// Build a tonic [`Status`] of code `FAILED_PRECONDITION` whose details
@@ -116,6 +144,7 @@ enum ExecuteOutcome<S> {
 /// surfacing, so Bazel retries either way.
 fn missing_blobs_failed_precondition(
     missing: &[(DigestInfo, &'static str)],
+    digest_function: DigestHasherFunc,
     summary: &str,
 ) -> Status {
     let pf = PreconditionFailure {
@@ -123,10 +152,13 @@ fn missing_blobs_failed_precondition(
             .iter()
             .map(|(d, ctx)| precondition_failure::Violation {
                 r#type: common::VIOLATION_TYPE_MISSING.to_string(),
-                // Per REv2, the subject for a missing-blob violation is
-                // `blobs/<hash>/<size>` so the client knows exactly
-                // which digest to re-upload.
-                subject: format!("blobs/{}/{}", d.packed_hash(), d.size_bytes()),
+                // Per REv2, the subject is `blobs/{digest_function/}{hash}/{size}`
+                // so the client knows exactly which digest to re-upload.
+                subject: missing_blob_subject(
+                    digest_function.resource_name_segment(),
+                    &d.packed_hash().to_string(),
+                    i64::try_from(d.size_bytes()).unwrap_or(i64::MAX),
+                ),
                 description: (*ctx).to_string(),
             })
             .collect(),
@@ -268,7 +300,7 @@ impl InstanceInfo {
             action
                 .command_digest
                 .clone()
-                .err_tip(|| "Expected command_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected command_digest to exist"))?,
         )
         .err_tip(|| "Could not decode command digest")?;
 
@@ -276,11 +308,9 @@ impl InstanceInfo {
             action
                 .clone()
                 .input_root_digest
-                .err_tip(|| "Expected input_digest_root")?,
+                .ok_or_else(|| make_input_err!("Expected input_digest_root"))?,
         )?;
-        let timeout = action.timeout.map_or(Duration::MAX, |v| {
-            Duration::new(v.seconds as u64, v.nanos as u32)
-        });
+        let timeout = action_timeout(action.timeout)?;
 
         let mut platform_properties = HashMap::new();
         if let Some(platform) = action.platform {
@@ -614,17 +644,21 @@ impl ExecutionServer {
     {
         let instance_name = request.instance_name;
 
-        let instance_info = self
-            .instance_infos
-            .get(&instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let instance_info = self.instance_infos.get(&instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         let digest = DigestInfo::try_from(
             request
                 .action_digest
-                .err_tip(|| "Expected action_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected action_digest to exist"))?,
         )
         .err_tip(|| "Failed to unwrap action cache")?;
+
+        let digest_function: DigestHasherFunc = request
+            .digest_function
+            .try_into()
+            .err_tip(|| "Could not convert digest function in inner_execute()")?;
 
         let priority = request
             .execution_policy
@@ -645,6 +679,7 @@ impl ExecutionServer {
                 );
                 return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
                     &[(digest, "Action")],
+                    digest_function,
                     &summary,
                 )));
             }
@@ -699,7 +734,9 @@ impl ExecutionServer {
                     digest,
                 );
                 return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
-                    &missing, &summary,
+                    &missing,
+                    digest_function,
+                    &summary,
                 )));
             }
         }
@@ -711,10 +748,7 @@ impl ExecutionServer {
                 action,
                 priority,
                 request.skip_cache_lookup,
-                request
-                    .digest_function
-                    .try_into()
-                    .err_tip(|| "Could not convert digest function in inner_execute()")?,
+                digest_function,
             )
             .await?;
 

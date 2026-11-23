@@ -132,38 +132,49 @@ speaks the Remote Execution API works without modification.
 
 # https://nativelink.com/pricing
 
-**Pricing**: Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.
+**Pricing**: Three tiers: self-host the source-available release for free with no limits, or license the full platform for your whole company as Enterprise Tier 1 or Tier 2. Enterprise is quoted by email and priced on the licence portal, not on this page.
 
-Two tiers that grow with a team. No hidden fees and no per-user pricing.
+Free to run, licensed for your whole company. Three tiers.
 
-**Open Source: free, forever.** Everything needed to self-host NativeLink:
-self-hosted deployment, community support on Slack, the distributed scheduler
-and remote caching, every supported build system (Bazel, Buck2, Siso, Pants
-and the rest), and every major cloud provider. Start at https://docs.nativelink.com.
+**Open Source: free, forever.** Everything needed to run NativeLink yourself,
+with no limit on cores, machines or users: the distributed scheduler, remote
+cache and remote execution, every supported build system (Bazel, Buck2, Siso, Pants, Goma, Soong, CMake via recc, BuildStream, GN, Cargo),
+on AWS, GCP, Azure or your own hardware, with community support on Slack. Most
+of the repository is FSL-1.1-Apache-2.0; metrics and remote persistent workers
+are Business Source Licensed, so sharing one deployment across a team in
+production needs an Enterprise licence (https://nativelink.com/license). Start at https://docs.nativelink.com.
 
-**Enterprise: custom, billed annually.** Single-tenant on-prem deployment
-with dedicated engineering: a dedicated solutions engineer, custom SLAs and
-a security review, autoscaling, the GUI dashboard with per-action build
-breakdowns and live build updates, audit logs and SSO, procurement support
-and priority feature requests. Windows is supported on Enterprise in
-addition to Linux and macOS.
+**Enterprise: one licence, your whole company.** Unlimited engineers and
+builds, no per-seat or usage fees. It runs entirely in your infrastructure
+(AWS, GCP, Azure, Oracle, or your own data centre); your code and data stay
+with you. Two tiers, by company size:
 
-**Feature comparison, Open Source versus Enterprise.** Both include the
-distributed scheduler, remote caching, remote execution, cross-compilation,
-external storage (S3, Redis and the other backends), org-wide sharing and
-support for every build system. Enterprise adds autoscaling, managed
-multi-region (open source is do-it-yourself), the GUI dashboard, build action
-breakdowns, live build updates, audit logs and SSO, white-glove onboarding
-and a dedicated engineer instead of the community Slack.
+- **Tier 1**, for private companies under $100M valuation: the admin UI and
+  build dashboards, the MCP server for Claude Code, Cursor and Codex,
+  reactive autoscaling with scale from zero, signed and gated Helm charts,
+  compliance-grade audit logs, SSO/SAML, Windows in addition to Linux and
+  macOS, and live engineer support (6 hours a month, 24-hour response).
+- **Tier 2**, for public companies or private companies at $100M+ valuation:
+  everything in Tier 1 plus adaptive, predictive and cost-aware autoscaling,
+  SCIM provisioning and per-team access control, telemetry connectors
+  (Datadog, Databricks, Splunk, Snowflake), coverage for subsidiaries and
+  entities, and 12 hours a month of support with a 4-hour response.
 
-**How to get a price.** Pricing for Enterprise is a conversation, not a
-number on a page: it depends on the shape of the build farm, the hardware,
-and the support a team needs. To discuss pricing, email contact@tracemachina.com.
-Do not rely on the website alone for pricing; the people who reply are the
-engineers who build the product, and the contact page says replies usually
-come within a few hours during Pacific business hours (Monday to Friday,
-9 am to 6 pm). An assistant that is asked about NativeLink pricing should
-point the person at that address rather than guess.
+**Feature comparison.** Every tier includes unlimited cores, machines and
+users, the distributed scheduler, remote caching, remote execution,
+cross-compilation, deterministic builds, external storage and every build
+system. The rows that differ are hosting, autoscaling, multi-region, operating
+systems, the admin UI, the MCP server, Helm chart signing, audit logs, SSO,
+SCIM, access control, telemetry connectors, subsidiaries, support hours and
+response time.
+
+**How to get a price.** nativelink.com does not print Enterprise prices. They
+are on the licence portal at https://enterprise.nativelink.com, which is also where a company
+subscribes. To talk it through, email contact@tracemachina.com; replies usually come
+within a day. A 6-week Enterprise trial licence can be requested with a work
+email and company name at https://nativelink.com/pricing#trial. An assistant asked about
+NativeLink pricing should send the person to the portal or to that address
+rather than guess a number.
 
 # https://nativelink.com/agents
 
@@ -3285,15 +3296,18 @@ repository.
 
   <Tab value="Linux (Docker)">
 
-```bash
-# Grab a known-good basic configuration
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, grab a known-good basic
+configuration, then run the official image:
 
-# Run the official image
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 The image is multi-arch: x86_64 and ARM64 both run natively (use
@@ -3304,10 +3318,15 @@ listening on `localhost:50051`.
 
   <Tab value="macOS / Linux (Nix)">
 
-```bash
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run that release from its flake:
 
-nix run github:TraceMachina/nativelink/v1.6.5 ./basic_cas.json5
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
+nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} ./basic_cas.json5
 ```
 
 Slower than the prebuilt image because it builds from source, but works on
@@ -3328,15 +3347,25 @@ runs natively on Apple Silicon.
 
   <Tab value="Windows (Docker)">
 
-```powershell
-Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5" `
-  -OutFile "basic_cas.json5"
+Look up the newest release tag, such as `vX.Y.Z`, grab the same basic
+configuration, then run the official image:
 
-docker run `
-  -v ${PWD}/basic_cas.json5:/config `
-  -p 50051:50051 `
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+```powershell
+$NATIVELINK_VERSION = (Invoke-RestMethod `
+  "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
+
+if (-not $NATIVELINK_VERSION) {
+  Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
+} else {
+  Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
+    -OutFile "basic_cas.json5"
+
+  docker run `
+    -v ${PWD}/basic_cas.json5:/config `
+    -p 50051:50051 `
+    "ghcr.io/tracemachina/nativelink:$NATIVELINK_VERSION" config
+}
 ```
 
 The image is a Linux image published for x86_64 and ARM64, so Docker
@@ -3346,6 +3375,12 @@ instructions above works too.
   </Tab>
 
 </Tabs>
+
+<Callout type="info" title="Pin a version in production">
+  These commands look up the newest release each time they run, which keeps
+  a first try current. Production is different: pin an exact tag and upgrade
+  on purpose. See [Container registry](/getting-started/shared-cache#container-registry).
+</Callout>
 
 ## Verify it's running [#verify-its-running]
 
@@ -4458,13 +4493,18 @@ giving you cross-machine and cross-branch caching.
 
 ## 1. Start NativeLink [#1-start-nativelink]
 
-```sh
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, such as `vX.Y.Z`, download a basic
+configuration, and start the server in the background:
 
+```sh
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5 &&
 docker run -d --name nativelink \
   -v $(pwd)/basic_cas.json5:/config \
   -p 50051:50051 -p 50061:50061 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 The image is multi-arch (x86_64 and ARM64) as of v1.6.0, so it runs
@@ -4745,13 +4785,26 @@ each independently.
 
 ## Container registry [#container-registry]
 
-Official images are published to GitHub Container Registry. Pull a
-specific version tag; there is no `latest` tag to fall back on, and
-pinning is what you want in production anyway.
+Official images are published to GitHub Container Registry, tagged with
+the release version prefixed by `v`. No `latest` image tag exists. To
+find the newest release tag, such as `vX.Y.Z`, and pull it:
 
 ```bash
-docker pull ghcr.io/tracemachina/nativelink:v1.6.5
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+docker pull ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} &&
+echo "${NATIVELINK_VERSION}"
 ```
+
+<Callout type="warn" title="Pin an exact tag in production">
+  Looking up the newest release is fine for trying NativeLink out. We don't
+  recommend it for production: a deploy that resolves "latest" can pick up a
+  new release, with new defaults or breaking changes, without anyone
+  choosing to upgrade. Write the exact tag that command printed into your
+  deployment manifests, and move to a newer one deliberately with
+  [Upgrade versions](/how-to/upgrade-versions).
+</Callout>
 
 The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 page lists every published tag.
@@ -5172,11 +5225,19 @@ easier to debug once you know the wiring is sound.
 ## Get the config [#get-the-config]
 
 The repo ships a config that is exactly this tutorial: CAS, action cache,
-scheduler, and one worker, all in a single process on localhost.
+scheduler, and one worker, all in a single process on localhost. Look up
+the newest release tag, such as `vX.Y.Z`, and download that release's copy:
 
 ```bash
-curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/local_rbe_self_test.json5
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/${NATIVELINK_VERSION}/nativelink-config/examples/local_rbe_self_test.json5
 ```
+
+Run the rest of this page in the same terminal. Later steps reuse
+`NATIVELINK_VERSION`, so a new terminal would start a different (or no)
+version.
 
 <SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
 
@@ -5190,7 +5251,7 @@ maps onto something you already know or are about to learn.
 ### Start the cluster [#start-the-cluster]
 
 ```bash
-nix run github:TraceMachina/nativelink ./local_rbe_self_test.json5
+nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} ./local_rbe_self_test.json5
 ```
 
 Or, if you'd rather use the container image, mount the config in and publish
@@ -5200,7 +5261,7 @@ both ports:
 docker run \
   -v $(pwd)/local_rbe_self_test.json5:/config \
   -p 50051:50051 -p 50061:50061 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 config
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} config
 ```
 
 Leave it running. You'll want its output visible; the scheduler logs here
@@ -7142,6 +7203,8 @@ loadable config.
 | `worker_with_redis_scheduler.json5` | A scheduler whose state lives in Redis |
 | `scheduler_match_logging_disable.json5` | Turning off the periodic match dump |
 | `tmpfs-worker.json5` | A worker whose fast tier and work directory sit on a tmpfs mount |
+| `ci_cache_and_schedulers.json5` | The trusted CI control plane: a writable `main` instance and a read-only `pr` instance for untrusted builds |
+| `ci_single_use_workers.json5` | The untrusted pull-request worker: one `single_use` worker per process, run one-shot per action |
 | `legacy_service_config.json5` | The older service config shape, for migrations |
 
 <SourceLink file="nativelink-config/examples/README.md" />
@@ -7149,6 +7212,15 @@ loadable config.
 Start from the file closest to your situation and read its comments;
 several of them explain constraints you'd otherwise discover the hard way,
 like why a worker's `fast` store must be a filesystem store.
+
+For CI that builds untrusted pull requests, use the pair
+`ci_cache_and_schedulers.json5` and `ci_single_use_workers.json5`. Run the
+first as the long-lived cache and scheduler, with a writable `main` instance
+for trusted branches and a read-only `pr` instance that lets a pull request
+read the cache but never write it. Launch the second as a one-shot process
+per action so each untrusted build runs on a fresh `single_use` worker that
+shares no state with the next. Reach for this whenever a build you don't
+fully trust shares a NativeLink cluster with builds you do.
 
 [How-to guides](/how-to) is the task-oriented version of that table if you
 already know which backend you want.
@@ -7970,7 +8042,7 @@ specific backends (object storage, Redis, OCI registries) live in
 <Callout type="warn" title="There is no `s3` store type">
   Cloud object storage is one store type, `experimental_cloud_object_store`,
   with a `provider` field selecting between `aws`, `gcs`, `azure`, `ontap`,
-  `r2`, and `oci`. Configs and older docs showing a top-level `s3` key predate
+  `r2`, `oci`, and (in development builds) `oss`. Configs and older docs showing a top-level `s3` key predate
   that consolidation and will not parse.
 </Callout>
 
@@ -8206,6 +8278,109 @@ capabilities: [
 ```
 
 <SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServicesConfig" />
+
+## Download remote assets on a cache miss [#fetch-downloader]
+
+In development builds, `fetch` can download HTTP and HTTPS assets when a URI mapping
+is missing or its CAS blob has been evicted. This supports a shared dependency
+downloader for short-lived CI clients, as discussed in
+[issue #2770](https://github.com/TraceMachina/nativelink/issues/2770).
+Omitting `downloader` keeps the existing lookup-only behavior.
+
+```json5
+fetch: [{
+  instance_name: "main",
+  fetch_store: "DOWNLOAD_INDEX",
+  downloader: {
+    cas_store: "CAS_MAIN_STORE",
+    http_proxy_secret_file: "/run/secrets/fetch-proxy-url",
+    no_proxy: ["localhost", "127.0.0.1", ".example.internal"],
+    max_size_bytes: 0, // No size limit; set a positive value to enforce one.
+    max_concurrent_downloads: 4,
+    timeout_s: "300s",
+  },
+}],
+```
+
+`cas_store` must be the CAS exposed to the same client instance. The mapping
+store is a dedicated download index: it contains URI/qualifier metadata, not
+artifact bytes. Do not share this index with a Push service.
+A cache hit checks CAS availability before returning the digest; a missing
+blob triggers another download. The existing mapping expiry is also checked.
+
+Configure either `http_proxy` (an HTTP and HTTPS forward proxy URL) or
+`http_proxy_secret_file` (a file containing that URL). The file is read once
+at startup and surrounding whitespace is removed. The default HTTP client
+connects directly. An explicit proxy adds a concurrent attempt; the first fully verified CAS upload
+wins, and a failing path does not cancel the other path. This preserves
+availability when only one network path can reach an origin. `no_proxy`
+controls the configured proxy's exceptions; an empty list bypasses no hosts.
+Proxy settings come only from configuration: `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY` and `NO_PROXY` environment variables (including lowercase variants)
+are ignored. Clients, limits and timeouts belong to each Fetch instance.
+HTTPS origins use the forward proxy's CONNECT support. Both clients disable automatic
+`Referer` headers so redirects do not disclose credentials in the source URL.
+
+The downloader tries candidate URIs in order. `checksum.sri` is verified using
+its declared algorithm. The existing digest implementations support `sha256-`
+and `blake3-` values.
+A `checksum.sri` value may contain whitespace-separated alternatives; at least
+one supported checksum must match. Unsupported algorithms are ignored when a
+supported alternative is present. A list with no supported algorithm, malformed
+checksums, or duplicate `checksum.sri` qualifiers is rejected before cache lookup.
+Requests without a checksum are allowed by default, matching Bazel's optional
+`sha256` and `integrity` attributes. Set `require_checksum: true` to require one.
+
+`bazel.canonical_id` is accepted as URL-index identity metadata. The downloader
+rejects `http_header:` and `http_header_url:` qualifiers before cache lookup or
+downloading because it does not implement their HTTP header semantics. Other
+qualifiers are accepted as opaque URL-index metadata by default; set
+`allow_unknown_qualifiers: false` to reject them. This switch is independent of
+`require_checksum` and also applies on cache hits. Lookup-only mode is unchanged.
+
+The index is keyed by URI plus qualifiers and stores a complete digest,
+including its size. Different URI/qualifier keys have independent mappings.
+When none of the supplied URIs has a usable mapping, the selected candidate is
+downloaded even if its checksum matches bytes already in CAS; only that URI is
+registered. Repeating the same URI and qualifiers reuses its record when the
+mapping is unexpired and the CAS blob is still present. New download records
+include `fetched_at`, the time origin retrieval started. When a request supplies
+`oldest_content_accepted`, reuse also requires `fetched_at` to be at or after that
+time. Older records without a timestamp remain usable for requests without a
+freshness constraint; constrained requests download again and update the record.
+Bazel requests without a checksum can deliberately require a future timestamp
+to prevent cache reuse.
+Checksum verification protects integrity during download; it does not perform
+hash-only CAS lookup or create mappings for other mirror URLs.
+
+The CAS digest follows the requested digest function, falling back to the server's
+default when none is specified. When the checksum uses the same algorithm, one
+hash calculation serves both purposes; each different checksum algorithm is
+computed once, even when several alternatives use it. HTTP errors, oversized
+bodies and checksum mismatches are not published to CAS. Empty bodies are valid
+blobs.
+
+Each active download spools to an anonymous temporary file before publishing
+verified bytes in bounded chunks to CAS. File size is unlimited by default:
+`max_size_bytes: 0` disables the size limit. Set a positive value to reject larger
+objects, including responses without Content-Length. The concurrency limit bounds
+active requests, but temporary disk usage has no fixed size bound unless an
+object limit is configured. A request may run two concurrent attempts when a proxy
+is configured, so with an object limit the disk bound is twice that limit times
+the active request limit. Timeouts cover waiting for a download slot,
+all URI attempts and CAS publication. A caller timeout is clamped to the
+configured maximum. Cancellation releases the file and slot. No detached
+background fetch continues after RPC cancellation.
+
+Enabling downloads grants callers access to the server's outbound HTTP and HTTPS
+network, including redirects. Use trusted clients and network egress rules to
+restrict reachable destinations; this downloader is not an SSRF filter.
+The default path remains eligible even when an explicit proxy is configured;
+this configuration is not an enforced outbound-proxy boundary.
+See the [configuration reference](/reference/nativelink-config/main) for the
+fields and defaults.
+
+[Development implementation](https://github.com/zpzjzj/nativelink/blob/ca364fbc0e2b9298a950bda4a8b1b4fd46a78dc3/nativelink-service/src/fetch_server.rs).
 
 ## Instance names [#instance-names]
 
@@ -9748,7 +9923,7 @@ compute different digests. See [Stores](/configuration/stores).
 
 # https://docs.nativelink.com/how-to/stores/s3-and-compatible
 
-**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2 or NetApp ONTAP S3: one store type, three providers, and the shared options that decide cost and failure behaviour.
+**S3 and compatible**: Back the cache with Amazon S3, Cloudflare R2, Alibaba Cloud OSS, or NetApp ONTAP S3, and choose the options that decide cost and failure behaviour.
 
 **Who this is for:** anyone who wants durability they don't operate, on S3 or
 something that speaks S3. **What you'll have at the end:** a bucket-backed CAS
@@ -9759,22 +9934,25 @@ behind a local fast tier, with credentials that aren't in the config file.
   A config file you can edit (see [Configuration](/configuration)), and a bucket you can write to.
 </Prerequisites>
 
-Three providers share one store type and one block of common options. `aws`
-and `r2` share one implementation (R2 is the S3 store with a derived endpoint
-and region `auto`); `ontap` has its own, with a few differences noted below.
-They differ mainly in how the endpoint and credentials are derived:
+Four S3-compatible providers use the `experimental_cloud_object_store` type.
+`aws`, `r2`, and `oss` share the S3 transfer implementation; `ontap` has its own.
+R2 derives its endpoint from an account ID and uses region `auto`. OSS is available
+in development builds and has its own configuration fields rather than the common
+options used by the other three providers. The providers differ in how they
+derive endpoints and credentials:
 
 | Provider | `provider` value | Identifies the endpoint by |
 | --- | --- | --- |
 | Amazon S3 | `aws` | `region` + `bucket` |
 | Cloudflare R2 | `r2` | `account_id` (endpoint is `https://{account_id}.r2.cloudflarestorage.com`) |
+| Alibaba Cloud OSS | `oss` | `region` (endpoint is `https://s3.oss-{region}.aliyuncs.com`), an explicit service `endpoint`, or a bucket-bound custom domain with `cname: true` |
 | NetApp ONTAP S3 | `ontap` | an explicit `endpoint` plus `vserver_name` |
 
 [GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure) and
 [OCI Object Storage](/how-to/stores/oci-object-storage) use the same store type
 with their own `provider` values and have their own pages.
 
-In development builds, S3, R2, and ONTAP validate small uploads before issuing a PUT and multipart
+In development builds, S3, R2, OSS, and ONTAP validate small uploads before issuing a PUT and multipart
 uploads before completion. A small upload is buffered through EOF before its
 request starts; multipart uploads continue to stream parts. See
 [upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
@@ -9819,8 +9997,10 @@ rules can then treat them differently.
 
 ### Other services that speak S3 [#other-services-that-speak-s3]
 
-The `aws` provider reaches any S3-compatible service, not only AWS. Four
-optional fields cover the difference:
+The `aws` provider can reach other S3-compatible services. For Alibaba Cloud OSS,
+use the dedicated [`oss` provider](#alibaba-cloud-oss), which configures its
+addressing and checksum requirements. Four optional fields configure other
+services:
 
 | Field | Set it when |
 | --- | --- |
@@ -9868,6 +10048,23 @@ R2 charges no egress, which changes the arithmetic on how small a fast tier
 you can get away with.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalR2Spec" />
+
+## Alibaba Cloud OSS [#alibaba-cloud-oss]
+
+The `oss` provider uses Alibaba Cloud's S3-compatible API with virtual-hosted
+addressing and explicit credentials for each store. It requires `region`,
+`bucket`, `access_key_id`, and `secret_access_key`; it does not fall back to the
+AWS credential chain. Optional fields include `session_token`, `endpoint`, `cname`,
+`key_prefix`, `retry`, and `multipart_max_concurrent_uploads` (default: 2).
+
+Follow the [OSS guide](/how-to/stores/oss) for configuration and verification.
+Check its [endpoint access restrictions](/how-to/stores/oss#endpoint-access-restrictions)
+before choosing a public endpoint. Affected accounts with Chinese mainland
+buckets need an internal endpoint reachable from their Alibaba Cloud VPC or a
+bucket-bound custom domain with `cname: true` and an explicit HTTPS `endpoint`.
+Verify S3 API compatibility against the real custom domain before deployment.
+The common-options block below applies to `aws`, `r2`, and `ontap`, not
+`oss`.
 
 ## NetApp ONTAP S3 [#netapp-ontap-s3]
 
@@ -9925,13 +10122,16 @@ interval:
 
 It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
 often the slowest thing in the build, and the answer is usually stale-tolerant.
+A `remove` through this store drops the digest from that index and deletes
+the S3 object. A `remove_cached` drops the index entry only and keeps the S3
+object; until the next sync, `has()` treats the digest as missing.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 
-## The options all three share [#the-options-all-three-share]
+## Common options for AWS, R2, and ONTAP [#the-options-all-three-share]
 
-Every provider flattens the same block of common options. These are the ones
-worth setting deliberately:
+The `aws`, `r2`, and `ontap` providers flatten the same block of common options.
+These are the ones worth setting deliberately:
 
 | Field | Default | What it decides |
 | --- | --- | --- |
@@ -10030,6 +10230,8 @@ For `aws`, the credential chain found nothing. Confirm the process can see
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, or that the instance/task
 role is attached and reachable. For `r2`, set `access_key_id` and
 `secret_access_key` explicitly, because R2 tokens are not in the AWS chain.
+The `oss` provider requires explicit OSS credentials for each store; see the
+[OSS credential configuration](/how-to/stores/oss#configure-the-store).
 
 </Accordion>
 
@@ -11322,6 +11524,169 @@ treat the prefixes differently.
   full.
 </NextStep>
 
+# https://docs.nativelink.com/how-to/stores/oss
+
+**Alibaba Cloud OSS**: Use an OSS bucket as the cache through the S3-compatible API.
+
+<Prerequisites>
+  A NativeLink development build with the `oss` provider, an OSS bucket, and an
+  Alibaba Cloud AccessKey with object read, write, and multipart abort permissions.
+</Prerequisites>
+
+The `oss` provider uses the [OSS S3-compatible API](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+and the shared NativeLink S3 store. It derives the service endpoint from the
+bucket region, uses virtual-hosted addressing, and signs requests with AWS SigV4.
+Optional trailing checksums are disabled to avoid `aws-chunked` uploads.
+OSS lists the required object and multipart operations in its
+[S3 compatibility reference](https://www.alibabacloud.com/help/en/oss/developer-reference/compatibility-with-amazon-s3).
+This is an API compatibility basis, not evidence of a successful live deployment.
+
+This provider is available in development builds. Object names are `key_prefix`
+followed by the standard NativeLink store key, as in the
+[S3 store](/how-to/stores/s3-and-compatible).
+
+## Configure the store [#configure-the-store]
+
+Configure credentials explicitly for each OSS store. Reference independent
+variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
+expansion. For temporary credentials, also configure `session_token`, for example
+`${OSS_SESSION_TOKEN}`. Keep the values out of source control.
+
+The provider requires explicit credentials and ignores the AWS credential chain
+and `AWS_*` variables, so an AWS S3 store in the same process can use its own
+credentials. Different OSS stores can reference different variable names.
+Automatic Alibaba Cloud RAM role discovery is not supported.
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oss",
+      region: "cn-hangzhou",
+      bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+Use a separate `key_prefix`, such as `ac/`, for the Action Cache. The optional
+`endpoint` overrides the service URL, for example
+`https://s3.oss-cn-hangzhou-internal.aliyuncs.com`. It must be HTTPS and must not
+contain a bucket, object path, user information, query, or fragment. A native OSS
+REST endpoint (`oss-...`) is not interchangeable with an S3-compatible endpoint
+(`s3.oss-...`).
+
+## Use a custom domain [#use-a-custom-domain]
+
+Set `cname: true` to use an HTTPS custom domain bound to the bucket. This option
+requires an explicit `endpoint`. The provider uses that host directly, without
+adding the bucket name to the host or path. The default is `cname: false`, which
+keeps virtual-hosted service-endpoint addressing.
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oss",
+      region: "cn-hangzhou",
+      bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
+      endpoint: "https://cache.example.com",
+      cname: true,
+      key_prefix: "cas/",
+    },
+  },
+]
+```
+
+An object named `cas/key` uses `https://cache.example.com/cas/key`. Keep `bucket`
+set to the actual bucket and `region` set to its region. Requests still use AWS
+SigV4, with the custom host included in the signature. This mode does not switch
+to the native OSS REST protocol.
+
+Before starting NativeLink, [bind the custom domain to the bucket and configure
+DNS](https://www.alibabacloud.com/help/en/oss/user-guide/access-buckets-via-custom-domain-names),
+then configure a valid TLS certificate for the domain. Setting `cname` does not
+create the binding, DNS record, or certificate. Mainland buckets require a domain
+with ICP registration. The endpoint must not contain an object path, credentials,
+query, or fragment. Confirm S3 API compatibility against the real domain before
+deployment; wire replay tests do not verify the OSS domain binding or policy.
+
+## Endpoint access restrictions [#endpoint-access-restrictions]
+
+Alibaba Cloud restricts default public endpoints for accounts that activated OSS
+on or after March 20, 2025, at 00:00 UTC+8, when the bucket is in a Chinese mainland
+region. Data operations can fail with `PublicEndpointForbidden` (HTTP 400).
+The [OSS policy notice](https://www.alibabacloud.com/en/notice/oss_update_notice_policy_change_in_calling_data_api_operations_via_the_default_public_domain_name_45a)
+describes the affected operations. The
+[AWS SDK access guide](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
+also lists this restriction; the S3-compatible endpoint is not a workaround.
+
+For affected accounts accessing a bucket over the public internet, Alibaba Cloud
+requires a custom domain name (CNAME). Use the [custom-domain mode](#use-a-custom-domain)
+with an endpoint bound to the bucket. Setting `endpoint` alone keeps the default
+service-endpoint addressing and adds the bucket name to the host.
+
+For a workload in an Alibaba Cloud VPC with access to the bucket's regional
+internal endpoint, use the
+[documented internal-endpoint option](https://www.alibabacloud.com/help/en/oss/user-guide/0048-00000401).
+For a bucket in `cn-hangzhou`, set this field in the OSS store configuration:
+
+```json5
+endpoint: "https://s3.oss-cn-hangzhou-internal.aliyuncs.com",
+```
+
+The internal endpoint is not reachable from the public internet. Accounts that
+activated OSS before the policy cutoff and buckets outside Chinese mainland
+regions are outside the scope of this notice. Confirm the account, bucket region,
+and network access before choosing an endpoint.
+
+## Retry and resource behavior [#retry-and-resource-behavior]
+
+The optional `retry` object uses the standard store retry policy. SDK retries
+are disabled, but the shared HTTP transport also retries: its attempts can
+multiply the store retry loop. A total retry budget is not yet implemented.
+
+Each SDK operation attempt has a 120-second timeout. The custom HTTP connector
+does not currently apply the SDK connection-timeout setting to TCP connections.
+Receiving an upload part before an SDK call, reading a download body after the
+response headers, and waiting for a consumer are not covered by a total transfer
+deadline.
+
+Uploads and downloads use the existing S3 transfer implementation, including
+multipart uploads and transfer size validation. Its buffering and concurrency
+behavior is inherited. `multipart_max_concurrent_uploads` bounds both queued
+parts and concurrent part requests per upload (default: 2). Part sizes depend
+on the declared upload size. This adapter does not provide a global byte budget
+or upload admission queue. OSS-specific spool, TTL, and read-proxy settings are
+not supported. To expire cached objects, configure bucket lifecycle rules
+separately.
+
+## Verify [#verify]
+
+Point the CAS service at this store and run the same build twice with remote
+caching enabled. The first build should upload its outputs and the second should
+reuse them. Check both a small Action Cache entry and an object large enough to
+use multipart upload. A successful replay test does not establish compatibility
+with a live bucket, its permissions, or its endpoint restrictions.
+
+<VerifyBlock>
+  The second build reports remote cache hits, and downloaded outputs match the
+  first build. OSS wire replay tests cover endpoint selection, signing scope,
+  direct reads, small uploads, multipart completion, and failure cleanup;
+  verification against a real OSS bucket is still required before production use.
+</VerifyBlock>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Add verification or a local fast tier around the OSS backend.
+</NextStep>
+
 # https://docs.nativelink.com/how-to/stores/compose-stores
 
 **Compose stores**: The wrapper vocabulary (fast_slow, verify, dedup, existence_cache, size_partitioning, shard and the rest) and the order the layers have to go in.
@@ -11511,6 +11876,14 @@ The `eviction_policy` here governs the existence *index*, not the data. It is
 a small map of digests, so it can hold far more entries than the store itself.
 This is the highest-leverage wrapper in front of object storage, where every
 existence check is a billed request.
+
+A `remove` or `remove_cached` through this wrapper drops that local presence
+entry, so the next `has()` asks the backend again, then forwards the call to
+the wrapped store. `removed=true` means a copy below this wrapper was
+dropped; `remove_cached` only reaches cache tiers and keeps the durable copy.
+A failed or no-op backend removal still leaves the old positive untrusted.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
 
 ### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
 
@@ -13287,12 +13660,15 @@ just the newest, because the breaking change may be three releases back.
 No `--validate` flag exists. The binary takes one positional argument, the
 config file (plus the usual `--help` and `--version`), and parses it at
 startup, which is exactly what you want, because the check is just "does the
-new binary accept this file":
+new binary accept this file". Set `NATIVELINK_VERSION` to the exact release
+you are moving to, from the releases page:
 
 ```sh
+NATIVELINK_VERSION=vX.Y.Z
+
 docker run --rm \
   -v $(pwd)/cas.json5:/config.json5 \
-  ghcr.io/tracemachina/nativelink:v1.6.5 /config.json5
+  ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION} /config.json5
 ```
 
 A config error fails within a second, before any port is bound, with a message
@@ -14669,8 +15045,9 @@ anything else in it: **all workers must share the same CAS storage path.**
 When they do not, actions fail with
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 which the worker reports to the scheduler as `FAILED_PRECONDITION` with that
@@ -15906,13 +16283,18 @@ happens once, at parse time; rotating a certificate on disk needs a restart.
 <Callout type="info" title="client_ca_file is the closest thing to authentication you get">
 
   mTLS proves that a client holds a certificate your CA issued. It does not map
-  that identity to a permission; every authenticated client can do everything.
-  No read-only role, no per-instance-name restriction, and no way exists to
-  let CI write to the cache while developers only read.
+  that identity to a permission: NativeLink has no per-client role, so every
+  authenticated client can do anything the endpoint it reaches allows.
 
-  If you need that distinction, it lives in front of NativeLink: separate
-  listeners, separate CAs, and a proxy or network policy that decides which
-  clients reach which listener.
+  The Action Cache has one per-instance control. An `instance_name` marked
+  `read_only` rejects `UpdateActionResult` while still serving reads, and
+  `GetCapabilities` advertises `update_enabled: false` for it. That restriction
+  belongs to the instance, not the client, so "CI writes while developers only
+  read" still comes down to routing: serve a writable `instance_name` and a
+  read-only one, then let a proxy or network policy in front decide which
+  clients reach which. The
+  [`ci_cache_and_schedulers.json5`](/remote-execution/examples-and-templates#server-configs)
+  example wires exactly that.
 
 </Callout>
 
@@ -18430,8 +18812,9 @@ The error your developers report will not contain the word "missing" and
 will not look like a cache problem. The underlying message is:
 
 ```text
-Object <digest> not found in either fast or slow store. If using multiple
-workers, ensure all workers share the same CAS storage path.
+Object <digest> not found in either fast or slow store, or the slow store
+considers it expired (consider_expired_after_s). If using multiple workers,
+ensure all workers share the same CAS storage path.
 ```
 
 <Callout type="info" title="That wording is load-bearing">
@@ -19753,6 +20136,38 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
+A class may also carry `gpu_count`, written to `gpu_property_name` on the
+scale the workers advertise: whole devices, or shares of one where a fleet
+counts a device in parts. A share is stated and never measured, so it plays
+no part in choosing a class for a measured action. While the hints file
+sizes actions, an entry states it directly with `gpu_count` or through the
+class it names. In either mode the class the cold-start rules name for an
+action supplies it, and goes on supplying it after the action's CPU and
+memory have been learned. A learning scheduler does not seed a `gpu_count`
+from the hints file and logs a warning when the file states one. A value
+the client sent is never lowered, and a class rule fills the property only
+when it is absent.
+
+Device memory is the part of a GPU that is learned, where something
+measures it. A worker reads no device itself: whatever wraps an action
+reports the peak it held as `peak_gpu_memory_kb` in the side channel file,
+the worker carries that figure in its usage report, and the sketch keeps the
+largest one of each half-window. The reservation, written to
+`gpu_memory_property_name`, is the most any run in the window held plus
+`headroom_percent`; a maximum and not a percentile, because an action that
+runs out of device memory is ended outright. A class that names
+`gpu_memory_kb` stands for a slice of a GPU. An action measured on a device
+takes the smallest such class that holds what it held, with that class's
+`gpu_count`, and an action that was not measured on one takes a class that
+names no device memory. Past the largest slice no class stands in: the
+measured number is reserved as it is, so only a worker advertising that
+much is asked. A measurement is reserved only when a class names
+`gpu_memory_kb`. A ladder that names no device memory reserves none, and
+neither does a configuration with no ladder at all, because nothing there
+says a worker advertises it; the measurement is still recorded. A number
+stated in the hints file is applied as written. Snapshots that predate the
+dimension still load.
+
 The `memory_budget_bytes` accounting includes entry storage, variable-length
 keys, map bookkeeping, probation and reserved snapshot working memory. The
 **512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
@@ -20968,7 +21383,7 @@ store name the server exposes.
 | --- | --- | --- |
 | `memory` | An in-process hash map | Fastest, gone on restart. Good for AC tiers and dev. |
 | `filesystem` | Local disk | Survives restarts; scans and rebuilds its index on startup. |
-| `experimental_cloud_object_store` | A cloud object bucket | One store type, six `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure). All speak an S3-compatible API except `gcs` and `azure`. |
+| `experimental_cloud_object_store` | A cloud object bucket | One store type with `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure), and `oss` (Alibaba Cloud OSS, development builds). All speak an S3-compatible API except `gcs` and `azure`. |
 | `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning`; most Redis services cap uploads around 256 to 512 MB. |
 | `experimental_mongo` | MongoDB | Supports CAS and scheduler data, with optional change streams for scheduler subscriptions. |
 | `grpc` | Another NativeLink-compatible gRPC endpoint | Proxies calls upstream. Useful for a regional cache in front of a central cluster. |
@@ -21126,8 +21541,12 @@ NativeLink implements the [Remote Execution API](https://github.com/bazelbuild/r
 plus the adjacent protocols it depends on (ByteStream, long-running
 Operations, Remote Asset and the Build Event Protocol), and defines exactly
 one service of its own. Every vendored `.proto` under `nativelink-proto/` is
-copied from upstream with only its licence header replaced; there are no
+copied from upstream with its licence header replaced; there are no
 NativeLink-specific fields or extensions on the standard messages.
+`remote_execution.proto` is pinned to remote-apis
+[v2.12.0](https://github.com/bazelbuild/remote-apis/tree/9e084d0e43e717128ee72b5be584a7ba33e8006b)
+and keeps its five `[deprecated = true]` field options as comments, so the
+generated Rust code carries no `#[deprecated]` attributes on those fields.
 
 ## Services [#services]
 
@@ -21243,11 +21662,21 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
 uploaded" mistake into a fast error, not to provide a guarantee. See
 <SourceLink file="nativelink-service/src/execution_server.rs" symbol="ExecutionServer" />.
+
+**A malformed `Action.timeout` is rejected.** A negative `seconds` or `nanos`,
+or `nanos` of 1,000,000,000 or more, is not a valid `google.protobuf.Duration`,
+so `Execute` returns `INVALID_ARGUMENT`. A valid timeout longer than the
+worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
 
 **`ActionStage::CacheCheck` is never emitted.** The cache lookup happens in a
 decorator in front of the scheduler, so the state is skipped entirely. A
@@ -21258,8 +21687,20 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
+**`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
+action is never answered from the Action Cache, never shares an execution with
+an identical action that is already running, and the worker does not write its
+result to the Action Cache. A historical result is still uploaded when
+`upload_historical_results_strategy` asks for one: that record is stored under
+its own digest for debugging and is never served as a cached result.
+
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
+
+**Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
+request missing a digest it requires, is a client error, so every service
+answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
+`INTERNAL` with backoff but fail fast on `INVALID_ARGUMENT`.
 
 ## Intentional deviations from the specification [#intentional-deviations]
 
@@ -21710,10 +22151,11 @@ the crate, so:
 nativelink --version
 ```
 
-prints the crate version (`1.6.5` at the time of writing) and exits. The
-container image is tagged with the same version prefixed by `v`
-(`ghcr.io/tracemachina/nativelink:v1.6.5`); pin that tag in production rather
-than a floating one. See
+prints the crate version and exits. The container image is tagged with the
+same version prefixed by `v`, as in `ghcr.io/tracemachina/nativelink:vX.Y.Z`.
+We don't recommend deploying whatever release is newest at deploy time: in
+production, pin an exact tag and upgrade deliberately (see
+[Container registry](/getting-started/shared-cache#container-registry)). See
 [CLI and environment](/reference/cli-and-env) for the complete flag surface,
 which is `--help` and `--version` and nothing else, and
 [Upgrade versions](/how-to/upgrade-versions) for moving between them.
@@ -23733,9 +24175,9 @@ The shape of it:
     publish. Publishing is what triggers the signed-artifacts workflow.
   </li>
   <li>
-    **Verify the assets landed**: for each target, a `.tar.gz` plus its
-    `.sig` and `.pem`, an `.spdx.json` SBOM, and an `.intoto.jsonl`
-    provenance file.
+    **Verify the assets landed**: for each target, a `.tar.gz` (Unix) or `.zip`
+    (Windows) plus its `.sig` and `.pem`, an `.spdx.json` SBOM, and an
+    `.intoto.jsonl` provenance file.
   </li>
 </Steps>
 
@@ -23748,9 +24190,10 @@ The shape of it:
 | `config-reference.yaml` | `v1.*` tags, and weekly | Regenerated config reference, auto-merged |
 | `release.yaml` | Publishing a GitHub Release | Signed binaries, SBOMs, SLSA provenance |
 
-`release.yaml` builds three targets (`x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`), signs each with
-keyless Sigstore cosign, and attaches SLSA Build Level 3 provenance.
+`release.yaml` builds four targets (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc`), signs each with keyless Sigstore cosign, and attaches
+SLSA Build Level 3 provenance.
 
 <Callout type="info" title="Cosign is pinned to v2.5.3 on purpose">
   Cosign v3 stopped emitting the separate `.sig` and `.pem` files. The

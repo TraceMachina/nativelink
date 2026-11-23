@@ -316,10 +316,9 @@ impl FetchServer {
         request: FetchBlobRequest,
     ) -> Result<Response<FetchBlobResponse>, Error> {
         let instance_name = &request.instance_name;
-        let store_info = self
-            .stores
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store_info = self.stores.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         if request.uris.is_empty() {
             return Err(Error::new(

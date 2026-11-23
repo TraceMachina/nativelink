@@ -26,7 +26,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_util::common::fs::set_open_file_limit;
 use nativelink_util::digest_hasher::{DigestHasherFunc, set_default_digest_hasher_func};
 use nativelink_util::fs;
-#[cfg(target_family = "unix")]
+#[cfg(any(target_family = "unix", windows))]
 use nativelink_util::shutdown_guard::Priority;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{
@@ -38,7 +38,9 @@ use tokio::select;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{broadcast, oneshot};
-use tracing::{trace_span, warn};
+use tracing::trace_span;
+#[cfg(any(target_family = "unix", windows))]
+use tracing::warn;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -144,12 +146,16 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Each listener will perform its cleanup and then drop its `oneshot::Sender`, signaling completion.
     // Once all `oneshot::Sender` instances are dropped, the worker knows it can safely terminate.
     let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
-    #[cfg(target_family = "unix")]
+    #[cfg(any(target_family = "unix", windows))]
     let shutdown_tx_clone = shutdown_tx.clone();
-    #[cfg(target_family = "unix")]
+    #[cfg(any(target_family = "unix", windows))]
     let mut shutdown_guard = ShutdownGuard::default();
 
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
+
+    // Not used on platforms without a signal handler
+    #[cfg(not(any(target_family = "unix", windows)))]
+    drop(scheduler_shutdown_rx);
 
     // SIGINT takes the SIGTERM path: a worker stopped from a terminal
     // drains like one stopped by its supervisor. A second SIGINT during
@@ -166,6 +172,38 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         tokio::spawn(async move {
             sigint.recv().await;
             eprintln!("User terminated process via second SIGINT");
+            std::process::exit(130);
+        });
+        drop(shutdown_tx_clone.send(shutdown_guard.clone()));
+        scheduler_shutdown_rx
+            .await
+            .expect("Failed to receive scheduler shutdown");
+        let () = shutdown_guard.wait_for(Priority::P0).await;
+        warn!("Successfully shut down nativelink.");
+        std::process::exit(exit_code);
+    });
+
+    // Keep shutdown_tx alive on Windows and drain cleanly on console/supervisor
+    // termination signals. CTRL_LOGOFF is deliberately omitted because Windows
+    // delivers it to services whenever any interactive user logs off.
+    #[cfg(windows)]
+    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
+    runtime.spawn(async move {
+        use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
+
+        let mut sig_ctrl_c = ctrl_c().expect("Failed to listen to CTRL_C");
+        let mut sig_ctrl_break = ctrl_break().expect("Failed to listen to CTRL_BREAK");
+        let mut sig_ctrl_close = ctrl_close().expect("Failed to listen to CTRL_CLOSE");
+        let mut sig_ctrl_shutdown = ctrl_shutdown().expect("Failed to listen to CTRL_SHUTDOWN");
+        let exit_code = tokio::select! {
+            _ = sig_ctrl_c.recv() => { warn!("Process terminated via CTRL_C, draining; send it again to exit at once"); 130 }
+            _ = sig_ctrl_break.recv() => { warn!("Process terminated via CTRL_BREAK"); 143 }
+            _ = sig_ctrl_close.recv() => { warn!("Process terminated via CTRL_CLOSE"); 143 }
+            _ = sig_ctrl_shutdown.recv() => { warn!("Process terminated via CTRL_SHUTDOWN"); 143 }
+        };
+        tokio::spawn(async move {
+            sig_ctrl_c.recv().await;
+            eprintln!("User terminated process via second CTRL_C");
             std::process::exit(130);
         });
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));

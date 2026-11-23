@@ -101,6 +101,15 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
+    /// The result the worker sent for `operation_id` is settled: applied, or
+    /// for an operation the worker no longer holds. A worker that named
+    /// itself is told, so it need not send it again; an older one is not.
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
     /// A keepalive said which operations the worker is running. An
     /// acknowledged operation the worker leaves out of two reports in a row
     /// finished without its result reaching the scheduler; it is released
@@ -109,6 +118,17 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         &self,
         _worker_id: &WorkerId,
         _operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// A keepalive said how much memory the worker has sampled so far for
+    /// each running operation, as `(operation, peak KiB)`. Kept against the
+    /// dispatch so a lost worker's actions can be judged by it (RFC-0018).
+    async fn worker_operation_memory_reported(
+        &self,
+        _worker_id: &WorkerId,
+        _peaks: Vec<(OperationId, u64)>,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -123,13 +143,24 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error>;
 
+    /// A message from the worker reached this scheduler at `timestamp`. It
+    /// is called as the message arrives, before it is processed: processing
+    /// can wait a long time behind a slow store, and a worker whose messages
+    /// keep arriving is alive for all of that time. Timing it out then would
+    /// evict it for the scheduler's own delay.
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp);
+
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
 
     /// The worker's stream ended without a `GoingAway`: it crashed, was
     /// OOM-killed or lost its connection. Its actions requeue as a
     /// disconnect, so the retry cap names the worker rather than the job.
-    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error>;
+    /// `connection` is the entry's `Worker::connection`; when the worker has
+    /// since reconnected under the same id, the entry is the new
+    /// connection's and is left alone.
+    async fn worker_disconnected(&self, worker_id: &WorkerId, connection: u64)
+    -> Result<(), Error>;
 
     /// Evict all workers from the scheduler, setting their actions back to queued.
     async fn shutdown(&self, shutdown_guard: ShutdownGuard);

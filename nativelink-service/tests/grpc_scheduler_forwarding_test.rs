@@ -17,12 +17,14 @@
 //! identity and nominated headers, and the operation name Execute hands back
 //! resolves again on `WaitExecution`.
 
+use core::pin::Pin;
+use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::{Future, StreamExt, stream};
+use futures::{Future, Stream, StreamExt, future, stream};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
@@ -35,19 +37,25 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
     Capabilities, CapabilitiesServer,
 };
-use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
+use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
+    Execution, ExecutionServer as UpstreamExecutionServer,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
     Action, Command, ExecuteRequest, ExecutionCapabilities, GetCapabilitiesRequest,
     ServerCapabilities, WaitExecutionRequest, digest_function,
 };
+use nativelink_proto::google::longrunning::Operation;
 use nativelink_scheduler::grpc_scheduler::GrpcScheduler;
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
-use nativelink_util::action_messages::{ActionInfo, ActionStage, ActionState, OperationId};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionResult, ActionStage, ActionState, OperationId,
+};
 use nativelink_util::background_spawn;
+use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
@@ -91,10 +99,12 @@ fn observe(rpc: &'static str) -> Seen {
 }
 
 /// Holds an action queued forever: the first `changed` hands out the queued
-/// state, later ones never resolve, as a scheduler with no free worker.
+/// state, later ones never resolve, as a scheduler with no free worker. With
+/// `lost` the later ones fail instead, as a scheduler that went away.
 struct QueuedForever {
     state: Arc<ActionState>,
     reported: bool,
+    lost: bool,
 }
 
 #[async_trait]
@@ -108,7 +118,10 @@ impl ActionStateResult for QueuedForever {
             self.reported = true;
             return Ok((self.state.clone(), None));
         }
-        futures::future::pending().await
+        if self.lost {
+            return Err(make_err!(Code::Internal, "the scheduler went away"));
+        }
+        future::pending().await
     }
 
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
@@ -122,6 +135,8 @@ impl ActionStateResult for QueuedForever {
 struct RecordingScheduler {
     seen: Mutex<Vec<Seen>>,
     queued: Mutex<Option<Arc<ActionState>>>,
+    /// Ends every operation's stream with an error after its queued state.
+    lose_after_queued: bool,
 }
 
 impl RootMetricsComponent for RecordingScheduler {}
@@ -144,6 +159,7 @@ impl ClientStateManager for RecordingScheduler {
         Ok(Box::new(QueuedForever {
             state,
             reported: false,
+            lost: self.lose_after_queued,
         }))
     }
 
@@ -161,6 +177,7 @@ impl ClientStateManager for RecordingScheduler {
         let result: Box<dyn ActionStateResult> = Box::new(QueuedForever {
             state,
             reported: false,
+            lost: self.lose_after_queued,
         });
         Ok(stream::once(async move { result }).boxed())
     }
@@ -328,6 +345,7 @@ async fn grpc_scheduler_forwards_the_client_and_resolves_its_operation() -> Resu
             action_digest: Some(action_digest.into()),
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .with_context(client.clone())
         .await?
@@ -366,6 +384,325 @@ async fn grpc_scheduler_forwards_the_client_and_resolves_its_operation() -> Resu
     for call in seen.iter() {
         assert_eq!(call.identity.as_deref(), Some(IDENTITY), "{call:?}");
         assert_eq!(call.authorization.as_deref(), Some(TOKEN), "{call:?}");
+    }
+    Ok(())
+}
+
+/// TRA-2102: when the upstream scheduler goes away mid-operation, the client
+/// of the forwarding server is told `Unavailable`, which it retries, not
+/// `Internal`, which it does not.
+#[nativelink_test]
+async fn grpc_scheduler_reports_a_lost_upstream_as_unavailable() -> Result<(), Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "main_cas",
+        store_factory(
+            &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action_digest = serialize_and_upload_message(
+        &Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(command_digest.into()),
+            ..Default::default()
+        },
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let upstream = Arc::new(RecordingScheduler {
+        lose_after_queued: true,
+        ..RecordingScheduler::default()
+    });
+    let port = serve_upstream(&store_manager, upstream).await?;
+    let scheduler = Arc::new(GrpcScheduler::new(&GrpcSpec {
+        endpoint: GrpcEndpoint {
+            address: format!("http://127.0.0.1:{port}"),
+            tls_config: None,
+            concurrency_limit: None,
+            connect_timeout_s: 0,
+            tcp_keepalive_s: 0,
+            http2_keepalive_interval_s: 0,
+            http2_keepalive_timeout_s: 0,
+        },
+        retry: Retry::default(),
+        max_concurrent_requests: 0,
+        connections_per_endpoint: 0,
+        forward_headers: vec![],
+    })?);
+    let front = make_execution_server(&store_manager, scheduler)?;
+
+    let mut execute_stream = front
+        .execute(Request::new(ExecuteRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: digest_function::Value::Sha256.into(),
+            action_digest: Some(action_digest.into()),
+            ..Default::default()
+        }))
+        .await?
+        .into_inner();
+    let queued = execute_stream
+        .next()
+        .await
+        .expect("Execute streams the queued operation")?;
+    assert!(!queued.done);
+
+    let lost = execute_stream
+        .next()
+        .await
+        .expect("the stream reports the loss before it ends");
+    let status = lost.expect_err("the upstream went away");
+    assert_eq!(status.code(), Code::Unavailable, "{status:?}");
+    Ok(())
+}
+
+/// How a scripted upstream ends an operation's stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// Sends the result, then ends the stream.
+    ResultThenEnd,
+    /// Sends the result and keeps the stream open.
+    ResultThenHold,
+    /// Ends the stream before any result.
+    EndBeforeResult,
+    /// Drops the connection before any result, once the client has read the
+    /// operation's first message.
+    ResetBeforeResult,
+}
+
+type OperationStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
+
+/// An upstream that answers Execute and `WaitExecution` alike: the operation
+/// queued, then executing, then ending as `ending` says.
+struct ScriptedUpstream {
+    ending: Ending,
+    action_digest: DigestInfo,
+    /// The upstream's connections, so a reset can drop them.
+    connections: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    /// Notified when the client has read a message, for the reset.
+    client_read: Arc<tokio::sync::Notify>,
+}
+
+impl ScriptedUpstream {
+    fn operations(&self) -> OperationStream {
+        let operation = |stage| {
+            ActionState {
+                client_operation_id: OperationId::from(UPSTREAM_OPERATION_ID),
+                stage,
+                action_digest: self.action_digest,
+                last_transition_timestamp: SystemTime::now(),
+            }
+            .as_operation(OperationId::from(UPSTREAM_OPERATION_ID))
+        };
+        let mut operations = vec![
+            operation(ActionStage::Queued),
+            operation(ActionStage::Executing),
+        ];
+        if matches!(self.ending, Ending::ResultThenEnd | Ending::ResultThenHold) {
+            operations.push(operation(ActionStage::Completed(ActionResult::default())));
+        }
+        let ending = self.ending;
+        let connections = self.connections.clone();
+        let client_read = self.client_read.clone();
+        let after = stream::once(async move {
+            match ending {
+                Ending::ResultThenEnd | Ending::EndBeforeResult => None,
+                Ending::ResultThenHold => future::pending().await,
+                Ending::ResetBeforeResult => {
+                    client_read.notified().await;
+                    for connection in connections.lock().drain(..) {
+                        connection.abort();
+                    }
+                    future::pending().await
+                }
+            }
+        })
+        .filter_map(future::ready);
+        Box::pin(stream::iter(operations.into_iter().map(Ok)).chain(after))
+    }
+}
+
+#[tonic::async_trait]
+impl Execution for ScriptedUpstream {
+    type ExecuteStream = OperationStream;
+    type WaitExecutionStream = OperationStream;
+
+    async fn execute(
+        &self,
+        _request: Request<ExecuteRequest>,
+    ) -> Result<Response<Self::ExecuteStream>, Status> {
+        Ok(Response::new(self.operations()))
+    }
+
+    async fn wait_execution(
+        &self,
+        _request: Request<WaitExecutionRequest>,
+    ) -> Result<Response<Self::WaitExecutionStream>, Status> {
+        Ok(Response::new(self.operations()))
+    }
+}
+
+/// Serves `upstream` on a port of its own, keeping each connection's task so
+/// a reset can drop it.
+async fn serve_scripted_upstream(upstream: ScriptedUpstream) -> Result<u16, Error> {
+    let connections = upstream.connections.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let router = tonic::service::Routes::new(UpstreamExecutionServer::new(upstream))
+        .add_service(CapabilitiesServer::new(RecordingCapabilities(Arc::new(
+            RecordingScheduler::default(),
+        ))))
+        .into_axum_router();
+    let service = TowerToHyperService::new(router);
+    background_spawn!("scripted_upstream_accept", async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let service = service.clone();
+            let connection = background_spawn!("scripted_upstream_conn", async move {
+                drop(
+                    auto::Builder::new(Executor)
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await,
+                );
+            });
+            connections.lock().push(connection.abort_handle());
+        }
+    });
+    Ok(port)
+}
+
+/// However the upstream scheduler ends an operation's stream, the client of
+/// the forwarding server is never left waiting. A result ends the client's
+/// stream, even while the upstream holds its own open; an upstream that
+/// ends or drops before a result ends it with `Unavailable`, which Bazel
+/// retries.
+#[nativelink_test]
+async fn grpc_scheduler_ends_the_client_stream_however_the_upstream_ends() -> Result<(), Error> {
+    const BOUND: Duration = Duration::from_secs(10);
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "main_cas",
+        store_factory(
+            &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action_digest = serialize_and_upload_message(
+        &Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(command_digest.into()),
+            ..Default::default()
+        },
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    for ending in [
+        Ending::ResultThenEnd,
+        Ending::ResultThenHold,
+        Ending::EndBeforeResult,
+        Ending::ResetBeforeResult,
+    ] {
+        for wait_execution in [false, true] {
+            let case = format!("{ending:?}, wait_execution {wait_execution}");
+            let client_read = Arc::new(tokio::sync::Notify::new());
+            let port = serve_scripted_upstream(ScriptedUpstream {
+                ending,
+                action_digest,
+                connections: Arc::default(),
+                client_read: client_read.clone(),
+            })
+            .await?;
+            let scheduler = Arc::new(GrpcScheduler::new(&GrpcSpec {
+                endpoint: GrpcEndpoint {
+                    address: format!("http://127.0.0.1:{port}"),
+                    tls_config: None,
+                    concurrency_limit: None,
+                    connect_timeout_s: 0,
+                    tcp_keepalive_s: 0,
+                    http2_keepalive_interval_s: 0,
+                    http2_keepalive_timeout_s: 0,
+                },
+                retry: Retry::default(),
+                max_concurrent_requests: 0,
+                connections_per_endpoint: 0,
+                forward_headers: vec![],
+            })?);
+            let front = make_execution_server(&store_manager, scheduler)?;
+            let mut client_stream = if wait_execution {
+                front
+                    .wait_execution(Request::new(WaitExecutionRequest {
+                        name: format!("{INSTANCE_NAME}/{INSTANCE_NAME}/{UPSTREAM_OPERATION_ID}"),
+                    }))
+                    .await?
+                    .into_inner()
+                    .boxed()
+            } else {
+                front
+                    .execute(Request::new(ExecuteRequest {
+                        instance_name: INSTANCE_NAME.to_string(),
+                        digest_function: digest_function::Value::Sha256.into(),
+                        action_digest: Some(action_digest.into()),
+                        ..Default::default()
+                    }))
+                    .await?
+                    .into_inner()
+                    .boxed()
+            };
+
+            // Read the client's stream to its end, each message within the
+            // bound.
+            let mut done = false;
+            let mut ended_with = None;
+            loop {
+                let next = tokio::time::timeout(BOUND, client_stream.next())
+                    .await
+                    .unwrap_or_else(|_| panic!("{case}: the client's stream hung"));
+                match next {
+                    None => break,
+                    Some(Ok(operation)) => {
+                        assert!(!done, "{case}: a message after the done one");
+                        done = operation.done;
+                        client_read.notify_one();
+                    }
+                    Some(Err(status)) => {
+                        ended_with = Some(status.code());
+                        break;
+                    }
+                }
+            }
+            if matches!(ending, Ending::ResultThenEnd | Ending::ResultThenHold) {
+                assert!(done, "{case}: the client never got its result");
+                assert_eq!(ended_with, None, "{case}: the stream ended with an error");
+            } else {
+                assert!(!done, "{case}: a result the upstream never sent");
+                assert_eq!(
+                    ended_with,
+                    Some(Code::Unavailable),
+                    "{case}: the client must be told to retry"
+                );
+            }
+        }
     }
     Ok(())
 }

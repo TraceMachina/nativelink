@@ -21,7 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
-use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_config::schedulers::{MemoryEscalationSpec, PropertyType, WorkerAllocationStrategy};
 use nativelink_error::{Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -29,9 +29,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, WorkerLoad
+    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, ExecuteResultAccepted, GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, UpdateForScheduler, WorkerLoad
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -40,9 +41,7 @@ use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker::{ActionInfoWithProps, channel_capacity};
 use nativelink_scheduler::worker_scheduler::{WorkerScheduler, WorkerSummary};
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
-use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
-};
+use nativelink_util::action_messages::{ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
@@ -179,11 +178,43 @@ async fn setup_api_server_with(
     max_worker_tasks: u64,
     dispatch_ack_timeout_s: u64,
 ) -> Result<TestContext, Error> {
+    setup_api_server_full(
+        worker_timeout,
+        now_fn,
+        max_worker_tasks,
+        dispatch_ack_timeout_s,
+        None,
+    )
+    .await
+}
+
+/// With `memory`, the scheduler escalates memory (`memory_kb`, doubling)
+/// and the worker advertises that many KiB of `memory_kb`.
+async fn setup_api_server_full(
+    worker_timeout: u64,
+    now_fn: NowFn,
+    max_worker_tasks: u64,
+    dispatch_ack_timeout_s: u64,
+    memory: Option<u64>,
+) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
     const UUID_SIZE: usize = 36;
 
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+    let platform_property_manager = Arc::new(PlatformPropertyManager::new(
+        memory
+            .map(|_| HashMap::from([("memory_kb".to_string(), PropertyType::Minimum)]))
+            .unwrap_or_default(),
+    ));
+    let memory_escalation = memory.map(|_| MemoryEscalationSpec {
+        property: "memory_kb".to_string(),
+        percent: 200,
+        max_kb: 0,
+        ladder_kb: Vec::new(),
+        cpu_property: "cpu_count".to_string(),
+        max_steps: 0,
+        escalate_after_worker_losses: 2,
+    });
     let tasks_or_worker_change_notify = Arc::new(Notify::new());
     let state_manager = Arc::new(MockWorkerStateManager::new());
     let worker_registry = Arc::new(WorkerRegistry::new());
@@ -192,7 +223,7 @@ async fn setup_api_server_with(
         platform_property_manager,
         WorkerAllocationStrategy::default(),
         None,
-        None,
+        memory_escalation,
         None,
         None, // worker_outcome_tripwire
         tasks_or_worker_change_notify,
@@ -223,6 +254,14 @@ async fn setup_api_server_with(
 
     let connect_worker_request = ConnectWorkerRequest {
         max_inflight_tasks: max_worker_tasks,
+        properties: memory
+            .map(|memory_kb| {
+                vec![Property {
+                    name: "memory_kb".to_string(),
+                    value: memory_kb.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel(1);
@@ -429,7 +468,7 @@ pub async fn server_does_not_timeout_if_execute_complete_test()
     assert_eq!(evicted_operation_id, operation_id);
     assert_eq!(evicted_worker_id, test_context.worker_id);
     assert!(
-        matches!(evicted_update, UpdateOperationType::UpdateWithDisconnect),
+        matches!(evicted_update, UpdateOperationType::UpdateWithDisconnect(_)),
         "expected the running action to be requeued as a lost worker, got {evicted_update:?}"
     );
     assert!(
@@ -494,7 +533,10 @@ pub async fn stream_end_requeues_running_actions_as_disconnect_test()
         .await;
     assert_eq!(evicted_operation_id, operation_id);
     assert_eq!(evicted_worker_id, test_context.worker_id);
-    assert_eq!(evicted_update, UpdateOperationType::UpdateWithDisconnect);
+    assert_eq!(
+        evicted_update,
+        UpdateOperationType::UpdateWithDisconnect(None)
+    );
     assert!(
         !test_context
             .scheduler
@@ -502,6 +544,83 @@ pub async fn stream_end_requeues_running_actions_as_disconnect_test()
             .await,
         "worker should be gone once its stream ended"
     );
+    Ok(())
+}
+
+/// RFC-0018 on the wire: a keepalive reports the action's peak above its
+/// reservation, the worker's stream then ends with no result (a pod
+/// OOM-killed whole), and the loss reaching the state manager carries the
+/// next reservation, marked as sampled.
+#[nativelink_test]
+pub async fn keepalive_peak_turns_a_lost_worker_into_an_escalation_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server_full(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(static_now_fn),
+        0,
+        0,
+        Some(1_000_000),
+    )
+    .await?;
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), "1000".to_string())]),
+        ..(*uncacheable_action(7)).clone()
+    });
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    let operation_id = OperationId::default();
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+            BASE_NOW_S,
+        )
+        .await?;
+
+    test_context
+        .worker_stream
+        .send(Update::KeepAliveRequest(KeepAliveRequest {
+            load: Some(WorkerLoad {
+                free_memory_kb: 4_321,
+            }),
+            running_operations: Some(RunningOperations {
+                operation_ids: vec![operation_id.to_string()],
+                memory: vec![OperationMemory {
+                    operation_id: operation_id.to_string(),
+                    peak_memory_kb: 1_500,
+                }],
+            }),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
+    // The keepalive is handled on another task; its load report is the
+    // sign the memory report beside it was taken in too.
+    summary_after_report(&test_context, 4_321).await;
+
+    drop(test_context.worker_stream);
+    let (evicted_operation_id, _, evicted_update) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(evicted_operation_id, operation_id);
+    let UpdateOperationType::UpdateWithDisconnect(Some(loss)) = evicted_update else {
+        panic!("expected a loss carrying an escalation, got {evicted_update:?}");
+    };
+    assert!(
+        loss.sampled_over,
+        "the reported peak was over the reservation"
+    );
+    assert_eq!(loss.escalation.property, "memory_kb");
+    assert_eq!(loss.escalation.value, 3_000, "twice the reported peak");
     Ok(())
 }
 
@@ -748,6 +867,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
                 path: "some path4".to_string(),
                 tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
                 is_topologically_sorted: false,
+                root_directory_digest: None,
             }],
             output_directory_symlinks: Vec::default(), // Bazel deprecated this.
             exit_code: 5,
@@ -1418,13 +1538,26 @@ async fn connect_with_prefix(
     server: &WorkerApiServer,
     prefix: &str,
 ) -> Result<(WorkerId, ConnectWorkerStream, mpsc::Sender<Update>), Error> {
-    let (tx, rx) = mpsc::channel(1);
-    tx.send(Update::ConnectWorkerRequest(ConnectWorkerRequest {
-        worker_id_prefix: prefix.to_string(),
-        ..Default::default()
-    }))
+    connect_as(
+        server,
+        ConnectWorkerRequest {
+            worker_id_prefix: prefix.to_string(),
+            ..Default::default()
+        },
+    )
     .await
-    .unwrap();
+}
+
+/// Connects a worker with `request` and returns the id the scheduler gave
+/// it, its stream, and the sender that ends the connection when dropped.
+async fn connect_as(
+    server: &WorkerApiServer,
+    request: ConnectWorkerRequest,
+) -> Result<(WorkerId, ConnectWorkerStream, mpsc::Sender<Update>), Error> {
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(Update::ConnectWorkerRequest(request))
+        .await
+        .unwrap();
     let update_stream = Box::pin(futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|update| {
             (
@@ -1491,5 +1624,289 @@ async fn spawned_timers_evict_on_the_injected_clock() -> Result<(), Box<dyn core
     WorkerApiServer::spawn_timers(&config, &schedulers, &Arc::new(late));
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     assert!(!scheduler.contains_worker_for_test(&worker_id).await);
+    Ok(())
+}
+
+/// A worker that names itself is registered under that name, and keeps it
+/// on every connection; one that does not is named from its prefix.
+#[nativelink_test]
+async fn a_worker_that_names_itself_is_registered_under_its_name()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    let named = ConnectWorkerRequest {
+        worker_id_prefix: "pool-".to_string(),
+        worker_id: "pool-0193a1f2".to_string(),
+        ..Default::default()
+    };
+    let (worker_id, _stream, _tx) = connect_as(&server, named).await?;
+    assert_eq!(worker_id, WorkerId::from("pool-0193a1f2".to_string()));
+    assert!(scheduler.contains_worker_for_test(&worker_id).await);
+
+    let (unnamed, _unnamed_stream, _unnamed_tx) = connect_with_prefix(&server, "pool-").await?;
+    assert!(unnamed.0.starts_with("pool-") && unnamed.0.len() > "pool-".len());
+    Ok(())
+}
+
+/// A chosen id goes into logs and store keys, so one with spaces or
+/// control characters, or longer than 256 bytes, is refused.
+#[nativelink_test]
+async fn a_worker_id_that_is_too_long_or_not_printable_is_refused()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (_scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    for bad in ["two words", "tab\there", "x".repeat(257).as_str()] {
+        let result = connect_as(
+            &server,
+            ConnectWorkerRequest {
+                worker_id: bad.to_string(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("{bad:?} was accepted"));
+        assert_eq!(err.code, nativelink_error::Code::InvalidArgument, "{bad:?}");
+    }
+    let longest = "x".repeat(256);
+    let (_worker_id, _stream, _tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: longest,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// A server over a scheduler whose state manager the test answers.
+fn answered_server() -> Result<
+    (
+        Arc<ApiWorkerScheduler>,
+        Arc<MockWorkerStateManager>,
+        WorkerApiServer,
+    ),
+    Error,
+> {
+    let state_manager = Arc::new(MockWorkerStateManager::new());
+    let scheduler = ApiWorkerScheduler::new(
+        state_manager.clone(),
+        Arc::new(PlatformPropertyManager::new(HashMap::new())),
+        WorkerAllocationStrategy::default(),
+        None,
+        None,
+        None,
+        None, // worker_outcome_tripwire
+        Arc::new(Notify::new()),
+        BASE_WORKER_TIMEOUT_S,
+        60,
+        0,
+        Arc::new(WorkerRegistry::new()),
+        None,
+        None,
+        false,
+        Duration::from_secs(15),
+        "scheduler".to_string(),
+    );
+    let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
+    schedulers.insert("PLAIN_SCHEDULER".to_string(), scheduler.clone());
+    let config = WorkerApiConfig {
+        scheduler: "PLAIN_SCHEDULER".to_string(),
+        disable_kill_revoked_operations: true,
+        kill_revoked_operations_interval_s: 0,
+    };
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    Ok((scheduler, state_manager, server))
+}
+
+/// Dispatches an action to the worker and reads it off the worker's stream.
+async fn run_on(
+    scheduler: &ApiWorkerScheduler,
+    worker_id: &WorkerId,
+    stream: &mut ConnectWorkerStream,
+    seed: u8,
+) -> Result<OperationId, Error> {
+    let operation_id = OperationId::default();
+    scheduler
+        .worker_notify_run_action(
+            worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: uncacheable_action(seed),
+                platform_properties: PlatformProperties::default(),
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+            BASE_NOW_S,
+        )
+        .await?;
+    stream.next().await.expect("the action is dispatched")?;
+    Ok(operation_id)
+}
+
+/// A worker that keeps its id can reconnect before the scheduler has seen
+/// its earlier stream end. The earlier connection is ended, its action
+/// requeued as its disconnect would have, and when that stream's end is
+/// finally seen it leaves the new connection alone.
+#[nativelink_test]
+async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let request = ConnectWorkerRequest {
+        worker_id: "pool-0193a1f2".to_string(),
+        ..Default::default()
+    };
+    let (worker_id, mut first_stream, first_tx) = connect_as(&server, request.clone()).await?;
+
+    // The first connection is running an action.
+    let operation_id = run_on(&scheduler, &worker_id, &mut first_stream, 1).await?;
+
+    // The worker reconnects; the first connection's action is requeued.
+    let reconnect = connect_as(&server, request);
+    let requeue = state_manager.expect_update_operation(Ok(()));
+    let (reconnected, (requeued, requeued_by, update)) = futures::join!(reconnect, requeue);
+    let (reconnected, _second_stream, _second_tx) = reconnected?;
+    assert_eq!(reconnected, worker_id);
+    assert_eq!((requeued, requeued_by), (operation_id, worker_id.clone()));
+    assert!(
+        matches!(update, UpdateOperationType::UpdateWithDisconnect(_)),
+        "{update:?}"
+    );
+
+    // Only now is the first stream's end seen; the worker stays.
+    drop(first_tx);
+    for _ in 0..1_000 {
+        if logs_contain("An earlier connection of a reconnected worker ended")
+            || !scheduler.contains_worker_for_test(&worker_id).await
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        scheduler.contains_worker_for_test(&worker_id).await,
+        "the end of the earlier connection removed the worker that reconnected"
+    );
+    assert!(logs_contain(
+        "An earlier connection of a reconnected worker ended"
+    ));
+    Ok(())
+}
+
+/// The result the worker sends for `operation_id`.
+fn result_for(operation_id: &OperationId) -> Update {
+    Update::ExecuteResult(ExecuteResult {
+        instance_name: "main".to_string(),
+        operation_id: operation_id.to_string(),
+        result: Some(execute_result::Result::ExecuteResponse(
+            ActionStage::Completed(ActionResult::default()).into(),
+        )),
+        resource_usage: None,
+    })
+}
+
+/// The next message on the worker's stream, if one comes within a moment.
+async fn next_message(stream: &mut ConnectWorkerStream) -> Option<update_for_worker::Update> {
+    tokio::time::timeout(Duration::from_millis(200), stream.next())
+        .await
+        .ok()
+        .flatten()
+        .and_then(Result::ok)
+        .and_then(|update| update.update)
+}
+
+fn accepted(operation_id: &OperationId) -> update_for_worker::Update {
+    update_for_worker::Update::ExecuteResultAccepted(ExecuteResultAccepted {
+        operation_id: operation_id.to_string(),
+    })
+}
+
+/// A worker that named itself is told once its result is applied, and told
+/// again when it sends the same result a second time, with no second update
+/// to the operation: the worker can forget a result only the scheduler has.
+#[nativelink_test]
+async fn a_worker_that_names_itself_is_told_its_result_is_settled()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: "pool-0193a1f2".to_string(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, (updated, _, _)) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Ok(())),
+    );
+    sent?;
+    assert_eq!(updated, operation_id);
+    assert_eq!(
+        next_message(&mut stream).await,
+        Some(accepted(&operation_id))
+    );
+
+    // Sent again, as after a reconnect: acknowledged, not applied again (a
+    // second update would wait on the state manager and the stream would
+    // stay silent).
+    tx.send(result_for(&operation_id)).await?;
+    assert_eq!(
+        next_message(&mut stream).await,
+        Some(accepted(&operation_id))
+    );
+    Ok(())
+}
+
+/// A result the store refused is held and written later; the worker keeps
+/// its copy until then, so it is not told the result is settled.
+#[nativelink_test]
+async fn a_result_the_store_refused_is_not_acknowledged() -> Result<(), Box<dyn core::error::Error>>
+{
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: "pool-0193a1f2".to_string(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, _) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Err(make_err!(
+            nativelink_error::Code::Unavailable,
+            "the store refused the write"
+        ))),
+    );
+    sent?;
+    assert_eq!(next_message(&mut stream).await, None);
+    Ok(())
+}
+
+/// A worker that does not name itself does not know the acknowledgement,
+/// and would fail on it: it is never sent one.
+#[nativelink_test]
+async fn a_worker_that_does_not_name_itself_is_not_sent_acknowledgements()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, state_manager, server) = answered_server()?;
+    let (worker_id, mut stream, tx) = connect_with_prefix(&server, "pool-").await?;
+    let operation_id = run_on(&scheduler, &worker_id, &mut stream, 1).await?;
+
+    let (sent, _) = join!(
+        tx.send(result_for(&operation_id)),
+        state_manager.expect_update_operation(Ok(())),
+    );
+    sent?;
+    assert_eq!(next_message(&mut stream).await, None);
     Ok(())
 }

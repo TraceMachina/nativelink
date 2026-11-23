@@ -220,6 +220,12 @@ pub struct Half {
     pub max_memory_kb: u64,
     pub max_cpu_millicores: u64,
     pub max_disk_kb: u64,
+    /// The largest `peak_gpu_memory_kb` of the half. A maximum and no
+    /// histogram: few keys run on a device at all, an action's device
+    /// memory varies far less from run to run than its host memory, and
+    /// running out of it ends the action outright, so the reservation is
+    /// the most any run in the window held.
+    pub max_gpu_memory_kb: u64,
 }
 
 /// What the sketch knows about one key.
@@ -255,6 +261,9 @@ pub struct Observation {
     /// not a measurement).
     pub cpu_millicores: Option<u64>,
     pub peak_disk_kb: u64,
+    /// Device memory the attempt held on its GPU, as its wrapper reported
+    /// it; zero for an attempt nothing measured on a device.
+    pub peak_gpu_memory_kb: u64,
     /// The memory the attempt was killed at, when it was killed for memory
     /// and the reservation is known. A kill at an unknown reservation
     /// records no floor: a floor of zero is no floor.
@@ -271,16 +280,26 @@ pub struct Shaped {
     pub cpu_count: u64,
     pub memory_kb: u64,
     pub disk_kb: u64,
+    /// Device memory, for an entry that was measured on a GPU.
+    pub gpu_memory_kb: u64,
+    /// The share of a device the entry's class stands for. Set only with a
+    /// class chosen by measured device memory: fitting a class by cpu and
+    /// memory says nothing about a device.
+    pub gpu_count: u64,
     pub class: Option<String>,
 }
 
 impl Shaped {
     pub const fn is_empty(&self) -> bool {
-        self.cpu_count == 0 && self.memory_kb == 0 && self.disk_kb == 0
+        self.cpu_count == 0 && self.memory_kb == 0 && self.disk_kb == 0 && self.gpu_memory_kb == 0
     }
 }
 
 /// The numbers `ShapeOne` takes today, from the scheduler's own spec.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one switch per dimension the fleet reserves; a set of them would not read better"
+)]
 #[derive(Clone, Debug)]
 pub struct Policy {
     pub headroom_percent: u64,
@@ -290,6 +309,7 @@ pub struct Policy {
     pub reserve_cpu: bool,
     pub reserve_memory: bool,
     pub reserve_disk: bool,
+    pub reserve_gpu_memory: bool,
 }
 
 /// Reserve three quarters for snapshot encoding/loading and transient storage.
@@ -783,6 +803,12 @@ impl Entry {
         self.current.max_disk_kb.max(self.previous.max_disk_kb)
     }
 
+    pub fn max_gpu_memory_kb(&self) -> u64 {
+        self.current
+            .max_gpu_memory_kb
+            .max(self.previous.max_gpu_memory_kb)
+    }
+
     pub fn memory_p95_upper(&self) -> u64 {
         self.current.memory.p95_upper_with(&self.previous.memory)
     }
@@ -859,6 +885,7 @@ impl Entry {
             half.disk.add(observation.peak_disk_kb);
             half.max_disk_kb = half.max_disk_kb.max(observation.peak_disk_kb);
         }
+        half.max_gpu_memory_kb = half.max_gpu_memory_kb.max(observation.peak_gpu_memory_kb);
         if let Some(killed_at_kb) = observation.killed_at_kb
             && killed_at_kb > 0
             && killed_at_kb >= self.killed_at_kb
@@ -920,18 +947,33 @@ const fn with_headroom(value: u64, headroom_percent: u64) -> u64 {
 /// top of the ladder it is the top class, unless the action was killed at
 /// or above the top's memory: no class then sits above the kill, and the
 /// raw numbers stand rather than a class whose memory would be killed again.
+///
+/// A class that names device memory is a slice of a GPU. The ladder an
+/// action is placed on is those classes when it was measured on a device
+/// and the others when it was not, so work that never touched a GPU is not
+/// sized into a slice and work that did is not sized out of one. Device
+/// memory has no "top class stands for it": a slice smaller than what the
+/// action held is a slice it runs out of, so past the largest one the raw
+/// numbers stand and only a worker advertising that much is asked.
 fn smallest_dominating_class(
     classes: &[SizeClassSpec],
     memory_kb: u64,
     cpu: u64,
     disk_kb: u64,
+    gpu_memory_kb: u64,
     killed_at_kb: u64,
 ) -> Option<&SizeClassSpec> {
-    let top = classes.last()?;
-    if top.memory_kb <= killed_at_kb {
+    let on_gpu = gpu_memory_kb > 0;
+    let ladder = || {
+        classes
+            .iter()
+            .filter(move |class| (class.gpu_memory_kb > 0) == on_gpu)
+    };
+    let top = ladder().next_back()?;
+    if top.memory_kb <= killed_at_kb || top.gpu_memory_kb < gpu_memory_kb {
         return None;
     }
-    for class in classes {
+    for class in ladder() {
         if class.memory_kb < memory_kb || class.memory_kb <= killed_at_kb {
             continue;
         }
@@ -939,6 +981,9 @@ fn smallest_dominating_class(
             continue;
         }
         if class.disk_kb > 0 && disk_kb > 0 && class.disk_kb < disk_kb {
+            continue;
+        }
+        if class.gpu_memory_kb < gpu_memory_kb {
             continue;
         }
         return Some(class);
@@ -982,13 +1027,26 @@ fn shape(policy: &Policy, entry: &Entry) -> Shaped {
     if !policy.reserve_disk {
         disk_kb = 0;
     }
-    if memory_kb == 0 && cpu == 0 && disk_kb == 0 {
+    // The most any run in the window held, with the headroom: see
+    // `Half::max_gpu_memory_kb`.
+    let mut gpu_memory_kb = if policy.reserve_gpu_memory {
+        with_headroom(entry.max_gpu_memory_kb(), headroom)
+    } else {
+        0
+    };
+    if memory_kb == 0 && cpu == 0 && disk_kb == 0 && gpu_memory_kb == 0 {
         return Shaped::default();
     }
     let mut class = None;
-    if let Some(found) =
-        smallest_dominating_class(&policy.classes, memory_kb, cpu, disk_kb, entry.killed_at_kb)
-    {
+    let mut gpu_count = 0;
+    if let Some(found) = smallest_dominating_class(
+        &policy.classes,
+        memory_kb,
+        cpu,
+        disk_kb,
+        gpu_memory_kb,
+        entry.killed_at_kb,
+    ) {
         class = Some(found.name.clone());
         if found.memory_kb > 0 {
             memory_kb = found.memory_kb;
@@ -999,11 +1057,19 @@ fn shape(policy: &Policy, entry: &Entry) -> Shaped {
         if found.disk_kb > 0 {
             disk_kb = found.disk_kb;
         }
+        if found.gpu_memory_kb > 0 {
+            // A slice, chosen because the action held a device: the slice's
+            // memory and the share of a device it stands for.
+            gpu_memory_kb = found.gpu_memory_kb;
+            gpu_count = found.gpu_count;
+        }
     }
     Shaped {
         cpu_count: if policy.reserve_cpu { cpu } else { 0 },
         memory_kb: if policy.reserve_memory { memory_kb } else { 0 },
         disk_kb: if policy.reserve_disk { disk_kb } else { 0 },
+        gpu_memory_kb,
+        gpu_count,
         class,
     }
 }
@@ -1020,7 +1086,12 @@ pub struct Snapshot {
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"NLHS";
-const SNAPSHOT_VERSION: u8 = 3;
+/// Version 4 adds each half's device memory maximum. A version 3 snapshot
+/// still loads, with none: an upgrade must not cost a fleet the history it
+/// sizes by. An older build refuses a version 4 snapshot, as it would any
+/// version it does not know.
+const SNAPSHOT_VERSION: u8 = 4;
+const SNAPSHOT_VERSION_WITHOUT_GPU_MEMORY: u8 = 3;
 
 impl Snapshot {
     /// A compact binary form: histograms as their non-zero buckets, since
@@ -1046,7 +1117,9 @@ impl Snapshot {
     /// Header bytes needed to select a restart snapshot without reading its payload.
     pub const HEADER_BYTES: u64 = 17;
 
-    fn read_header(r: &mut Reader<'_>) -> Result<(u32, u64), Error> {
+    /// The sampler generation, the write time, and the format version the
+    /// entries are in.
+    fn read_header(r: &mut Reader<'_>) -> Result<(u32, u64, u8), Error> {
         if r.take(4)? != SNAPSHOT_MAGIC {
             return Err(make_err!(
                 Code::InvalidArgument,
@@ -1054,19 +1127,19 @@ impl Snapshot {
             ));
         }
         let version = r.u8()?;
-        if version != SNAPSHOT_VERSION {
+        if version != SNAPSHOT_VERSION && version != SNAPSHOT_VERSION_WITHOUT_GPU_MEMORY {
             return Err(make_err!(
                 Code::InvalidArgument,
-                "resource sketch snapshot: version {version}, this build reads {SNAPSHOT_VERSION}"
+                "resource sketch snapshot: version {version}, this build reads {SNAPSHOT_VERSION_WITHOUT_GPU_MEMORY} and {SNAPSHOT_VERSION}"
             ));
         }
-        Ok((r.u32()?, r.u64()?))
+        Ok((r.u32()?, r.u64()?, version))
     }
 
     /// The write time only when this build understands the snapshot's format
     /// and sampler. Discovery never needs to allocate full histogram entries.
     pub fn compatible_written_at(bytes: &[u8]) -> Result<u64, Error> {
-        let (generation, written_at) = Self::read_header(&mut Reader { bytes, at: 0 })?;
+        let (generation, written_at, _version) = Self::read_header(&mut Reader { bytes, at: 0 })?;
         if generation != SAMPLER_GENERATION {
             return Err(make_err!(
                 Code::FailedPrecondition,
@@ -1081,7 +1154,7 @@ impl Snapshot {
     pub fn decode(bytes: &[u8], max_entries: usize) -> Result<Self, Error> {
         const MIN_ENTRY_BYTES: usize = 96;
         let mut r = Reader { bytes, at: 0 };
-        let (sampler_generation, written_at_s) = Self::read_header(&mut r)?;
+        let (sampler_generation, written_at_s, version) = Self::read_header(&mut r)?;
         let count = usize::try_from(r.u64()?)
             .map_err(|_| make_err!(Code::InvalidArgument, "resource sketch snapshot: count"))?;
         if count > max_entries || count > (bytes.len() - r.at) / MIN_ENTRY_BYTES {
@@ -1108,8 +1181,8 @@ impl Snapshot {
                 }
             };
             let samples = r.u32()?;
-            let current = r.half()?;
-            let previous = r.half()?;
+            let current = r.half(version)?;
+            let previous = r.half(version)?;
             let killed_at_kb = r.u64()?;
             let killed_at_s = r.u64()?;
             let last_seen_s = r.u64()?;
@@ -1208,7 +1281,7 @@ impl<'a> Reader<'a> {
             .map_err(|_| make_err!(Code::InvalidArgument, "resource sketch snapshot: utf8"))
     }
 
-    fn half(&mut self) -> Result<Half, Error> {
+    fn half(&mut self, version: u8) -> Result<Half, Error> {
         Ok(Half {
             memory: self.hist()?,
             cpu: self.hist()?,
@@ -1216,6 +1289,11 @@ impl<'a> Reader<'a> {
             max_memory_kb: self.u64()?,
             max_cpu_millicores: self.u64()?,
             max_disk_kb: self.u64()?,
+            max_gpu_memory_kb: if version == SNAPSHOT_VERSION_WITHOUT_GPU_MEMORY {
+                0
+            } else {
+                self.u64()?
+            },
         })
     }
 
@@ -1274,6 +1352,7 @@ fn encode_entry(out: &mut Vec<u8>, key: &SketchKey, entry: &Entry) {
             half.max_memory_kb,
             half.max_cpu_millicores,
             half.max_disk_kb,
+            half.max_gpu_memory_kb,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }

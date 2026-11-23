@@ -230,13 +230,18 @@ happens once, at parse time; rotating a certificate on disk needs a restart.
 <Callout type="info" title="client_ca_file is the closest thing to authentication you get">
 
   mTLS proves that a client holds a certificate your CA issued. It does not map
-  that identity to a permission; every authenticated client can do everything.
-  No read-only role, no per-instance-name restriction, and no way exists to
-  let CI write to the cache while developers only read.
+  that identity to a permission: NativeLink has no per-client role, so every
+  authenticated client can do anything the endpoint it reaches allows.
 
-  If you need that distinction, it lives in front of NativeLink: separate
-  listeners, separate CAs, and a proxy or network policy that decides which
-  clients reach which listener.
+  The Action Cache has one per-instance control. An `instance_name` marked
+  `read_only` rejects `UpdateActionResult` while still serving reads, and
+  `GetCapabilities` advertises `update_enabled: false` for it. That restriction
+  belongs to the instance, not the client, so "CI writes while developers only
+  read" still comes down to routing: serve a writable `instance_name` and a
+  read-only one, then let a proxy or network policy in front decide which
+  clients reach which. The
+  [`ci_cache_and_schedulers.json5`](/remote-execution/examples-and-templates#server-configs)
+  example wires exactly that.
 
 </Callout>
 

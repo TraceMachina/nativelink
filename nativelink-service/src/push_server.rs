@@ -73,10 +73,9 @@ impl PushServer {
         request: PushBlobRequest,
     ) -> Result<Response<PushBlobResponse>, Error> {
         let instance_name = &request.instance_name;
-        let store_info = self
-            .stores
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store_info = self.stores.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         if store_info.read_only {
             return Err(make_err!(
