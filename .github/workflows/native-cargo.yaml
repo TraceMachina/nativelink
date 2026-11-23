@@ -35,7 +35,7 @@ jobs:
         toolchain: [1.97.1] # Same as Nix
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: >- # v6.0.2

@@ -88,6 +88,15 @@ pub(crate) struct MockWorkerApiClient {
     pub execution_complete_count: Arc<AtomicU64>,
     /// Every keepalive request the worker sent, in order.
     pub keep_alive_requests: Arc<std::sync::Mutex<Vec<KeepAliveRequest>>>,
+    /// When each keepalive send started, on tokio's clock.
+    pub keep_alive_starts: Arc<std::sync::Mutex<Vec<tokio::time::Instant>>>,
+    /// How long each keepalive send takes: the n-th send the n-th entry,
+    /// later sends the last one, and no entries no time.
+    pub keep_alive_send_times: Arc<std::sync::Mutex<Vec<core::time::Duration>>>,
+    /// Every keepalive succeeds; otherwise the second one fails.
+    pub keep_alives_succeed: Arc<std::sync::atomic::AtomicBool>,
+    /// A keepalive panics.
+    pub keep_alive_panics: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockWorkerApiClient {
@@ -106,6 +115,10 @@ impl MockWorkerApiClient {
             going_away_drain: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             execution_complete_count: Arc::new(AtomicU64::new(0)),
             keep_alive_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+            keep_alive_starts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            keep_alive_send_times: Arc::new(std::sync::Mutex::new(Vec::new())),
+            keep_alives_succeed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            keep_alive_panics: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -221,12 +234,32 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
 
     async fn keep_alive(&mut self, request: KeepAliveRequest) -> Result<(), Error> {
         debug!("Got KeepAlive");
+        let nth = {
+            let mut starts = self.keep_alive_starts.lock().unwrap();
+            starts.push(tokio::time::Instant::now());
+            starts.len() - 1
+        };
         self.keep_alive_requests.lock().unwrap().push(request);
+        assert!(
+            !self.keep_alive_panics.load(Ordering::Acquire),
+            "the keepalive panics"
+        );
         if self.keep_alive_hangs.load(Ordering::Acquire) {
             self.keep_alives_hanging.fetch_add(1, Ordering::AcqRel);
             core::future::pending::<()>().await;
         }
-        if self.keep_alives_count == 0 {
+        let send_time = {
+            let send_times = self.keep_alive_send_times.lock().unwrap();
+            send_times
+                .get(nth)
+                .or_else(|| send_times.last())
+                .copied()
+                .unwrap_or_default()
+        };
+        if !send_time.is_zero() {
+            tokio::time::sleep(send_time).await;
+        }
+        if self.keep_alives_count == 0 || self.keep_alives_succeed.load(Ordering::Acquire) {
             self.keep_alives_count += 1;
             Ok(())
         } else {

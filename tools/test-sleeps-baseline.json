@@ -1,0 +1,9 @@
+{
+  "nativelink-scheduler/tests/fleet_capabilities_test.rs": 3,
+  "nativelink-scheduler/tests/historical_resource_scheduler_test.rs": 2,
+  "nativelink-scheduler/tests/redis_store_awaited_action_db_test.rs": 1,
+  "nativelink-scheduler/tests/redis_temporary_index_test.rs": 2,
+  "nativelink-scheduler/tests/store_awaited_action_db_test.rs": 2,
+  "nativelink-scheduler/tests/unsatisfiable_action_test.rs": 2,
+  "nativelink-sim/tests/fault_policy_test.rs": 1
+}
