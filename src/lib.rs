@@ -209,6 +209,11 @@ pub async fn build_server(
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
     scheduler_shutdown_tx: Sender<()>,
 ) -> Result<Server, Error> {
+    // Mirror each instance's Action Cache `read_only` flag so the capabilities
+    // service can report `update_enabled` per instance. Computed up front,
+    // before `cfg` is consumed below.
+    let ac_read_only_for_instance = cfg.action_cache_read_only_by_instance();
+
     let health_registry_builder =
         Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
     let mut worker_registrations: Vec<Arc<WorkerRegistration>> = Vec::new();
@@ -312,17 +317,6 @@ pub async fn build_server(
         .filter_map(|services| services.cas.as_deref())
         .flatten()
         .cloned()
-        .collect();
-
-    // Mirror each instance's Action Cache `read_only` flag so the capabilities
-    // service can report `update_enabled` per instance. Collected across all
-    // blocks for the same reason as the CAS configs above.
-    let ac_read_only_for_instance: HashMap<String, bool> = server_cfgs
-        .iter()
-        .filter_map(|server_cfg| server_cfg.services.as_ref())
-        .filter_map(|services| services.ac.as_deref())
-        .flatten()
-        .map(|ac_config| (ac_config.instance_name.clone(), ac_config.read_only))
         .collect();
 
     for server_cfg in server_cfgs {

@@ -2033,6 +2033,21 @@ impl CasConfig {
         Ok(config)
     }
 
+    /// Map each instance name served by an Action Cache service to whether
+    /// that instance is read only. Collected across all server blocks, the
+    /// same way the capabilities service advertises instances that may be
+    /// served from a different block. A later entry for an instance wins.
+    #[must_use]
+    pub fn action_cache_read_only_by_instance(&self) -> HashMap<InstanceName, bool> {
+        self.servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.ac.as_deref())
+            .flatten()
+            .map(|ac| (ac.instance_name.clone(), ac.read_only))
+            .collect()
+    }
+
     fn validate_single_use_worker(&self) -> Result<(), Error> {
         let workers = self.workers.as_deref().unwrap_or_default();
         for WorkerConfig::Local(worker) in workers {
@@ -2498,5 +2513,28 @@ mod tests {
         assert!(logs_contain("store=\"nested-upstreams\""));
         assert!(logs_contain("instance_name=\"opt-out\""));
         assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
+    }
+
+    #[test]
+    fn action_cache_read_only_by_instance_reads_each_ac_service() {
+        let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+        // No Action Cache services: the map is empty.
+        assert!(config.action_cache_read_only_by_instance().is_empty());
+
+        config.servers = serde_json5::from_str(
+            r#"[{
+                listener: { http: { socket_address: "127.0.0.1:50051" } },
+                services: { ac: [
+                    { instance_name: "main", ac_store: "AC", read_only: false },
+                    { instance_name: "pr", ac_store: "AC", read_only: true },
+                ] }
+            }]"#,
+        )
+        .unwrap();
+
+        let by_instance = config.action_cache_read_only_by_instance();
+        assert_eq!(by_instance.len(), 2);
+        assert_eq!(by_instance.get("main"), Some(&false));
+        assert_eq!(by_instance.get("pr"), Some(&true));
     }
 }
