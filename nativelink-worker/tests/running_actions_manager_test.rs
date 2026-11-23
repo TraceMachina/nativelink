@@ -11395,6 +11395,8 @@ done
     async fn pressure_armed_action(
         arguments: Vec<String>,
     ) -> Result<Arc<RunningActionImpl>, Box<dyn core::error::Error>> {
+        #[cfg(target_os = "linux")]
+        use nativelink_worker::running_actions_manager::UseNamespaces;
         use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
         const WORKER_ID: &str = "foo_worker_id";
         let (_, _, cas_store, _ac_store) = setup_stores().await?;
@@ -11441,7 +11443,7 @@ done
                 readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
-                use_namespaces: use_namespaces(),
+                use_namespaces: UseNamespaces::No,
             })?);
         let command = Command {
             arguments,
@@ -11619,8 +11621,10 @@ done
         }
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
-            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            let res = unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            info!(job_pid, res, "Kill result");
         }
         assert!(!survived, "the set -m job survived the kill");
         Ok(())
@@ -11643,8 +11647,10 @@ done
         let job_pid = read_job_pid(&pid_file).await;
         let survived = process_running(job_pid);
         if survived {
+            info!(job_pid, "Process survived, killing");
             // SAFETY: the job this test started.
-            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            let res = unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+            info!(job_pid, res, "Kill result");
         }
         assert!(!survived, "the orphaned set -m job survived the sweep");
         Ok(())
