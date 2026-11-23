@@ -1540,13 +1540,26 @@ async fn connect_with_prefix(
     server: &WorkerApiServer,
     prefix: &str,
 ) -> Result<(WorkerId, ConnectWorkerStream, mpsc::Sender<Update>), Error> {
-    let (tx, rx) = mpsc::channel(1);
-    tx.send(Update::ConnectWorkerRequest(ConnectWorkerRequest {
-        worker_id_prefix: prefix.to_string(),
-        ..Default::default()
-    }))
+    connect_as(
+        server,
+        ConnectWorkerRequest {
+            worker_id_prefix: prefix.to_string(),
+            ..Default::default()
+        },
+    )
     .await
-    .unwrap();
+}
+
+/// Connects a worker with `request` and returns the id the scheduler gave
+/// it, its stream, and the sender that ends the connection when dropped.
+async fn connect_as(
+    server: &WorkerApiServer,
+    request: ConnectWorkerRequest,
+) -> Result<(WorkerId, ConnectWorkerStream, mpsc::Sender<Update>), Error> {
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(Update::ConnectWorkerRequest(request))
+        .await
+        .unwrap();
     let update_stream = Box::pin(futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|update| {
             (
@@ -1613,5 +1626,155 @@ async fn spawned_timers_evict_on_the_injected_clock() -> Result<(), Box<dyn core
     WorkerApiServer::spawn_timers(&config, &schedulers, &Arc::new(late));
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     assert!(!scheduler.contains_worker_for_test(&worker_id).await);
+    Ok(())
+}
+
+/// A worker that names itself is registered under that name, and keeps it
+/// on every connection; one that does not is named from its prefix.
+#[nativelink_test]
+async fn a_worker_that_names_itself_is_registered_under_its_name()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    let named = ConnectWorkerRequest {
+        worker_id_prefix: "pool-".to_string(),
+        worker_id: "pool-0193a1f2".to_string(),
+        ..Default::default()
+    };
+    let (worker_id, _stream, _tx) = connect_as(&server, named).await?;
+    assert_eq!(worker_id, WorkerId::from("pool-0193a1f2".to_string()));
+    assert!(scheduler.contains_worker_for_test(&worker_id).await);
+
+    let (unnamed, _unnamed_stream, _unnamed_tx) = connect_with_prefix(&server, "pool-").await?;
+    assert!(unnamed.0.starts_with("pool-") && unnamed.0.len() > "pool-".len());
+    Ok(())
+}
+
+/// A chosen id goes into logs and store keys, so one with spaces or
+/// control characters, or longer than 256 bytes, is refused.
+#[nativelink_test]
+async fn a_worker_id_that_is_too_long_or_not_printable_is_refused()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (_scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    for bad in ["two words", "tab\there", "x".repeat(257).as_str()] {
+        let result = connect_as(
+            &server,
+            ConnectWorkerRequest {
+                worker_id: bad.to_string(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let err = result
+            .err()
+            .unwrap_or_else(|| panic!("{bad:?} was accepted"));
+        assert_eq!(err.code, nativelink_error::Code::InvalidArgument, "{bad:?}");
+    }
+    let longest = "x".repeat(256);
+    let (_worker_id, _stream, _tx) = connect_as(
+        &server,
+        ConnectWorkerRequest {
+            worker_id: longest,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// A worker that keeps its id can reconnect before the scheduler has seen
+/// its earlier stream end. The earlier connection is ended, its action
+/// requeued as its disconnect would have, and when that stream's end is
+/// finally seen it leaves the new connection alone.
+#[nativelink_test]
+async fn the_end_of_an_earlier_connection_leaves_the_worker_that_reconnected()
+-> Result<(), Box<dyn core::error::Error>> {
+    let state_manager = Arc::new(MockWorkerStateManager::new());
+    let scheduler = ApiWorkerScheduler::new(
+        state_manager.clone(),
+        Arc::new(PlatformPropertyManager::new(HashMap::new())),
+        WorkerAllocationStrategy::default(),
+        None,
+        None,
+        None,
+        None, // worker_outcome_tripwire
+        Arc::new(Notify::new()),
+        BASE_WORKER_TIMEOUT_S,
+        60,
+        0,
+        Arc::new(WorkerRegistry::new()),
+        None,
+        None,
+        false,
+        Duration::from_secs(15),
+        "scheduler".to_string(),
+    );
+    let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
+    schedulers.insert("PLAIN_SCHEDULER".to_string(), scheduler.clone());
+    let config = WorkerApiConfig {
+        scheduler: "PLAIN_SCHEDULER".to_string(),
+        disable_kill_revoked_operations: true,
+        kill_revoked_operations_interval_s: 0,
+    };
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    let request = ConnectWorkerRequest {
+        worker_id: "pool-0193a1f2".to_string(),
+        ..Default::default()
+    };
+    let (worker_id, mut first_stream, first_tx) = connect_as(&server, request.clone()).await?;
+
+    // The first connection is running an action.
+    let operation_id = OperationId::default();
+    scheduler
+        .worker_notify_run_action(
+            worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: uncacheable_action(1),
+                platform_properties: PlatformProperties::default(),
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+            BASE_NOW_S,
+        )
+        .await?;
+    first_stream
+        .next()
+        .await
+        .expect("the action is dispatched")?;
+
+    // The worker reconnects; the first connection's action is requeued.
+    let reconnect = connect_as(&server, request);
+    let requeue = state_manager.expect_update_operation(Ok(()));
+    let (reconnected, (requeued, requeued_by, update)) = futures::join!(reconnect, requeue);
+    let (reconnected, _second_stream, _second_tx) = reconnected?;
+    assert_eq!(reconnected, worker_id);
+    assert_eq!((requeued, requeued_by), (operation_id, worker_id.clone()));
+    assert!(
+        matches!(update, UpdateOperationType::UpdateWithDisconnect(_)),
+        "{update:?}"
+    );
+
+    // Only now is the first stream's end seen; the worker stays.
+    drop(first_tx);
+    for _ in 0..1_000 {
+        if logs_contain("An earlier connection of a reconnected worker ended")
+            || !scheduler.contains_worker_for_test(&worker_id).await
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        scheduler.contains_worker_for_test(&worker_id).await,
+        "the end of the earlier connection removed the worker that reconnected"
+    );
+    assert!(logs_contain(
+        "An earlier connection of a reconnected worker ended"
+    ));
     Ok(())
 }

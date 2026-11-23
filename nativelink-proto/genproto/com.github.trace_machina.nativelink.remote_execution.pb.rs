@@ -93,8 +93,8 @@ pub struct ConnectWorkerRequest {
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
     >,
     /// / Prefix to use for worker IDs. This is primarily used for debugging
-    /// / or for other systems to identify workers. The scheduler will always
-    /// / append this prefix to the assigned worker_id followed by a UUIDv6.
+    /// / or for other systems to identify workers. When `worker_id` is empty,
+    /// / the scheduler names the worker this prefix followed by a UUIDv6.
     #[prost(string, tag = "2")]
     pub worker_id_prefix: ::prost::alloc::string::String,
     /// / Maximum number of inflight tasks this worker can cope with at one time
@@ -107,6 +107,11 @@ pub struct ConnectWorkerRequest {
     /// / (false) from older workers.
     #[prost(bool, tag = "4")]
     pub admits_when_idle: bool,
+    /// / The id the worker chose for itself, kept across reconnects for the
+    /// / life of the process. The scheduler uses it as given; empty (an older
+    /// / worker) and the scheduler names the worker from `worker_id_prefix`.
+    #[prost(string, tag = "5")]
+    pub worker_id: ::prost::alloc::string::String,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]

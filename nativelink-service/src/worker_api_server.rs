@@ -16,6 +16,7 @@ use core::convert::Into;
 use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -61,6 +62,9 @@ pub struct WorkerApiServer {
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
     worker_id_fn: Option<WorkerIdFn>,
+    /// Stamps each connection, so the end of a worker's earlier connection
+    /// can be told from its current one when it keeps its id.
+    next_connection: AtomicU64,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -183,6 +187,7 @@ impl WorkerApiServer {
             now_fn,
             node_id,
             worker_id_fn: None,
+            next_connection: AtomicU64::new(1),
         })
     }
 
@@ -238,16 +243,23 @@ impl WorkerApiServer {
             platform_properties
         };
 
-        // Now register the worker with the scheduler.
+        // Now register the worker with the scheduler, under the id it chose
+        // when it chose one.
+        let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
         let worker_id = {
-            let unique = self.worker_id_fn.as_ref().map_or_else(
-                || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
-                |worker_id_fn| worker_id_fn(),
-            );
-            let worker_id = WorkerId(format!(
-                "{}{unique}",
-                connect_worker_request.worker_id_prefix,
-            ));
+            let worker_id = if connect_worker_request.worker_id.is_empty() {
+                let unique = self.worker_id_fn.as_ref().map_or_else(
+                    || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
+                    |worker_id_fn| worker_id_fn(),
+                );
+                WorkerId(format!(
+                    "{}{unique}",
+                    connect_worker_request.worker_id_prefix,
+                ))
+            } else {
+                check_worker_id(&connect_worker_request.worker_id)?;
+                WorkerId(connect_worker_request.worker_id)
+            };
             let mut worker = Worker::new(
                 worker_id.clone(),
                 platform_properties,
@@ -256,6 +268,7 @@ impl WorkerApiServer {
                 connect_worker_request.max_inflight_tasks,
             );
             worker.admits_when_idle = connect_worker_request.admits_when_idle;
+            worker.connection = connection;
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -267,6 +280,7 @@ impl WorkerApiServer {
             self.scheduler.clone(),
             self.now_fn.clone(),
             worker_id.clone(),
+            connection,
             update_stream,
         );
 
@@ -320,10 +334,31 @@ impl WorkerApi for WorkerApiServer {
     }
 }
 
+/// The longest worker id a worker may choose.
+const MAX_WORKER_ID_LEN: usize = 256;
+
+/// A worker-chosen id goes into logs, metrics and store keys: it must be
+/// bounded and printable.
+fn check_worker_id(worker_id: &str) -> Result<(), Error> {
+    if worker_id.len() > MAX_WORKER_ID_LEN
+        || worker_id
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(make_err!(
+            Code::InvalidArgument,
+            "A worker id must be at most {MAX_WORKER_ID_LEN} bytes with no spaces or control characters"
+        ));
+    }
+    Ok(())
+}
+
 struct WorkerConnection {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     worker_id: WorkerId,
+    /// The stamp the scheduler's entry for this connection carries.
+    connection: u64,
 }
 
 impl WorkerConnection {
@@ -331,12 +366,14 @@ impl WorkerConnection {
         scheduler: Arc<dyn WorkerScheduler>,
         now_fn: Arc<NowFn>,
         worker_id: WorkerId,
+        connection_stamp: u64,
         mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
     ) {
         let instance = Self {
             scheduler,
             now_fn,
             worker_id,
+            connection: connection_stamp,
         };
 
         background_spawn!("worker_api", async move {
@@ -419,7 +456,7 @@ impl WorkerConnection {
                 drop(
                     instance
                         .scheduler
-                        .worker_disconnected(&instance.worker_id)
+                        .worker_disconnected(&instance.worker_id, instance.connection)
                         .await,
                 );
             }
