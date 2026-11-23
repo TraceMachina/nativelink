@@ -17,12 +17,8 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::{Arc, OnceLock};
 
-use base64::Engine;
-use base64::alphabet;
-use base64::engine::DecodePaddingMode;
-use base64::engine::GeneralPurpose;
-use base64::engine::GeneralPurposeConfig;
-use base64::prelude::BASE64_STANDARD_NO_PAD;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::{Engine, alphabet};
 use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -739,6 +735,7 @@ pub fn inject_context<T>(request: &mut tonic::Request<T>) {
 
 #[cfg(test)]
 mod tests {
+    use base64::prelude::BASE64_STANDARD_NO_PAD;
     use nativelink_macro::nativelink_test;
     use serial_test::serial;
 
