@@ -44,6 +44,8 @@ loadable config.
 | `worker_with_redis_scheduler.json5` | A scheduler whose state lives in Redis |
 | `scheduler_match_logging_disable.json5` | Turning off the periodic match dump |
 | `tmpfs-worker.json5` | A worker whose fast tier and work directory sit on a tmpfs mount |
+| `ci_cache_and_schedulers.json5` | The trusted CI control plane: a writable `main` instance and a read-only `pr` instance for untrusted builds |
+| `ci_single_use_workers.json5` | The untrusted pull-request worker: one `single_use` worker per process, run one-shot per action |
 | `legacy_service_config.json5` | The older service config shape, for migrations |
 
 <SourceLink file="nativelink-config/examples/README.md" />
@@ -51,6 +53,15 @@ loadable config.
 Start from the file closest to your situation and read its comments;
 several of them explain constraints you'd otherwise discover the hard way,
 like why a worker's `fast` store must be a filesystem store.
+
+For CI that builds untrusted pull requests, use the pair
+`ci_cache_and_schedulers.json5` and `ci_single_use_workers.json5`. Run the
+first as the long-lived cache and scheduler, with a writable `main` instance
+for trusted branches and a read-only `pr` instance that lets a pull request
+read the cache but never write it. Launch the second as a one-shot process
+per action so each untrusted build runs on a fresh `single_use` worker that
+shares no state with the next. Reach for this whenever a build you don't
+fully trust shares a NativeLink cluster with builds you do.
 
 [How-to guides](/how-to) is the task-oriented version of that table if you
 already know which backend you want.
