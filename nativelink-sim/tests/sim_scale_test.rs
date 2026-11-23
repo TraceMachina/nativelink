@@ -17,6 +17,7 @@
 //! size runs nightly (`--ignored`); every push runs a tenth of it.
 
 use core::time::Duration;
+use std::collections::BTreeSet;
 
 use nativelink_error::Error;
 use nativelink_sim::Invariant::I11;
@@ -55,18 +56,19 @@ fn burst_600_then_80_workers() -> Result<(), Error> {
         .map(drop)
 }
 
-/// The Redis backend reads the queue every pass (I11, S3). A lead, not a
-/// finding: in this burst one to five queued actions are never dispatched
-/// in thirty minutes while workers sit idle, a different number each run.
-/// The fake's `FT.AGGREGATE` is a simplification, so the bed confirms it
-/// (T3) before anyone fixes it; until then this asserts only I11.
+/// The Redis backend reads the queue every pass (I11, S3); every client is
+/// answered.
 #[test]
-#[ignore = "nightly: a lead to confirm on the bed"]
+#[ignore = "nightly: full size"]
 fn burst_600_then_80_workers_on_redis() -> Result<(), Error> {
     let report =
         burst_then_fleet("burst-600-then-80", 600, 80, 4_400).run_on(Backend::FakeRedis)?;
-    let failed = verdict(&report.violations);
-    assert!(failed.contains(&I11), "{:?}", report.violations);
+    assert_eq!(
+        verdict(&report.violations),
+        BTreeSet::from([I11]),
+        "{:?}",
+        report.violations
+    );
     Ok(())
 }
 
