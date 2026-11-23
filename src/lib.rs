@@ -209,6 +209,14 @@ pub async fn build_server(
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
     scheduler_shutdown_tx: Sender<()>,
 ) -> Result<Server, Error> {
+    if cfg.shares_workers_with_writable_action_cache() {
+        warn!(
+            "Workers are shared across jobs and the action cache accepts client writes. \
+             If this instance runs untrusted pull requests, see \
+             https://docs.nativelink.com/operate/security-hardening"
+        );
+    }
+
     // Mirror each instance's Action Cache `read_only` flag so the capabilities
     // service can report `update_enabled` per instance. Computed up front,
     // before `cfg` is consumed below.

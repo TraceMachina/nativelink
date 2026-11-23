@@ -123,6 +123,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
             ],
             max_inflight_tasks: 0,
             admits_when_idle: memory_is_limited(),
+            worker_id: String::new(),
         }
     );
 

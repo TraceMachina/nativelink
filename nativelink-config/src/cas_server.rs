@@ -2048,6 +2048,30 @@ impl CasConfig {
             .collect()
     }
 
+    /// True when this process runs shared (non-`single_use`) workers *and* at
+    /// least one Action Cache instance accepts client writes (`read_only` is
+    /// false). That combination is unsafe for untrusted builds: a job can
+    /// leave state on a worker that the next job inherits, and a client can
+    /// write an `ActionResult` that later builds trust. It is only a warning,
+    /// because it is the right configuration when every build is trusted.
+    #[must_use]
+    pub fn shares_workers_with_writable_action_cache(&self) -> bool {
+        let has_shared_worker = self
+            .workers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|WorkerConfig::Local(worker)| !worker.single_use);
+        let action_cache_accepts_client_writes = self
+            .servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.ac.as_deref())
+            .flatten()
+            .any(|ac| !ac.read_only);
+        has_shared_worker && action_cache_accepts_client_writes
+    }
+
     fn validate_single_use_worker(&self) -> Result<(), Error> {
         let workers = self.workers.as_deref().unwrap_or_default();
         for WorkerConfig::Local(worker) in workers {
@@ -2536,5 +2560,36 @@ mod tests {
         assert_eq!(by_instance.len(), 2);
         assert_eq!(by_instance.get("main"), Some(&false));
         assert_eq!(by_instance.get("pr"), Some(&true));
+    }
+
+    #[test]
+    fn warns_only_for_shared_workers_and_a_writable_action_cache() {
+        fn config(single_use: bool, read_only: bool) -> CasConfig {
+            let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+            config.workers = Some(vec![WorkerConfig::Local(LocalWorkerConfig {
+                single_use,
+                ..Default::default()
+            })]);
+            config.servers = serde_json5::from_str(&format!(
+                r#"[{{
+                    listener: {{ http: {{ socket_address: "127.0.0.1:50051" }} }},
+                    services: {{ ac: [{{ ac_store: "AC", read_only: {read_only} }}] }}
+                }}]"#
+            ))
+            .unwrap();
+            config
+        }
+
+        // Unsafe: shared workers and an action cache that accepts client writes.
+        assert!(config(false, false).shares_workers_with_writable_action_cache());
+        // Safe: `single_use` workers isolate each job.
+        assert!(!config(true, false).shares_workers_with_writable_action_cache());
+        // Safe: the action cache rejects client writes.
+        assert!(!config(false, true).shares_workers_with_writable_action_cache());
+
+        // Safe: a cache-only process has no workers to share.
+        let mut cache_only = config(false, false);
+        cache_only.workers = None;
+        assert!(!cache_only.shares_workers_with_writable_action_cache());
     }
 }

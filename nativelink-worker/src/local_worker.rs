@@ -578,6 +578,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
+                        // This worker does not name itself, so the scheduler
+                        // does not send this; it has nothing to forget.
+                        Update::ExecuteResultAccepted(_) => {}
                         Update::KillOperationRequest(kill_operation_request) => {
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
