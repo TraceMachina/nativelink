@@ -31,6 +31,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
+use nativelink_util::digest_hasher::digest_hasher_func_from_context;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics::{record_store_tier_io, record_store_tier_read};
@@ -413,9 +414,14 @@ impl FastSlowStore {
         // client re-uploads exactly that blob; see `ErrorContext`.
         fn name_missing_digest(err: Error, key: &StoreKey<'_>) -> Error {
             if let StoreKey::Digest(d) = key {
+                // The digest function of the active request, so a BLAKE3
+                // digest is not reported as if it were SHA256.
                 err.with_context(ErrorContext::MissingDigest {
                     hash: d.packed_hash().to_string(),
                     size: d.size_bytes().try_into().unwrap_or(i64::MAX),
+                    digest_function: digest_hasher_func_from_context()
+                        .resource_name_segment()
+                        .map(str::to_string),
                 })
             } else {
                 err

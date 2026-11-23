@@ -222,6 +222,21 @@ in {
     pass_filenames = false;
   };
 
+  # No new wall-clock sleeps in the scheduler and simulator tests (RFC-0064)
+  check-test-sleeps = {
+    description = "Check tests add no wall-clock sleeps";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "check-test-sleeps" ''
+        set -eu
+
+        ${pkgs.python3}/bin/python $(${flake-root}/bin/flake-root)/tools/check_test_sleeps.py
+      '';
+    in "${script}/bin/check-test-sleeps";
+    files = "^(nativelink-scheduler|nativelink-sim)/tests/.*\\.rs$|^tools/test-sleeps-baseline\\.json$";
+    pass_filenames = false;
+  };
+
   # Check Github actions for hashes
   check-hashes = {
     description = "Check Github action hashes";

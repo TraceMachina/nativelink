@@ -177,6 +177,7 @@ const DEFAULT_KILL_GRACE: Duration = Duration::from_secs(5);
 struct FinishedActionResult {
     action_result: ActionResult,
     resource_usage: Option<ActionResourceUsage>,
+    do_not_cache: bool,
 }
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
@@ -577,6 +578,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
+                        // This worker does not name itself, so the scheduler
+                        // does not send this; it has nothing to forget.
+                        Update::ExecuteResultAccepted(_) => {}
                         Update::KillOperationRequest(kill_operation_request) => {
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
@@ -724,10 +728,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .and_then(RunningAction::upload_results)
                                             .and_then(|action| async move {
                                                 let resource_usage = action.resource_usage();
+                                                let do_not_cache = action.do_not_cache();
                                                 let action_result = action.get_finished_result().await?;
                                                 Ok(FinishedActionResult {
                                                     action_result,
                                                     resource_usage,
+                                                    do_not_cache,
                                                 })
                                             })
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
@@ -750,10 +756,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
-                                        Ok(FinishedActionResult { mut action_result, resource_usage }) => {
+                                        Ok(FinishedActionResult { mut action_result, resource_usage, do_not_cache }) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
                                             if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
-                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher, do_not_cache).await {
                                                     error!(
                                                         ?err,
                                                         ?action_digest,
@@ -793,6 +799,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 // execute response turns it into the
                                                 // PreconditionFailure detail Bazel
                                                 // re-uploads and retries on.
+                                                // Name the action's own digest function
+                                                // in the context: the store only saw the
+                                                // task context, which a spawned fetch can
+                                                // lose.
+                                                let context = match e.context.clone() {
+                                                    ErrorContext::MissingDigest { hash, size, .. } => {
+                                                        ErrorContext::MissingDigest {
+                                                            hash,
+                                                            size,
+                                                            digest_function: digest_hasher
+                                                                .resource_name_segment()
+                                                                .map(str::to_string),
+                                                        }
+                                                    }
+                                                    other @ ErrorContext::None => other,
+                                                };
                                                 let action_result = ActionResult {
                                                     error: Some(
                                                         make_err!(
@@ -800,7 +822,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             "{}",
                                                             e.message_string()
                                                         )
-                                                        .with_context(e.context.clone()),
+                                                        .with_context(context),
                                                     ),
                                                     ..ActionResult::default()
                                                 };

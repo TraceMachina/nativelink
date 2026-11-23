@@ -37,6 +37,9 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::{Operation, operation};
 use nativelink_redis_tester::FakeRedisBackend;
+use nativelink_scheduler::default_scheduler_factory::{
+    client_action_timeout_s, retain_completed_for_s,
+};
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_scheduler::memory_awaited_action_db::{MemoryAwaitedActionDb, OperationIdFn};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
@@ -66,7 +69,7 @@ use tonic::{Code as TonicCode, Request};
 use crate::actions::{Action, Registry, SimActionsManager};
 use crate::clock::{SimClock, SimInstant};
 use crate::net::{InProcessWorkerClient, Link, Net};
-use crate::trace::{Event, Outcome, Stage, Trace};
+use crate::trace::{Event, Outcome, Rejoin, Stage, Trace};
 
 const INSTANCE_NAME: &str = "sim";
 const SCHEDULER_NAME: &str = "sim";
@@ -126,6 +129,8 @@ const CLIENT_GONE: u8 = 2;
 struct Client {
     state: Arc<AtomicU8>,
     gone: watch::Sender<bool>,
+    /// Set to step the client away for a while; see `Step::ClientAway`.
+    away: watch::Sender<Option<(Duration, Rejoin)>>,
     action: Action,
 }
 
@@ -321,8 +326,10 @@ impl World {
                     notify.clone(),
                     SimInstant::now,
                     operation_ids(self.next_operation_id.clone()),
-                    self.spec.retain_completed_for_s,
-                    self.spec.client_action_timeout_s,
+                    // As the scheduler factory passes them: 0 is the
+                    // default, not "forever" or "expire now".
+                    retain_completed_for_s(self.spec.retain_completed_for_s),
+                    client_action_timeout_s(self.spec.client_action_timeout_s),
                     false,
                 )
                 .await?;
@@ -497,6 +504,7 @@ impl World {
         };
         let state = Arc::new(AtomicU8::new(CLIENT_RUNNING));
         let (gone, gone_rx) = watch::channel(false);
+        let (away, away_rx) = watch::channel(None);
         drop(background_spawn!(
             "sim_client",
             run_client(
@@ -504,7 +512,8 @@ impl World {
                 op.to_string(),
                 request,
                 state.clone(),
-                gone_rx
+                gone_rx,
+                away_rx
             )
         ));
         self.clients.insert(
@@ -512,6 +521,7 @@ impl World {
             Client {
                 state,
                 gone,
+                away,
                 action: action.clone(),
             },
         );
@@ -521,6 +531,12 @@ impl World {
     pub(crate) fn client_gone(&self, op: &str) {
         if let Some(client) = self.clients.get(op) {
             client.gone.send_replace(true);
+        }
+    }
+
+    pub(crate) fn client_away(&self, op: &str, for_: Duration, via: Rejoin) {
+        if let Some(client) = self.clients.get(op) {
+            client.away.send_replace(Some((for_, via)));
         }
     }
 
@@ -714,18 +730,23 @@ const CLIENT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// One client operation: `Execute`, then read the stream to the end. A
 /// stream that ends or fails early is re-subscribed with `WaitExecution`;
-/// one the server no longer knows is executed again.
+/// one the server no longer knows is executed again. Told to step away, the
+/// client drops its stream, waits, and comes back as `away` says.
 async fn run_client(
     net: Arc<Net>,
     op: String,
     request: ExecuteRequest,
     state: Arc<AtomicU8>,
     mut gone: watch::Receiver<bool>,
+    mut away: watch::Receiver<Option<(Duration, Rejoin)>>,
 ) {
     let trace = net.trace().clone();
     let mut name: Option<String> = None;
     let mut failures = 0;
     let mut last_stage = None;
+    // Set when the client comes back from stepping away, which it does at
+    // once rather than after the retry delay.
+    let mut rejoined = false;
     loop {
         if *gone.borrow() {
             break;
@@ -816,9 +837,37 @@ async fn run_client(
                         break;
                     }
                 }
+                changed = away.changed() => {
+                    let step = if changed.is_ok() { *away.borrow_and_update() } else { None };
+                    let Some((for_, via)) = step else {
+                        if changed.is_err() {
+                            // The world went; nobody will step this client again.
+                            trace.record(Event::ClientGone { op: op.clone() });
+                            state.store(CLIENT_GONE, Ordering::Release);
+                            return;
+                        }
+                        continue;
+                    };
+                    drop(stream);
+                    trace.record(Event::ClientAway { op: op.clone() });
+                    if wait_or_gone(&mut gone, for_).await {
+                        trace.record(Event::ClientGone { op: op.clone() });
+                        state.store(CLIENT_GONE, Ordering::Release);
+                        return;
+                    }
+                    if via == Rejoin::Execute {
+                        name = None;
+                    }
+                    trace.record(Event::ClientRejoin { op: op.clone(), via });
+                    rejoined = true;
+                    break;
+                }
             }
         }
         last_stage = None;
+        if std::mem::take(&mut rejoined) {
+            continue;
+        }
         if wait_or_gone(&mut gone, CLIENT_RETRY_DELAY).await {
             break;
         }

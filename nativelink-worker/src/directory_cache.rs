@@ -1225,9 +1225,11 @@ impl DirectoryCache {
             fs::write(&file_path, b"")
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
-            // Read-only like every other materialized input, and +x when
-            // asked for: an empty wrapper script must still exec.
-            #[cfg(unix)]
+            // macOS only: read-only like every other materialized input, and
+            // +x when asked for, so an empty wrapper script still execs. Linux
+            // keeps the default mode, as before, to avoid an extra chmod per
+            // empty file there.
+            #[cfg(target_os = "macos")]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = if file_node.is_executable {
@@ -2023,14 +2025,29 @@ mod tests {
         assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
 
         // Read-only like every other input, and an empty executable keeps
-        // its +x bit (an empty wrapper script must still exec).
-        #[cfg(unix)]
+        // its +x bit (an empty wrapper script must still exec). Checked on
+        // macOS only: Linux keeps the default mode for empty files.
+        #[cfg(target_os = "macos")]
         {
             use std::os::unix::fs::PermissionsExt;
             for (name, mode) in [("empty.txt", 0o444), ("empty.sh", 0o555)] {
                 let metadata = fs::metadata(dest.join(name)).await.unwrap();
                 assert_eq!(metadata.len(), 0, "{name}");
                 assert_eq!(metadata.permissions().mode() & 0o7777, mode, "{name}");
+            }
+        }
+        // Elsewhere empty files keep the default mode from `fs::write`, which
+        // is owner-writable; a chmod to 0o444 or 0o555 would clear that bit.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["empty.txt", "empty.sh"] {
+                let mode = fs::metadata(dest.join(name))
+                    .await
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_ne!(mode & 0o200, 0, "{name} must not be chmod'd: mode {mode:o}");
             }
         }
 
