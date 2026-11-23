@@ -2948,7 +2948,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "byte-unit",
  "jiff",
@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "base64 0.22.1",
  "caps",
@@ -3028,7 +3028,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3037,7 +3037,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "derive_more",
  "prost",
@@ -3069,7 +3069,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "either",
  "nativelink-macro",
@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-sim"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "bytes",
  "clap",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3280,7 +3280,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3343,7 +3343,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.8.7"
+version = "1.9.0"
 dependencies = [
  "async-lock",
  "async-trait",
