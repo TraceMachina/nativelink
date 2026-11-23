@@ -408,8 +408,8 @@ use crate::platform_property_manager::PlatformPropertyManager;
 use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
 use crate::simple_scheduler_state_manager::OnWorker;
 use crate::worker::{
-    ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerTimestamp,
-    WorkerUpdate,
+    ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerIdChosenBy,
+    WorkerTimestamp, WorkerUpdate,
 };
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
@@ -2084,8 +2084,10 @@ impl ApiWorkerSchedulerImpl {
                 running_actions = worker.running_action_infos.len(),
                 "Dropping update for an operation the worker is not running"
             );
+            // The one `FailedPrecondition` this returns: the update is
+            // settled, already applied or for an operation that moved on.
             return Err(make_err!(
-                Code::Internal,
+                Code::FailedPrecondition,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             ));
         }
@@ -3483,6 +3485,29 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 WorkerDisconnectReason::Removed,
             )
             .await
+    }
+
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        let Some(worker) = inner.workers.peek_mut(worker_id) else {
+            return Ok(());
+        };
+        if worker.id_chosen_by != WorkerIdChosenBy::Worker {
+            return Ok(());
+        }
+        // A worker that does not hear it sends the result again later, and
+        // is acknowledged then.
+        if let Err(err) = worker
+            .notify_update(WorkerUpdate::ResultAccepted(operation_id.clone()))
+            .await
+        {
+            debug!(?worker_id, %operation_id, ?err, "Could not acknowledge a result");
+        }
+        Ok(())
     }
 
     async fn worker_disconnected(

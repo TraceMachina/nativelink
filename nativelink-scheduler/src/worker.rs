@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
-    WorkerLoad, update_for_worker,
+    ActionResourceUsage, ConnectionResult, ExecuteResultAccepted, KillOperationRequest,
+    StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -62,6 +62,18 @@ pub enum WorkerUpdate {
 
     /// Requests that the worker stop executing this operation.
     KillOperation(OperationId),
+
+    /// Tells the worker its result for this operation is settled.
+    ResultAccepted(OperationId),
+}
+
+/// Who chose a worker's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerIdChosenBy {
+    /// The scheduler, on each connection: an older worker.
+    Scheduler,
+    /// The worker, once for its process. It knows `ExecuteResultAccepted`.
+    Worker,
 }
 
 #[derive(Debug, MetricsComponent)]
@@ -165,6 +177,9 @@ pub struct Worker {
     /// that names itself keeps its id across reconnects, so the end of an
     /// earlier connection must not remove the entry a later one made.
     pub connection: u64,
+
+    /// Who chose the worker's id, which tells what the worker understands.
+    pub id_chosen_by: WorkerIdChosenBy,
 
     /// The smallest reservation this worker declined for load while it held
     /// nothing else, from a worker that does not admit when idle (an older
@@ -274,6 +289,7 @@ impl Worker {
             pause_needs_kb: None,
             admits_when_idle: false,
             connection: 0,
+            id_chosen_by: WorkerIdChosenBy::Scheduler,
             idle_declined_kb: None,
             is_draining: false,
             recent_outcomes: VecDeque::new(),
@@ -350,6 +366,12 @@ impl Worker {
                     }),
                 )
             }
+            WorkerUpdate::ResultAccepted(operation_id) => send_msg_to_worker(
+                &self.tx,
+                update_for_worker::Update::ExecuteResultAccepted(ExecuteResultAccepted {
+                    operation_id: operation_id.to_string(),
+                }),
+            ),
         }
     }
 

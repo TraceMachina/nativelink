@@ -31,7 +31,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     execute_declined, execute_result, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
-use nativelink_scheduler::worker::Worker;
+use nativelink_scheduler::worker::{Worker, WorkerIdChosenBy};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
 use nativelink_util::action_messages::{OperationId, WorkerId};
@@ -246,8 +246,12 @@ impl WorkerApiServer {
         // Now register the worker with the scheduler, under the id it chose
         // when it chose one.
         let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        let named = !connect_worker_request.worker_id.is_empty();
         let worker_id = {
-            let worker_id = if connect_worker_request.worker_id.is_empty() {
+            let worker_id = if named {
+                check_worker_id(&connect_worker_request.worker_id)?;
+                WorkerId(connect_worker_request.worker_id)
+            } else {
                 let unique = self.worker_id_fn.as_ref().map_or_else(
                     || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
                     |worker_id_fn| worker_id_fn(),
@@ -256,9 +260,6 @@ impl WorkerApiServer {
                     "{}{unique}",
                     connect_worker_request.worker_id_prefix,
                 ))
-            } else {
-                check_worker_id(&connect_worker_request.worker_id)?;
-                WorkerId(connect_worker_request.worker_id)
             };
             let mut worker = Worker::new(
                 worker_id.clone(),
@@ -269,6 +270,11 @@ impl WorkerApiServer {
             );
             worker.admits_when_idle = connect_worker_request.admits_when_idle;
             worker.connection = connection;
+            worker.id_chosen_by = if named {
+                WorkerIdChosenBy::Worker
+            } else {
+                WorkerIdChosenBy::Scheduler
+            };
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -562,35 +568,38 @@ impl WorkerConnection {
                 })?;
         }
 
-        match execute_result
+        let update = match execute_result
             .result
             .err_tip(|| "Expected result to exist in ExecuteResult")?
         {
             execute_result::Result::ExecuteResponse(finished_result) => {
-                let action_stage = finished_result
-                    .try_into()
-                    .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithActionStage(action_stage),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithActionStage(
+                    finished_result
+                        .try_into()
+                        .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?,
+                )
             }
             execute_result::Result::InternalError(e) => {
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithError(e.into()),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithError(e.into())
             }
+        };
+        match self
+            .scheduler
+            .update_action(&self.worker_id, &operation_id, update)
+            .await
+        {
+            Ok(()) => {}
+            // The worker no longer holds the operation: its result was
+            // applied before (this is a resend), or it moved on.
+            Err(err) if err.code == Code::FailedPrecondition => {}
+            // Not settled: a result the store refused is held and written
+            // later, and the worker keeps its copy until then.
+            Err(err) => return Err(err).err_tip(|| format!("Failed to operation {operation_id}")),
         }
-        Ok(())
+        self.scheduler
+            .worker_result_settled(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Acknowledging the result of {operation_id}"))
     }
 
     /// The answer is recorded before the liveness refresh: the refresh runs
