@@ -68,11 +68,29 @@ impl WorkerRegistry {
         }
     }
 
-    /// Updates the heartbeat timestamp for a worker.
+    /// Updates the heartbeat timestamp for a worker. A heartbeat never moves
+    /// back: a message that waited to be processed carries the time it
+    /// started waiting, and the worker has been heard from since.
     pub async fn update_worker_heartbeat(&self, worker_id: &WorkerId, now: SystemTime) {
         let mut workers = self.workers.write().await;
-        workers.insert(worker_id.clone(), now);
+        let last_seen = workers.entry(worker_id.clone()).or_insert(now);
+        if *last_seen < now {
+            *last_seen = now;
+        }
         trace!(?worker_id, now = %Timestamp::try_from(now).unwrap(), "FLOW: Worker heartbeat updated in registry");
+    }
+
+    /// Moves a registered worker's heartbeat forward to `now`, as its
+    /// messages arrive. A message can arrive after the worker was removed,
+    /// and before an earlier one has been processed, so this neither
+    /// registers a worker nor moves a heartbeat back.
+    pub async fn worker_heard_from(&self, worker_id: &WorkerId, now: SystemTime) {
+        let mut workers = self.workers.write().await;
+        if let Some(last_seen) = workers.get_mut(worker_id)
+            && *last_seen < now
+        {
+            *last_seen = now;
+        }
     }
 
     pub async fn register_worker(&self, worker_id: &WorkerId, now: SystemTime) {

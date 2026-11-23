@@ -615,8 +615,9 @@ changes`. This is a fairly free-form section that doesn't have any explicit
     cosign signatures on the GHCR container images are not visible to that check.
 
     Wait for the workflow to finish, then confirm the release page lists, for
-    each target, a `*.tar.gz` plus its `*.sig`/`*.pem`, an `*.spdx.json` SBOM,
-    and a `*.intoto.jsonl` provenance file. You can verify any asset locally:
+    each target, a `*.tar.gz` (Unix) or `*.zip` (Windows) plus its `*.sig`/`*.pem`,
+    an `*.spdx.json` SBOM, and a `*.intoto.jsonl` provenance file. You can verify
+    any asset locally:
 
     ```bash
     # Verify the SLSA provenance covers the artifact.

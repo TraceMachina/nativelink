@@ -622,7 +622,9 @@ fn check_i10(records: &[Record], out: &mut Vec<Violation>) {
                     last.insert(op, *stage);
                 }
             }
-            Event::ClientReconnect { op, .. } | Event::ClientResubmit { op } => {
+            Event::ClientReconnect { op, .. }
+            | Event::ClientResubmit { op }
+            | Event::ClientRejoin { op, .. } => {
                 last.remove(op.as_str());
             }
             Event::ClientDone { op, .. } => {

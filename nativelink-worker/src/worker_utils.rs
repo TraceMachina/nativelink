@@ -111,5 +111,7 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
         properties: try_join_all(futures).await?.into_iter().flatten().collect(),
         max_inflight_tasks,
         admits_when_idle,
+        // The scheduler names the worker on each connection.
+        worker_id: String::new(),
     })
 }

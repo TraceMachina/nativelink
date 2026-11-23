@@ -29,7 +29,8 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::FakeRedisBackend;
 use nativelink_scheduler::awaited_action_db::{
-    AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PersistedSortKey,
+    SortedAwaitedActionState,
 };
 use nativelink_scheduler::memory_awaited_action_db::MemoryAwaitedActionDb;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
@@ -191,5 +192,111 @@ async fn memory_backend_mints_operation_ids_from_the_given_fn() -> Result<(), Er
             &OperationId::from(expected)
         );
     }
+    Ok(())
+}
+
+/// During a rolling upgrade the Redis index holds sort keys in two widths.
+/// A scheduler before the nanosecond key writes 16 hex digits, this one 32
+/// with leading zeros, and the index sorts the strings, so every action an
+/// older scheduler queued comes first, each block by priority and then age.
+/// That is the documented order (`AwaitedActionSortKey`), not a defect; this
+/// pins it, including its cost: a high-priority action queued after the
+/// upgrade waits behind a low-priority one queued before it.
+#[nativelink_test]
+async fn redis_index_serves_older_schedulers_keys_first_during_an_upgrade() -> Result<(), Error> {
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let store = RedisStore::new_standard(RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some("queue_order_upgrade_channel".to_string()),
+        ..Default::default()
+    })
+    .await?;
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await?);
+    let db = StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+        OperationId::default,
+        60,
+        60,
+        false,
+    )
+    .await?;
+
+    // (seed, priority, insert_ms, queued by an older scheduler)
+    let queued = [
+        (1, 0, 100_000, true),
+        (2, 5, 150_000, false),
+        (3, 0, 50_000, false),
+        (4, 3, 120_000, true),
+        (5, 0, 50_500, false),
+    ];
+    for (seed, priority, insert_ms, _) in queued {
+        db.add_action(
+            OperationId::from(format!("client-{seed}")),
+            action(seed, priority, insert_ms),
+            Duration::from_mins(1),
+        )
+        .await?;
+    }
+    // An older scheduler's records carry the 16-digit key in the index.
+    let older: Vec<u8> = queued
+        .iter()
+        .filter(|(.., older)| *older)
+        .map(|(seed, ..)| *seed)
+        .collect();
+    for fields in fake_redis_backend.table.lock().unwrap().values_mut() {
+        let Some(redis::Value::BulkString(data)) = fields.get("data") else {
+            continue;
+        };
+        let Ok(awaited) = AwaitedAction::try_from(data.as_slice()) else {
+            continue;
+        };
+        let info = awaited.action_info();
+        if older.contains(&info.command_digest.packed_hash()[0]) {
+            fields.insert(
+                "sort_key".to_string(),
+                redis::Value::BulkString(
+                    PersistedSortKey::from_action_info(info)
+                        .index_field()
+                        .into_bytes(),
+                ),
+            );
+        }
+    }
+
+    let stream = db
+        .get_range_of_actions(
+            SortedAwaitedActionState::Queued,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            true,
+        )
+        .await?;
+    let mut stream = core::pin::pin!(stream);
+    let mut order = Vec::new();
+    while let Some(subscriber) = stream.next().await {
+        let awaited = subscriber?.borrow().await?;
+        let info = awaited.action_info();
+        let ms = info
+            .insert_timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        order.push((info.priority, u64::try_from(ms).unwrap()));
+    }
+    assert_eq!(
+        order,
+        [
+            // Queued before the upgrade: priority, then age.
+            (3, 120_000),
+            (0, 100_000),
+            // Queued after it, the priority-5 action included.
+            (5, 150_000),
+            (0, 50_000),
+            (0, 50_500),
+        ]
+    );
     Ok(())
 }

@@ -517,7 +517,7 @@ async fn lose_worker(
     memory_kb: u64,
 ) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
     worker_scheduler
-        .worker_disconnected(&WorkerId(WORKER.to_string()))
+        .worker_disconnected(&WorkerId(WORKER.to_string()), 0)
         .await?;
     tokio::task::yield_now().await;
     add_worker(scheduler, memory_kb).await
@@ -654,7 +654,7 @@ async fn a_loss_at_the_whole_worker_ends_on_the_loss_budget() -> Result<(), Erro
     let (_, memory) = next_dispatch(&mut rx).await;
     assert_eq!(memory, 5_000);
     worker_scheduler
-        .worker_disconnected(&WorkerId(WORKER.to_string()))
+        .worker_disconnected(&WorkerId(WORKER.to_string()), 0)
         .await?;
     let result = wait_for_completion(&mut listener).await;
     let err = result.error.expect("the loss budget ends it");
