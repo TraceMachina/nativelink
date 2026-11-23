@@ -1606,7 +1606,7 @@ async fn executing_sweep_writes_a_held_result() -> Result<(), Error> {
 
     assert_eq!(report.results_written, [(worker_id.clone(), operation_id)]);
     assert_eq!(report.requeued, 0);
-    assert!(report.ended.is_empty());
+    assert_eq!(report.ended, Vec::<SweptAttempt>::new());
     assert!(lost_since.is_empty());
     assert_eq!(
         count_in_stage(&state_mgr, OperationStageFlags::Queued).await?,
