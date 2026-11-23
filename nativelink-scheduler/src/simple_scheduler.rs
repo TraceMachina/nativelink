@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use futures::{Future, FutureExt, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
@@ -169,6 +170,8 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
     }
 }
 
+type AbandonedSweep = Arc<dyn Fn() -> BoxFuture<'static, Result<u64, Error>> + Send + Sync>;
+
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
@@ -201,6 +204,10 @@ pub struct SimpleScheduler {
     /// Background task that retires queued actions nobody is waiting on.
     /// Dropped with the struct, like the matching task.
     task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
+
+    /// One pass of that sweep, for a test to run when its clock says so;
+    /// the task sleeps on real time.
+    abandoned_sweep: AbandonedSweep,
 
     /// Background task that retires executing actions whose worker has gone
     /// quiet or no longer runs them. Dropped with the struct; `None` when
@@ -404,6 +411,12 @@ impl SimpleScheduler {
 
     pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
         self.do_try_match(true).await
+    }
+
+    /// Runs the abandoned-queue sweep once, as its task does every client
+    /// timeout; returns how many actions it retired.
+    pub async fn sweep_abandoned_queued_actions_for_test(&self) -> Result<u64, Error> {
+        (self.abandoned_sweep)().await
     }
 
     /// A pass as production runs it between logging intervals: cached
@@ -1396,6 +1409,19 @@ impl SimpleScheduler {
         // the client timeout bounds how long one can sit there to roughly
         // twice that.
         let sweep_interval = Duration::from_secs(client_action_timeout_s);
+        let abandoned_sweep: AbandonedSweep = {
+            let state_manager = Arc::downgrade(&state_manager);
+            Arc::new(move || {
+                let state_manager = state_manager.clone();
+                async move {
+                    match state_manager.upgrade() {
+                        Some(state_manager) => state_manager.sweep_abandoned_queued_actions().await,
+                        None => Ok(0),
+                    }
+                }
+                .boxed()
+            })
+        };
         let sweep_state_manager = Arc::downgrade(&state_manager);
         let task_abandoned_sweep_spawn =
             spawn!("simple_scheduler_task_abandoned_sweep", async move {
@@ -1465,11 +1491,27 @@ impl SimpleScheduler {
                                     )
                                     .await;
                             }
-                            if report.retired + report.requeued + report.failed > 0 {
+                            for (worker_id, operation_id) in &report.results_written {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, true)
+                                    .await;
+                            }
+                            for (worker_id, operation_id) in &report.results_stale {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, false)
+                                    .await;
+                            }
+                            if report.retired
+                                + report.requeued
+                                + report.failed
+                                + report.results_written.len() as u64
+                                > 0
+                            {
                                 info!(
                                     retired = report.retired,
                                     requeued = report.requeued,
                                     failed = report.failed,
+                                    results_written = report.results_written.len(),
                                     "Executing sweep"
                                 );
                             }
@@ -1648,6 +1690,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 task_abandoned_sweep_spawn,
+                abandoned_sweep,
                 task_executing_sweep_spawn,
                 task_fleet_exchange_spawn,
                 worker_match_logging_interval,
@@ -1780,6 +1823,12 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .worker_liveness_refreshed(worker_id, timestamp)
             .await
+    }
+
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) {
+        self.worker_scheduler
+            .worker_message_received(worker_id, timestamp)
+            .await;
     }
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {

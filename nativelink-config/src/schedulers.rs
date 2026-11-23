@@ -443,6 +443,22 @@ pub struct SimpleSpec {
     pub fallback_match_interval_s: i64,
 }
 
+impl SimpleSpec {
+    /// The spec an empty `simple` section gives: `Default` plus what serde
+    /// fills in for a field left out. `Default` alone leaves the executing
+    /// sweep and the fallback matching pass off, which no config does;
+    /// whatever wants production's scheduler starts here.
+    #[must_use]
+    pub fn from_config_defaults() -> Self {
+        Self {
+            executing_sweep_interval_s: default_executing_sweep_interval_s(),
+            worker_match_logging_interval_s: default_worker_match_logging_interval_s(),
+            fallback_match_interval_s: default_fallback_match_interval_s(),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]

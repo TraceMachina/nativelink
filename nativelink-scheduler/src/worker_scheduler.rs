@@ -134,6 +134,13 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error>;
 
+    /// A message from the worker reached this scheduler at `timestamp`. It
+    /// is called as the message arrives, before it is processed: processing
+    /// can wait a long time behind a slow store, and a worker whose messages
+    /// keep arriving is alive for all of that time. Timing it out then would
+    /// evict it for the scheduler's own delay.
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp);
+
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
 
