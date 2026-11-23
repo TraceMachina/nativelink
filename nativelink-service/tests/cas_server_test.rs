@@ -430,6 +430,156 @@ async fn setup_directory_structure(
     })
 }
 
+// GetTree's `page_token` lets a client resume where a page ended. NativeLink's
+// token names the next digest to return, so a Directory that occurs twice in
+// the tree (two empty subdirectories here) used to send every later page back
+// to its first copy, and a client paging to the end never finished.
+#[nativelink_test]
+async fn get_tree_pages_through_repeated_directories() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let empty = Directory::default();
+    let empty_digest = serialize_and_upload_message(
+        &empty,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let root = Directory {
+        directories: vec![
+            DirectoryNode {
+                name: "a".to_string(),
+                digest: Some(empty_digest.into()),
+            },
+            DirectoryNode {
+                name: "b".to_string(),
+                digest: Some(empty_digest.into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let root_digest = serialize_and_upload_message(
+        &root,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let mut directories = Vec::new();
+    let mut page_token = String::new();
+    let mut finished = false;
+    for _ in 0..10 {
+        let pages = cas_server
+            .get_tree(Request::new(GetTreeRequest {
+                instance_name: INSTANCE_NAME.to_string(),
+                page_size: 1,
+                page_token,
+                root_digest: Some(root_digest.into()),
+                digest_function: digest_function::Value::Sha256.into(),
+            }))
+            .await?
+            .into_inner()
+            .collect::<Vec<_>>()
+            .await;
+        let mut next_page_token = String::new();
+        for page in pages {
+            let page = page?;
+            directories.extend(page.directories);
+            next_page_token = page.next_page_token;
+        }
+        if next_page_token.is_empty() {
+            finished = true;
+            break;
+        }
+        page_token = next_page_token;
+    }
+    assert!(finished, "paging did not finish after 10 pages: {directories:?}");
+    assert_eq!(directories, vec![root, empty]);
+    Ok(())
+}
+
+// REv2 GetTree: "If part of the tree is missing from the CAS, the server will
+// return the portion present and omit the rest." Only a missing root is an
+// error, and it is `NOT_FOUND`.
+#[nativelink_test]
+async fn get_tree_omits_missing_subdirectories() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let present = Directory {
+        node_properties: Some(NodeProperties {
+            properties: vec![],
+            mtime: Some(Timestamp {
+                seconds: 1,
+                nanos: 0,
+            }),
+            unix_mode: None,
+        }),
+        ..Default::default()
+    };
+    let present_digest = serialize_and_upload_message(
+        &present,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    // Never uploaded.
+    let missing_digest = DigestInfo::new([0xee; 32], 77);
+    let root = Directory {
+        directories: vec![
+            DirectoryNode {
+                name: "missing".to_string(),
+                digest: Some(missing_digest.into()),
+            },
+            DirectoryNode {
+                name: "present".to_string(),
+                digest: Some(present_digest.into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let root_digest = serialize_and_upload_message(
+        &root,
+        store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    let get_tree = |root_digest: DigestInfo| {
+        cas_server.get_tree(Request::new(GetTreeRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            page_size: 0,
+            page_token: String::new(),
+            root_digest: Some(root_digest.into()),
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+    };
+
+    let responses = get_tree(root_digest)
+        .await?
+        .into_inner()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        responses,
+        vec![GetTreeResponse {
+            directories: vec![root, present],
+            next_page_token: String::new(),
+        }]
+    );
+
+    let Err(status) = get_tree(missing_digest).await else {
+        panic!("a missing root must fail");
+    };
+    assert_eq!(status.code(), Code::NotFound);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn get_tree_read_directories_without_paging() -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
@@ -633,6 +783,99 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn core::err
         );
     }
 
+    Ok(())
+}
+
+// REv2 BatchUpdateBlobs lists `INVALID_ARGUMENT` ("The Digest does not match
+// the provided data") among the errors of *individual* requests, and
+// BatchReadBlobs says "Every error on individual read will be returned in the
+// corresponding digest status". A bad entry must therefore get its own status
+// and leave the other entries in the batch alone.
+#[nativelink_test]
+async fn batch_errors_are_reported_per_blob() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE1: &str = "1";
+
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+    let good = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: 1,
+    };
+    // The data is one byte, but the digest claims five.
+    let size_mismatch = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: 5,
+    };
+    let malformed = Digest {
+        hash: "not-a-hash".to_string(),
+        size_bytes: 1,
+    };
+
+    let mut update = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![
+                batch_update_blobs_request::Request {
+                    digest: Some(good.clone()),
+                    data: VALUE1.into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+                batch_update_blobs_request::Request {
+                    digest: Some(size_mismatch.clone()),
+                    data: VALUE1.into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+            ],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner()
+        .responses;
+    update.sort_by_key(|r| r.digest.as_ref().map(|d| d.size_bytes));
+    let codes: Vec<_> = update
+        .iter()
+        .map(|r| (r.digest.clone(), r.status.as_ref().map(|s| s.code)))
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            (Some(good.clone()), Some(Code::Ok as i32)),
+            (Some(size_mismatch), Some(Code::InvalidArgument as i32)),
+        ]
+    );
+
+    let mut read = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![good.clone(), malformed.clone()],
+            acceptable_compressors: vec![],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner()
+        .responses;
+    read.sort_by_key(|r| r.digest.as_ref().map(|d| d.hash.clone()));
+    let codes: Vec<_> = read
+        .iter()
+        .map(|r| {
+            (
+                r.digest.clone(),
+                r.status.as_ref().map(|s| s.code),
+                r.data.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            (Some(good), Some(Code::Ok as i32), Bytes::from(VALUE1)),
+            (
+                Some(malformed),
+                Some(Code::InvalidArgument as i32),
+                Bytes::new()
+            ),
+        ]
+    );
     Ok(())
 }
 

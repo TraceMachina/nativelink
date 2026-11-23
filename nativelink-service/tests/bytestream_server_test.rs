@@ -1398,6 +1398,58 @@ pub async fn out_of_sequence_write() -> Result<(), Box<dyn core::error::Error>> 
     Ok(())
 }
 
+// google/bytestream/bytestream.proto, ReadRequest.read_offset: "A
+// `read_offset` that is negative or greater than the size of the resource
+// will cause an `OUT_OF_RANGE` error." An offset equal to the size is in
+// range and reads nothing.
+#[nativelink_test]
+pub async fn read_offset_outside_the_blob_is_out_of_range()
+-> Result<(), Box<dyn core::error::Error>> {
+    const VALUE1: &str = "12456789abcdefghijk";
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = make_bytestream_server(store_manager.as_ref(), None)?;
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let size = i64::try_from(VALUE1.len())?;
+
+    for read_offset in [-1, size + 1] {
+        let result = bs_server
+            .read(Request::new(ReadRequest {
+                resource_name: format!("{INSTANCE_NAME}/blobs/{HASH1}/{size}"),
+                read_offset,
+                read_limit: 0,
+            }))
+            .await;
+        let Err(status) = result else {
+            panic!("read_offset {read_offset} of a {size}-byte blob should fail");
+        };
+        assert_eq!(
+            status.code(),
+            Code::OutOfRange,
+            "read_offset {read_offset}: {status:?}"
+        );
+    }
+
+    for (read_offset, expected) in [(size, ""), (3, &VALUE1[3..])] {
+        let mut read_stream = bs_server
+            .read(Request::new(ReadRequest {
+                resource_name: format!("{INSTANCE_NAME}/blobs/{HASH1}/{size}"),
+                read_offset,
+                read_limit: 0,
+            }))
+            .await?
+            .into_inner();
+        let mut data = Vec::new();
+        while let Some(response) = read_stream.next().await {
+            data.extend_from_slice(&response?.data);
+        }
+        assert_eq!(data, expected.as_bytes(), "read_offset {read_offset}");
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core::error::Error>> {
     const VALUE1: &str = "12456789abcdefghijk";

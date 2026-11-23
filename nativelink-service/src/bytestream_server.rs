@@ -1563,6 +1563,19 @@ impl ByteStream for ByteStreamServer {
 
         let digest = DigestInfo::try_new(resource_info.hash.as_ref(), resource_info.expected_size)?;
 
+        // ByteStream: "A `read_offset` that is negative or greater than the
+        // size of the resource will cause an `OUT_OF_RANGE` error." The size
+        // is the digest's; for a compressed-blobs read REv2 measures the
+        // offset against the uncompressed blob, which has that same size.
+        if !u64::try_from(read_request.read_offset).is_ok_and(|offset| offset <= expected_size) {
+            return Err(make_err!(
+                Code::OutOfRange,
+                "read_offset {} is outside the {expected_size}-byte resource {resource_name}",
+                read_request.read_offset
+            )
+            .into());
+        }
+
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store.downcast_ref::<GrpcStore>(Some(digest.into())) {
             let stream = Box::pin(grpc_store.read(Request::new(read_request)).await?);

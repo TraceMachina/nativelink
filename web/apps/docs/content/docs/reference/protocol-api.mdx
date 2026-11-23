@@ -97,10 +97,10 @@ which kills an action nobody is listening to.
 | --- | --- |
 | Supported API versions | 2.0.0 to 2.3.0 |
 | Digest functions | `SHA256`, `BLAKE3` |
-| `max_batch_total_size_bytes` | 65536 (64 KiB) |
-| `max_cas_blob_size_bytes` | 0 (no limit advertised) |
+| `max_batch_total_size_bytes` | the listener's `max_decoding_message_size` less 1/16 (3.75 MiB with the 4 MiB default) |
+| `max_cas_blob_size_bytes` | the instance's CAS store upload limit when the store reports one (for example S3, GCS or Azure used directly); 0, meaning no limit, otherwise |
 | `symlink_absolute_path_strategy` | `DISALLOWED` |
-| `update_enabled` (action cache) | `true` |
+| `update_enabled` (action cache) | `false` when every `ac` entry for the instance sets `read_only: true`; `true` otherwise, including when the instance has no `ac` entry |
 | `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
 | `split_blob_support`, `splice_blob_support`, `fast_cdc_2020_params` | set when the instance's `cas` entry configures `experimental_chunking`; otherwise `false`/unset |
 | `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX`, with higher values running sooner (see [intentional deviations](#intentional-deviations)) |
@@ -116,13 +116,21 @@ scheduler, execution is advertised as enabled; there is no way to advertise
 `remote_execution`) omits `execution_capabilities` altogether, which is the
 correct signal for a cache-only deployment.
 
-**The 64 KiB batch limit is advisory and small** relative to what some
-clients assume. The CAS handlers do not enforce it themselves; the hard stop
-is the listener's `max_decoding_message_size` (4 MiB unless configured), and
-a batch request above that is rejected at the gRPC layer. Clients that honour
-the advertised limit send anything larger through ByteStream.
+**The batch limit follows the listener.** `max_batch_total_size_bytes` counts
+only blob data, while a batch request also carries each blob's digest and
+framing, so NativeLink advertises 1/16 less than the listener's
+`max_decoding_message_size` (4 MiB unless configured). The CAS handlers do
+not enforce the advertised value themselves; a request above the decoding
+limit is rejected at the gRPC layer. Clients that honour the advertised limit
+send anything larger through ByteStream.
 
 ## Wire-level details worth knowing [#wire-level-details-worth-knowing]
+
+**Batch RPCs report errors per blob.** In `BatchUpdateBlobs` and
+`BatchReadBlobs`, a malformed digest, a size mismatch or a failed
+decompression becomes that entry's status, and the other blobs in the batch
+are processed normally. An unsupported compressor still fails the whole
+request.
 
 **ByteStream resource names are parsed right to left.** A resource name is
 `{instance_name}/blobs/{hash}/{size}`, and the instance name may itself
@@ -130,10 +138,24 @@ contain slashes, so left-to-right parsing cannot find the boundary, while
 right-to-left can, because the trailing components are fixed. See
 <SourceLink file="nativelink-util/src/resource_info.rs" symbol="ResourceInfo" />.
 
+**A ByteStream read outside the blob is `OUT_OF_RANGE`.** A `read_offset` that
+is negative or larger than the blob's size (taken from the resource name)
+returns `OUT_OF_RANGE`, as `bytestream.proto` specifies. An offset equal to
+the size reads nothing. For `compressed-blobs` reads the offset counts
+uncompressed bytes.
+
+**`GetTree` returns each distinct directory once.** A `Directory` that occurs
+more than once in a tree (two empty subdirectories, say) appears once in the
+response, so a client paging through such a tree reaches the end.
+
 **`GetTree` page tokens are `"{hash}-{size}"`**, constructed and parsed by
 splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
+
+**`GetTree` returns what it finds.** If a subdirectory is missing from the
+CAS, the response leaves it out and carries the rest of the tree. Only a
+missing root fails the call, with `NOT_FOUND`.
 
 **Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
 for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
@@ -149,11 +171,18 @@ uploaded" mistake into a fast error, not to provide a guarantee. See
 **A malformed `Action.timeout` is rejected.** A negative `seconds` or `nanos`,
 or `nanos` of 1,000,000,000 or more, is not a valid `google.protobuf.Duration`,
 so `Execute` returns `INVALID_ARGUMENT`. A valid timeout longer than the
-worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
+worker's `max_action_timeout_s` is accepted and clamped by the worker, unless
+the execution service sets its own `max_action_timeout_s`: then `Execute`
+rejects a longer timeout with `INVALID_ARGUMENT`, as the REAPI requires of a
+server with a maximum.
 
 **`ActionStage::CacheCheck` is never emitted.** The cache lookup happens in a
 decorator in front of the scheduler, so the state is skipped entirely. A
 client waiting to observe it will wait forever.
+
+**Binary request headers may be padded.** The
+`build.bazel.remote.execution.v2.requestmetadata-bin` header is read whether
+its base64 carries `=` padding or not, as the gRPC wire format requires.
 
 **Final action failure arrives as success.** An action that exhausts its
 retries returns `ActionStage::Completed` with `ActionResult.error` set: a

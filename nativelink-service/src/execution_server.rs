@@ -244,6 +244,9 @@ struct InstanceInfo {
     execute_stream_heartbeat: Option<Duration>,
     /// The time an action is queued at.
     now_fn: NowFn,
+    /// The longest `Action.timeout` accepted. `None` accepts any timeout
+    /// and leaves the worker to clamp it.
+    max_action_timeout: Option<Duration>,
 }
 
 /// The clock queued actions are stamped from.
@@ -311,6 +314,21 @@ impl InstanceInfo {
                 .ok_or_else(|| make_input_err!("Expected input_digest_root"))?,
         )?;
         let timeout = action_timeout(action.timeout)?;
+        // REv2 `Action.timeout`: "if the client does specify a timeout that is
+        // longer than the server's maximum timeout, the server MUST reject the
+        // request." Opt-in, so deployments without a maximum keep the
+        // worker's clamp. An absent timeout maps to `Duration::MAX` and is
+        // not a request for more time, so it is never rejected.
+        if let Some(max) = self.max_action_timeout
+            && timeout != Duration::MAX
+            && timeout > max
+        {
+            return Err(make_input_err!(
+                "Action.timeout of {}s is longer than this instance's maximum of {}s",
+                timeout.as_secs_f64(),
+                max.as_secs()
+            ));
+        }
 
         let mut platform_properties = HashMap::new();
         if let Some(platform) = action.platform {
@@ -440,6 +458,8 @@ impl ExecutionServer {
                     execute_stream_heartbeat: (config.execute_stream_heartbeat_s > 0)
                         .then(|| Duration::from_secs(config.execute_stream_heartbeat_s as u64)),
                     now_fn: Arc::new(SystemTime::now),
+                    max_action_timeout: (config.max_action_timeout_s > 0)
+                        .then(|| Duration::from_secs(config.max_action_timeout_s as u64)),
                 },
             );
         }

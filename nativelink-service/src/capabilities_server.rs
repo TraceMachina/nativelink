@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nativelink_config::cas_server::{
-    CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
+    AcStoreConfig, CapabilitiesConfig, CasStoreConfig, InstanceName, WithInstanceName,
 };
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::{
@@ -31,13 +31,32 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::build::bazel::semver::SemVer;
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
+use nativelink_store::store_manager::StoreManager;
 use nativelink_util::digest_hasher::default_digest_hasher_func;
+use nativelink_util::store_trait::StoreLike;
 use tonic::{Request, Response, Status};
 use tracing::{Level, instrument};
 
 use crate::wire_compression::RemoteCacheCompressionInstances;
 
-const MAX_BATCH_TOTAL_SIZE: i64 = 64 * 1024;
+/// `max_batch_total_size_bytes` counts only blob data, while the request also
+/// carries each blob's digest and framing (about 80 bytes a blob). Advertising
+/// 1/16 less than the listener accepts leaves room for that framing on
+/// batches of thousands of small blobs.
+/// `max_cas_blob_size_bytes` for a store's `max_upload_size()`. That is
+/// `u64::MAX` when the store knows no limit, which every wrapper store
+/// reports; REAPI spells "no limit" as 0.
+fn advertised_max_cas_blob_size(max_upload_size: u64) -> i64 {
+    if max_upload_size == u64::MAX {
+        0
+    } else {
+        i64::try_from(max_upload_size).unwrap_or(i64::MAX)
+    }
+}
+
+fn max_batch_total_size_bytes(max_decoding_message_size: usize) -> i64 {
+    i64::try_from(max_decoding_message_size - max_decoding_message_size / 16).unwrap_or(i64::MAX)
+}
 
 #[derive(Debug, Default)]
 pub struct CapabilitiesServer {
@@ -49,6 +68,13 @@ pub struct CapabilitiesServer {
     // property onto the wire.
     remote_cache_compression_instances: RemoteCacheCompressionInstances,
     chunking_params_for_instance: HashMap<InstanceName, FastCdc2020Params>,
+    // The CAS store's known upload limit per instance; absent when the store
+    // reports none.
+    max_cas_blob_size_for_instance: HashMap<InstanceName, i64>,
+    max_batch_total_size_bytes: i64,
+    // Instances whose every Action Cache entry is `read_only`. They advertise
+    // `update_enabled: false`, since `UpdateActionResult` refuses them.
+    read_only_ac_instances: HashSet<InstanceName>,
 }
 
 impl CapabilitiesServer {
@@ -57,7 +83,34 @@ impl CapabilitiesServer {
         scheduler_map: &HashMap<String, Arc<dyn KnownPlatformPropertyProvider>>,
         remote_cache_compression_instances: &RemoteCacheCompressionInstances,
         cas_configs: &[WithInstanceName<CasStoreConfig>],
+        store_manager: &StoreManager,
+        max_decoding_message_size: usize,
+        ac_configs: &[WithInstanceName<AcStoreConfig>],
     ) -> Result<Self, Error> {
+        let mut max_cas_blob_size_for_instance = HashMap::new();
+        for cas_config in cas_configs {
+            if let Some(store) = store_manager.get_store(&cas_config.cas_store) {
+                max_cas_blob_size_for_instance.insert(
+                    cas_config.instance_name.clone(),
+                    advertised_max_cas_blob_size(store.as_store_driver().max_upload_size()),
+                );
+            }
+        }
+
+        // An instance is read-only only if it has an Action Cache and every
+        // entry for it is `read_only`. An instance with no Action Cache here
+        // keeps `update_enabled: true`: it may be served by another process.
+        let mut read_only_ac_instances = HashSet::new();
+        let mut writable_ac_instances = HashSet::new();
+        for ac_config in ac_configs {
+            if ac_config.read_only {
+                read_only_ac_instances.insert(ac_config.instance_name.clone());
+            } else {
+                writable_ac_instances.insert(ac_config.instance_name.clone());
+            }
+        }
+        read_only_ac_instances.retain(|name| !writable_ac_instances.contains(name));
+
         let mut chunking_params_for_instance = HashMap::new();
         for cas_config in cas_configs {
             if let Some(chunking_config) = &cas_config.experimental_chunking {
@@ -108,6 +161,9 @@ impl CapabilitiesServer {
             supported_node_properties_for_instance,
             remote_cache_compression_instances: remote_cache_compression_instances.clone(),
             chunking_params_for_instance,
+            max_cas_blob_size_for_instance,
+            max_batch_total_size_bytes: max_batch_total_size_bytes(max_decoding_message_size),
+            read_only_ac_instances,
         })
     }
 
@@ -169,14 +225,18 @@ impl Capabilities for CapabilitiesServer {
                     DigestFunction::Blake3.into(),
                 ],
                 action_cache_update_capabilities: Some(ActionCacheUpdateCapabilities {
-                    update_enabled: true,
+                    update_enabled: !self.read_only_ac_instances.contains(&instance_name),
                 }),
                 cache_priority_capabilities: None,
-                max_batch_total_size_bytes: MAX_BATCH_TOTAL_SIZE,
+                max_batch_total_size_bytes: self.max_batch_total_size_bytes,
                 symlink_absolute_path_strategy: SymlinkAbsolutePathStrategy::Disallowed.into(),
                 supported_compressors: supported_compressors.clone(),
                 supported_batch_update_compressors: supported_compressors,
-                max_cas_blob_size_bytes: 0,
+                max_cas_blob_size_bytes: self
+                    .max_cas_blob_size_for_instance
+                    .get(&instance_name)
+                    .copied()
+                    .unwrap_or(0),
                 split_blob_support: chunking_params.is_some(),
                 splice_blob_support: chunking_params.is_some(),
                 fast_cdc_2020_params: chunking_params.copied(),
@@ -198,5 +258,23 @@ impl Capabilities for CapabilitiesServer {
             }),
         };
         Ok(Response::new(resp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{advertised_max_cas_blob_size, max_batch_total_size_bytes};
+
+    #[test]
+    fn max_cas_blob_size_is_zero_only_when_the_limit_is_unknown() {
+        assert_eq!(advertised_max_cas_blob_size(u64::MAX), 0);
+        assert_eq!(advertised_max_cas_blob_size(5 << 40), 5 << 40);
+        assert_eq!(advertised_max_cas_blob_size(u64::MAX - 1), i64::MAX);
+    }
+
+    #[test]
+    fn batch_limit_leaves_headroom_below_the_decoding_limit() {
+        assert_eq!(max_batch_total_size_bytes(4 << 20), (4 << 20) - (256 << 10));
+        assert_eq!(max_batch_total_size_bytes(0), 0);
     }
 }
