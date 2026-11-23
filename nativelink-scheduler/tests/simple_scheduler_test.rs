@@ -5007,12 +5007,14 @@ async fn check_room_opening_mid_pass(
     // The listeners stay alive so the actions keep their clients.
     let mut listeners = Vec::with_capacity(count);
     let mut index_of = HashMap::with_capacity(count);
+    let mut insert_times = Vec::with_capacity(count);
     for index in 0..count {
         let digest = burst_digest(index);
         index_of.insert(digest, index);
         let inserted = SystemTime::UNIX_EPOCH
             + Duration::from_secs(NOW_TIME)
             + Duration::from_nanos(spread.offset_nanos(index, count));
+        insert_times.push(inserted);
         let mut action_info = make_base_action_info(inserted, digest);
         let action = Arc::make_mut(&mut action_info);
         action.platform_properties.clone_from(&action_properties);
@@ -5028,8 +5030,9 @@ async fn check_room_opening_mid_pass(
         );
     }
     let mut oldest_first: Vec<usize> = (0..count).collect();
-    oldest_first
-        .sort_by_key(|&index| (spread.offset_nanos(index, count), core::cmp::Reverse(index)));
+    // SystemTime has 100 ns precision on Windows, so distinct offsets can tie.
+    // Order by the timestamps actually submitted, with the same id tie-breaker.
+    oldest_first.sort_by_key(|&index| (insert_times[index], core::cmp::Reverse(index)));
     let finish = async |operation_id: String| {
         scheduler
             .update_action(
