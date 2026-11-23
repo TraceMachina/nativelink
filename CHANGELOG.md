@@ -58,6 +58,9 @@ All notable changes to this project will be documented in this file.
 
 ### 🧪 Testing & CI
 
+- Respect platform timestamp precision in scheduler ordering tests ([#3272](https://github.com/TraceMachina/nativelink/issues/3272)) - ([daffed0](https://github.com/TraceMachina/nativelink/commit/daffed06b48eaa7341ecb8547688333532785aa9))
+- Compare the swept attempts with assert_eq so nightly Clippy accepts the empty check ([#3271](https://github.com/TraceMachina/nativelink/issues/3271)) - ([24826fb](https://github.com/TraceMachina/nativelink/commit/24826fb88fe0ae996b2a2248ffc4455c93a811ee))
+- Use same version of rust as nix, not "stable" ([#3249](https://github.com/TraceMachina/nativelink/issues/3249)) - ([060a984](https://github.com/TraceMachina/nativelink/commit/060a98406b311bb1ebc1f9ebf2a911fa449e5f89))
 - Disable namespaces for job control tests ([#3247](https://github.com/TraceMachina/nativelink/issues/3247)) - ([6e81e84](https://github.com/TraceMachina/nativelink/commit/6e81e84a463f892b63407d72d77ecc9265e7840d))
 - Bound the pre-build garbage collection wait on the retained client ([#3248](https://github.com/TraceMachina/nativelink/issues/3248)) - ([9736eae](https://github.com/TraceMachina/nativelink/commit/9736eae1c71dcef6e3a705d0bacccd29a41df6b1))
 - Hold the Nix client lock through artifact transfer ([#3266](https://github.com/TraceMachina/nativelink/issues/3266)) - ([4694deb](https://github.com/TraceMachina/nativelink/commit/4694deb10729d36b2178f02c4f5af21716ad423e))

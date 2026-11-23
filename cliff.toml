@@ -81,6 +81,7 @@ commit_parsers = [
   # v1.9.0: pinned by subject, since their bodies trip the generic word rules.
   { message = "Bound the pre-build garbage collection wait on the retained client", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Clone executable inputs into the directory cache on macOS", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Compare the swept attempts with assert_eq", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Gate empty-file mode change to macOS", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Hold the Nix client lock through artifact transfer", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Keep do_not_cache results out of the Action Cache on the worker", group = "<!-- 2 -->🐛 Bug Fixes" },
@@ -91,6 +92,7 @@ commit_parsers = [
   { message = "Run the cluster and Nix lanes on the AWS deployment only", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Scheduler tests: retention follows real listeners", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Scope trusted build permissions to the reporting job", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Use same version of rust as nix", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Warn at startup when shared workers and a writable action cache are combined", group = "<!-- 1 -->⛰️  Features" },
   { message = "a worker can name itself", group = "<!-- 1 -->⛰️  Features" },
   { message = "a worker is heard from when its message arrives", group = "<!-- 2 -->🐛 Bug Fixes" },
