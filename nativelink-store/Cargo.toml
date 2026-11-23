@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.8.7"
+version = "1.9.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -128,7 +128,7 @@ tonic = { version = "0.14.0", features = [
   "transport",
 ], default-features = false }
 tracing = { version = "0.1.41", default-features = false }
-url = { version = "2.5.7", default-features = false }
+url = { version = "2.5.9", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",

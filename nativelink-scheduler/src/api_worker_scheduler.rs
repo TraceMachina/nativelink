@@ -408,8 +408,8 @@ use crate::platform_property_manager::PlatformPropertyManager;
 use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
 use crate::simple_scheduler_state_manager::OnWorker;
 use crate::worker::{
-    ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerTimestamp,
-    WorkerUpdate,
+    ActionInfoWithProps, PendingActionInfoData, TripwireState, Worker, WorkerIdChosenBy,
+    WorkerTimestamp, WorkerUpdate,
 };
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
@@ -2084,8 +2084,10 @@ impl ApiWorkerSchedulerImpl {
                 running_actions = worker.running_action_infos.len(),
                 "Dropping update for an operation the worker is not running"
             );
+            // The one `FailedPrecondition` this returns: the update is
+            // settled, already applied or for an operation that moved on.
             return Err(make_err!(
-                Code::Internal,
+                Code::FailedPrecondition,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             ));
         }
@@ -3330,6 +3332,30 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 "Received request to add worker while shutting down"
             ));
         }
+        // A worker that names itself reconnects under the same id, possibly
+        // before this scheduler has seen its earlier stream end. That
+        // connection is gone either way: its actions requeue as its
+        // disconnect would have requeued them.
+        if inner
+            .workers
+            .peek(&worker_id)
+            .is_some_and(|existing| existing.connection != worker.connection)
+        {
+            info!(
+                ?worker_id,
+                "Worker reconnected; ending its earlier connection"
+            );
+            drop(
+                inner
+                    .immediate_evict_worker(
+                        &worker_id,
+                        make_err!(Code::Unavailable, "Worker reconnected"),
+                        true,
+                        WorkerDisconnectReason::Disconnected,
+                    )
+                    .await,
+            );
+        }
         let result = inner
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
@@ -3461,10 +3487,47 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .await
     }
 
-    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        self.worker_registry.remove_worker(worker_id).await;
-
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
+        let Some(worker) = inner.workers.peek_mut(worker_id) else {
+            return Ok(());
+        };
+        if worker.id_chosen_by != WorkerIdChosenBy::Worker {
+            return Ok(());
+        }
+        // A worker that does not hear it sends the result again later, and
+        // is acknowledged then.
+        if let Err(err) = worker
+            .notify_update(WorkerUpdate::ResultAccepted(operation_id.clone()))
+            .await
+        {
+            debug!(?worker_id, %operation_id, ?err, "Could not acknowledge a result");
+        }
+        Ok(())
+    }
+
+    async fn worker_disconnected(
+        &self,
+        worker_id: &WorkerId,
+        connection: u64,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        if inner
+            .workers
+            .peek(worker_id)
+            .is_some_and(|worker| worker.connection != connection)
+        {
+            debug!(
+                ?worker_id,
+                connection, "An earlier connection of a reconnected worker ended"
+            );
+            return Ok(());
+        }
+        self.worker_registry.remove_worker(worker_id).await;
         inner
             .immediate_evict_worker(
                 worker_id,

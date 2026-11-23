@@ -101,6 +101,15 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
+    /// The result the worker sent for `operation_id` is settled: applied, or
+    /// for an operation the worker no longer holds. A worker that named
+    /// itself is told, so it need not send it again; an older one is not.
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
     /// A keepalive said which operations the worker is running. An
     /// acknowledged operation the worker leaves out of two reports in a row
     /// finished without its result reaching the scheduler; it is released
@@ -147,7 +156,11 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     /// The worker's stream ended without a `GoingAway`: it crashed, was
     /// OOM-killed or lost its connection. Its actions requeue as a
     /// disconnect, so the retry cap names the worker rather than the job.
-    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error>;
+    /// `connection` is the entry's `Worker::connection`; when the worker has
+    /// since reconnected under the same id, the entry is the new
+    /// connection's and is left alone.
+    async fn worker_disconnected(&self, worker_id: &WorkerId, connection: u64)
+    -> Result<(), Error>;
 
     /// Evict all workers from the scheduler, setting their actions back to queued.
     async fn shutdown(&self, shutdown_guard: ShutdownGuard);
