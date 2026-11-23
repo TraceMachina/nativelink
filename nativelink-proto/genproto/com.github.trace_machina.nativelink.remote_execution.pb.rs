@@ -93,8 +93,8 @@ pub struct ConnectWorkerRequest {
         super::super::super::super::super::build::bazel::remote::execution::v2::platform::Property,
     >,
     /// / Prefix to use for worker IDs. This is primarily used for debugging
-    /// / or for other systems to identify workers. The scheduler will always
-    /// / append this prefix to the assigned worker_id followed by a UUIDv6.
+    /// / or for other systems to identify workers. When `worker_id` is empty,
+    /// / the scheduler names the worker this prefix followed by a UUIDv6.
     #[prost(string, tag = "2")]
     pub worker_id_prefix: ::prost::alloc::string::String,
     /// / Maximum number of inflight tasks this worker can cope with at one time
@@ -107,6 +107,11 @@ pub struct ConnectWorkerRequest {
     /// / (false) from older workers.
     #[prost(bool, tag = "4")]
     pub admits_when_idle: bool,
+    /// / The id the worker chose for itself, kept across reconnects for the
+    /// / life of the process. The scheduler uses it as given; empty (an older
+    /// / worker) and the scheduler names the worker from `worker_id_prefix`.
+    #[prost(string, tag = "5")]
+    pub worker_id: ::prost::alloc::string::String,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -346,6 +351,15 @@ pub mod execute_declined {
         }
     }
 }
+/// / The scheduler has the result the worker sent for this operation: it
+/// / applied it, or the operation is no longer the worker's. The worker need
+/// / not send it again. Sent only to a worker that named itself
+/// / (`ConnectWorkerRequest.worker_id`); an older worker does not know it.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecuteResultAccepted {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+}
 /// / Request to kill a running operation sent from the scheduler to a worker.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KillOperationRequest {
@@ -356,7 +370,7 @@ pub struct KillOperationRequest {
 /// / Communication from the scheduler to the worker.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateForWorker {
-    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "update_for_worker::Update", tags = "1, 2, 3, 4, 5, 6")]
     pub update: ::core::option::Option<update_for_worker::Update>,
 }
 /// Nested message and enum types in `UpdateForWorker`.
@@ -385,6 +399,9 @@ pub mod update_for_worker {
         /// / Instructs the worker to kill a specific running operation.
         #[prost(message, tag = "5")]
         KillOperationRequest(super::KillOperationRequest),
+        /// / The scheduler has the result of an operation.
+        #[prost(message, tag = "6")]
+        ExecuteResultAccepted(super::ExecuteResultAccepted),
     }
 }
 /// / Communication from the worker to the scheduler.
