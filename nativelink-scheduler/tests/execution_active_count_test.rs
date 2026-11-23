@@ -102,6 +102,8 @@ async fn dropping_executing_action_decrements_active_count() -> Result<(), Error
 
     assert_eq!(counts.load(Ordering::SeqCst), 1);
 
+    // The client goes: while it listened, its entry outlived the retain window.
+    drop(subscriber);
     // A new insert evicts the first client's entry after its retain window.
     MockClock::advance(Duration::from_mins(2));
     let second_client = OperationId::default();

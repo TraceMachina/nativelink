@@ -5362,9 +5362,10 @@ The shape of it:
 
 ## What the tag triggers
 
-`release.yaml` builds three targets (`x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`), signs each with
-keyless Sigstore cosign, and attaches SLSA Build Level 3 provenance.
+`release.yaml` builds four targets (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc`), signs each with keyless Sigstore cosign, and attaches
+SLSA Build Level 3 provenance.
 
 ## What the version number promises
 

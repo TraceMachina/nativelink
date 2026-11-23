@@ -60,9 +60,10 @@ def prune_retained_outputs(directory):
     # Each run's `result` link is a Nix GC root, and its directory keeps the
     # multi-gigabyte closure archive. On this retained client nothing else
     # removes either, so past runs eventually fill the disk and the build
-    # dies mid-compile on ENOSPC. Downstream jobs import the archive their
-    # own run uploaded, never this copy, so only the newest result roots are
-    # worth keeping, for store warmth.
+    # dies mid-compile on ENOSPC. The dispatcher holds ci.lock through the
+    # archive transfer, so a later build can safely prune this copy.
+    # Downstream jobs import the uploaded artifact; retain only the newest
+    # result roots for store warmth.
     current = directory.resolve()
     others = sorted((run for run in directory.parent.iterdir()
                      if run.is_dir() and run.resolve() != current),

@@ -34,7 +34,7 @@ use nativelink_util::metrics::{
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{Notify, mpsc, watch};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -48,7 +48,7 @@ const MAX_ACTION_EVENTS_RX_PER_CYCLE: usize = 1024;
 /// When the client is dropped, it will send the `AwaitedAction` to the
 /// `event_tx` if there are other cleanups needed.
 #[derive(Debug)]
-struct ClientAwaitedAction {
+pub(crate) struct ClientAwaitedAction {
     /// The `OperationId` that the client is listening to.
     operation_id: OperationId,
 
@@ -99,8 +99,10 @@ impl LenEntry for ClientAwaitedAction {
 /// Actions the `AwaitedActionsDb` needs to process.
 #[derive(Debug)]
 pub(crate) enum ActionEvent {
-    /// A client has sent a keep alive message.
-    ClientKeepAlive(OperationId),
+    /// A client has sent a keep alive message. It carries the client's entry,
+    /// which the subscriber holds, so an entry the map evicted while its
+    /// client was still listening is put back rather than lost.
+    ClientKeepAlive(OperationId, Arc<ClientAwaitedAction>),
     /// A client has dropped and pointed to `OperationId`.
     ClientDroppedOperation(OperationId),
 }
@@ -111,6 +113,10 @@ pub(crate) enum ActionEvent {
 struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The client operation id.
     client_operation_id: OperationId,
+    /// The client's entry in `client_operation_to_awaited_action`. Held
+    /// here so the map's time-based eviction cannot drop it, and with it
+    /// the operation, while this client is listening.
+    client_awaited_action: Arc<ClientAwaitedAction>,
     /// The last time a keep alive was sent.
     last_keep_alive: I,
     /// The function to get the current time.
@@ -141,6 +147,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn
     fn new_with_client(
         mut awaited_action_rx: watch::Receiver<AwaitedAction>,
         client_operation_id: OperationId,
+        client_awaited_action: Arc<ClientAwaitedAction>,
         event_tx: mpsc::UnboundedSender<ActionEvent>,
         now_fn: NowFn,
     ) -> Self
@@ -152,6 +159,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn
             awaited_action_rx,
             client_info: Some(ClientInfo {
                 client_operation_id,
+                client_awaited_action,
                 last_keep_alive: I::from_secs(0),
                 now_fn,
                 event_tx,
@@ -184,6 +192,7 @@ where
                     // Failing to send just means our receiver dropped.
                     drop(client_info.event_tx.send(ActionEvent::ClientKeepAlive(
                         client_info.client_operation_id.clone(),
+                        client_info.client_awaited_action.clone(),
                     )));
                 }
                 let sleep_fut = (client_info.now_fn)().sleep(CLIENT_KEEPALIVE_DURATION);
@@ -376,6 +385,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 Some(MemoryAwaitedActionSubscriber::new_with_client(
                     tx.subscribe(),
                     client_operation_id.clone(),
+                    client_awaited_action.clone(),
                     self.action_event_tx.clone(),
                     self.now_fn.clone(),
                 ))
@@ -495,26 +505,33 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                     }
                 }
-                ActionEvent::ClientKeepAlive(client_id) => {
-                    if let Some(client_awaited_action) = self
+                ActionEvent::ClientKeepAlive(client_id, client_awaited_action) => {
+                    // The map evicts by age, so an entry can be gone while its
+                    // client still listens (after a clock step, or past the
+                    // retain window). The subscriber holds the entry, which
+                    // kept the operation alive; put it back.
+                    if self
                         .client_operation_to_awaited_action
                         .get(&client_id)
                         .await
+                        .is_none()
                     {
-                        if let Some(awaited_action_sender) = self
-                            .operation_id_to_awaited_action
-                            .get(&client_awaited_action.operation_id)
-                        {
-                            awaited_action_sender.send_if_modified(|awaited_action| {
-                                awaited_action.update_client_keep_alive((self.now_fn)().now());
-                                false
-                            });
-                        }
-                    } else {
-                        error!(
+                        warn!(
                             ?client_id,
-                            "client_operation_to_awaited_action does not have client_id",
+                            "A listening client's entry had been evicted; restoring it"
                         );
+                        self.client_operation_to_awaited_action
+                            .insert(client_id.clone(), client_awaited_action.clone())
+                            .await;
+                    }
+                    if let Some(awaited_action_sender) = self
+                        .operation_id_to_awaited_action
+                        .get(&client_awaited_action.operation_id)
+                    {
+                        awaited_action_sender.send_if_modified(|awaited_action| {
+                            awaited_action.update_client_keep_alive((self.now_fn)().now());
+                            false
+                        });
                     }
                 }
             }
@@ -821,7 +838,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         );
 
         self.client_operation_to_awaited_action
-            .insert(client_operation_id.clone(), client_awaited_action)
+            .insert(client_operation_id.clone(), client_awaited_action.clone())
             .await;
 
         // Note: We only put items in the map that are cacheable.
@@ -860,6 +877,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         Ok(MemoryAwaitedActionSubscriber::new_with_client(
             rx,
             client_operation_id,
+            client_awaited_action,
             self.action_event_tx.clone(),
             self.now_fn.clone(),
         ))
@@ -917,20 +935,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             false
         });
         let subscription = tx.subscribe();
+        let client_awaited_action = Arc::new(ClientAwaitedAction::new(
+            operation_id.clone(),
+            self.action_event_tx.clone(),
+        ));
 
         self.client_operation_to_awaited_action
-            .insert(
-                client_operation_id.clone(),
-                Arc::new(ClientAwaitedAction::new(
-                    operation_id.clone(),
-                    self.action_event_tx.clone(),
-                )),
-            )
+            .insert(client_operation_id.clone(), client_awaited_action.clone())
             .await;
 
         Ok(Some(MemoryAwaitedActionSubscriber::new_with_client(
             subscription,
             client_operation_id.clone(),
+            client_awaited_action,
             self.action_event_tx.clone(),
             self.now_fn.clone(),
         )))

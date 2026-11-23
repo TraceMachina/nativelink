@@ -24159,9 +24159,9 @@ The shape of it:
     publish. Publishing is what triggers the signed-artifacts workflow.
   </li>
   <li>
-    **Verify the assets landed**: for each target, a `.tar.gz` plus its
-    `.sig` and `.pem`, an `.spdx.json` SBOM, and an `.intoto.jsonl`
-    provenance file.
+    **Verify the assets landed**: for each target, a `.tar.gz` (Unix) or `.zip`
+    (Windows) plus its `.sig` and `.pem`, an `.spdx.json` SBOM, and an
+    `.intoto.jsonl` provenance file.
   </li>
 </Steps>
 
@@ -24174,9 +24174,10 @@ The shape of it:
 | `config-reference.yaml` | `v1.*` tags, and weekly | Regenerated config reference, auto-merged |
 | `release.yaml` | Publishing a GitHub Release | Signed binaries, SBOMs, SLSA provenance |
 
-`release.yaml` builds three targets (`x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`), signs each with
-keyless Sigstore cosign, and attaches SLSA Build Level 3 provenance.
+`release.yaml` builds four targets (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc`), signs each with keyless Sigstore cosign, and attaches
+SLSA Build Level 3 provenance.
 
 <Callout type="info" title="Cosign is pinned to v2.5.3 on purpose">
   Cosign v3 stopped emitting the separate `.sig` and `.pem` files. The
