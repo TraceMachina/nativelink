@@ -28,8 +28,6 @@ use nativelink_sim::{
     Action, Backend, Event, Expect, Fault, Link, Outcome, Report, Run, Scenario, Step, WorkerSpec,
 };
 
-const STRANDED: &str = "S1 and S4: an action executing at the restart waits out the hour ceiling";
-
 fn report(reports: &[Report], backend: Backend) -> &Report {
     reports
         .iter()
@@ -174,8 +172,8 @@ fn reconnect_during_eviction() -> Result<(), Error> {
 /// its stream closes, so no old result arrives. On the memory backend the
 /// state goes with the process and the client executes again. On Redis the
 /// record survives as Executing on a worker id the new scheduler has never
-/// seen; an unknown worker reads as a peer's, so nothing requeues it and
-/// the client waits for the executing ceiling (I8 within the settle).
+/// seen. Its lease lapses once the old process stops renewing it, and a
+/// lease period later the action is requeued and runs again.
 #[test]
 fn result_after_scheduler_restart() -> Result<(), Error> {
     let reports = Scenario::new("result-after-restart", 7)
@@ -183,9 +181,10 @@ fn result_after_scheduler_restart() -> Result<(), Error> {
         .at(0, Step::execute("c1", Action::new(1).run_ms(30_000)))
         .at(5_000, Step::SchedulerRestart)
         .settle(Duration::from_mins(3))
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
         .run()?;
-    assert_eq!(executions(report(&reports, Backend::Memory), "a1"), 2);
+    for r in &reports {
+        assert_eq!(executions(r, "a1"), 2, "{:?}", r.backend);
+    }
     Ok(())
 }
 
@@ -220,8 +219,8 @@ fn result_after_client_gone() -> Result<(), Error> {
 }
 
 /// The re-subscription works: the client finds its operation on the new
-/// scheduler. What it finds is the stranded record of
-/// result-after-restart, which the review's pass did not account for.
+/// scheduler. What it finds is the record of result-after-restart, which
+/// is requeued once its worker's lease has been missing a lease period.
 #[test]
 fn wait_execution_after_failover() -> Result<(), Error> {
     let reports = Scenario::new("wait-execution-after-failover", 10)
@@ -231,7 +230,6 @@ fn wait_execution_after_failover() -> Result<(), Error> {
         .at(5_000, Step::SchedulerUp)
         .settle(Duration::from_mins(3))
         .expect(Backend::Memory, Expect::NotApplicable)
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
         .run()?;
     let redis = report(&reports, Backend::FakeRedis);
     assert!(
@@ -254,13 +252,11 @@ fn restart_with_200_executing() -> Result<(), Error> {
             Step::execute(&format!("c{i}"), Action::new(i).run_ms(60_000)),
         );
     }
-    // As the review expected on Redis: the executing records wait out the
-    // hour (result-after-restart). The memory backend loses them with the
-    // process, so its clients execute again and finish.
-    scenario
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
-        .run()
-        .map(drop)
+    // On Redis the executing records are requeued once their workers'
+    // leases have been missing a lease period (result-after-restart). The
+    // memory backend loses them with the process, so its clients execute
+    // again and finish.
+    scenario.run().map(drop)
 }
 
 /// The write lands and its reply is lost, as the results of this run land.

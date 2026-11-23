@@ -316,7 +316,8 @@ impl SchedulerStore for EventuallyVisibleStore {
     where
         K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send,
     {
-        todo!("not exercised by try_subscribe")
+        // The only key try_subscribe reads is a worker's lease: none held.
+        Ok(None)
     }
 }
 
@@ -576,6 +577,47 @@ async fn joins_an_executing_action_on_a_peers_worker() -> Result<(), Error> {
     assert!(
         !recreated,
         "worker_timeout_s must not apply to a worker this instance never sees heartbeats for",
+    );
+    Ok(())
+}
+
+/// Once every peer replica renews worker leases, a worker none has held a
+/// lease on for a lease period is dead, and its action is recreated then
+/// rather than after the orphan backstop.
+#[nativelink_test]
+async fn recreates_an_executing_action_on_a_worker_no_replica_holds_a_lease_on() -> Result<(), Error>
+{
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-on-a-replica-that-died".to_string());
+    let action = make_executing_awaited_action(&worker_id);
+    let qualifier = action.action_info().unique_qualifier.clone();
+    let store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let mut db = build_db(store, false).await;
+    let registry = Arc::new(WorkerRegistry::new());
+    db.set_worker_registry(registry.clone());
+    registry.set_peers_renew_leases(true);
+
+    // An earlier sweep found the lease missing.
+    registry
+        .fleet_liveness(&worker_id, WORKER_TIMEOUT, mock_now())
+        .await;
+    MockClock::advance(WORKER_TIMEOUT * 2);
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-abandon"),
+            &qualifier,
+            WORKER_TIMEOUT,
+            0,
+        )
+        .await?
+        .expect("action is visible");
+    assert_eq!(
+        *result.operation_id(),
+        OperationId::from("new-operation"),
+        "no replica vouches for the worker, so its action is abandoned",
     );
     Ok(())
 }
