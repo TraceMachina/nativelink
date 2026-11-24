@@ -1119,7 +1119,7 @@ where
         let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
             (Some(worker_registry), Some(worker_id)) => {
                 worker_registry
-                    .check_liveness(worker_id, self.no_event_action_timeout, now)
+                    .fleet_liveness(worker_id, self.no_event_action_timeout, now)
                     .await
             }
             // No registry, or not assigned yet: fall back to the

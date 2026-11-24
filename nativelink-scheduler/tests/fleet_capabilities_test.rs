@@ -98,6 +98,7 @@ async fn schedulers_see_each_others_fleet_but_not_their_own() -> Result<(), Erro
         vec![PeerScheduler {
             scheduler_id: "a".to_string(),
             workers: vec![shape(0)],
+            renews_worker_leases: true,
         }]
     );
 
@@ -109,6 +110,7 @@ async fn schedulers_see_each_others_fleet_but_not_their_own() -> Result<(), Erro
         vec![PeerScheduler {
             scheduler_id: "b".to_string(),
             workers: vec![shape(1), shape(2)],
+            renews_worker_leases: true,
         }]
     );
 
@@ -136,6 +138,7 @@ async fn republishing_replaces_the_previous_record() -> Result<(), Error> {
         vec![PeerScheduler {
             scheduler_id: "b".to_string(),
             workers: vec![],
+            renews_worker_leases: true,
         }],
         "the peer is still there, with no workers"
     );

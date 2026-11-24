@@ -777,6 +777,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             let Ok((mut stream, _)) = listener.accept().await else {
                 panic!("accept error");
             };
+            // As Redis does. Without it Linux holds small replies and
+            // pushes for the client's delayed ACK.
+            stream.set_nodelay(true).expect("set TCP_NODELAY");
             let generation = {
                 let faults = faults.lock().unwrap();
                 if faults.partitioned || faults.retired.contains(&port) {

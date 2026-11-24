@@ -21,11 +21,11 @@ use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use futures::{Stream, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
+    ActionInfo, ActionStage, ActionUniqueQualifier, OperationId, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{EXECUTION_METRICS, EXECUTION_STAGE, ExecutionStage};
@@ -46,7 +46,9 @@ use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
     PeerScheduler, SortedAwaitedAction, SortedAwaitedActionState,
 };
-use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
+use crate::worker_registry::{
+    ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLeases, WorkerLiveness,
+};
 
 type ClientOperationId = OperationId;
 
@@ -490,6 +492,7 @@ const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
 /// One record per scheduler holding what its connected workers can run
 /// (non-versioned, expires on its own).
 const FLEET_CAPABILITIES_KEY_PREFIX: &str = "fc_";
+const WORKER_LEASE_KEY_PREFIX: &str = "wl_";
 /// Index over every fleet capabilities record. The value is the same for
 /// all of them; the index exists so peers can be listed.
 const FLEET_CAPABILITIES_INDEX_NAME: &str = "fleet";
@@ -583,6 +586,113 @@ impl SchedulerStoreDataProvider for UpdateClientKeepalive<'_> {
 struct FleetCapabilities {
     scheduler_id: String,
     workers: Vec<PlatformProperties>,
+    /// The scheduler renews its workers' leases. Absent from an older one.
+    #[serde(default)]
+    renews_worker_leases: bool,
+}
+
+/// The lease on a worker: the replica it is connected to, and when that
+/// replica last renewed it. Gone a worker timeout after it stops.
+#[derive(Serialize, Deserialize)]
+struct WorkerLease {
+    scheduler_id: String,
+    renewed_at_s: u64,
+}
+
+struct WorkerLeaseKey<'a>(&'a WorkerId);
+impl SchedulerStoreKeyProvider for WorkerLeaseKey<'_> {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(Cow::Owned(format!("{WORKER_LEASE_KEY_PREFIX}{}", self.0)))
+    }
+}
+impl SchedulerStoreDecodeTo for WorkerLeaseKey<'_> {
+    type DecodeOutput = WorkerLease;
+    fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        serde_json::from_slice(&data).map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e).append("In WorkerLeaseKey::decode")
+        })
+    }
+}
+
+struct UpdateWorkerLease<'a> {
+    worker_id: &'a WorkerId,
+    scheduler_id: &'a str,
+    renewed_at_s: u64,
+}
+impl SchedulerStoreKeyProvider for UpdateWorkerLease<'_> {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        WorkerLeaseKey(self.worker_id).get_key()
+    }
+}
+impl SchedulerStoreDataProvider for UpdateWorkerLease<'_> {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        serde_json::to_string(&WorkerLease {
+            scheduler_id: self.scheduler_id.to_string(),
+            renewed_at_s: self.renewed_at_s,
+        })
+        .map(Bytes::from)
+        .map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e)
+                .append("Could not convert WorkerLease to json")
+        })
+    }
+}
+
+/// Worker leases kept in the scheduler store.
+struct StoreWorkerLeases<S> {
+    store: Arc<S>,
+}
+
+impl<S> core::fmt::Debug for StoreWorkerLeases<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StoreWorkerLeases").finish_non_exhaustive()
+    }
+}
+
+/// How many lease writes a renewal has in flight at once.
+const MAX_CONCURRENT_LEASE_WRITES: usize = 64;
+
+#[async_trait::async_trait]
+impl<S: SchedulerStore + 'static> WorkerLeases for StoreWorkerLeases<S> {
+    async fn renew(
+        &self,
+        scheduler_id: &str,
+        worker_ids: &[WorkerId],
+        now: SystemTime,
+        ttl: Duration,
+    ) -> Result<(), Error> {
+        let renewed_at_s = now
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let writes: Vec<_> = worker_ids
+            .iter()
+            .map(|worker_id| {
+                self.store.update_data(
+                    UpdateWorkerLease {
+                        worker_id,
+                        scheduler_id,
+                        renewed_at_s,
+                    },
+                    Some(ttl),
+                )
+            })
+            .collect();
+        futures::stream::iter(writes)
+            .buffer_unordered(MAX_CONCURRENT_LEASE_WRITES)
+            .try_for_each(|_| futures::future::ready(Ok(())))
+            .await
+            .err_tip(|| "In StoreWorkerLeases::renew")
+    }
+
+    async fn renewed_at(&self, worker_id: &WorkerId) -> Result<Option<SystemTime>, Error> {
+        self.store
+            .get_and_decode(WorkerLeaseKey(worker_id))
+            .await
+            .map(|lease| lease.map(|lease| UNIX_EPOCH + Duration::from_secs(lease.renewed_at_s)))
+            .err_tip(|| "In StoreWorkerLeases::renewed_at")
+    }
 }
 
 struct UpdateFleetCapabilities(FleetCapabilities);
@@ -946,7 +1056,7 @@ where
         let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
             (Some(worker_registry), Some(worker_id)) => {
                 worker_registry
-                    .check_liveness(worker_id, no_event_action_timeout, now)
+                    .fleet_liveness(worker_id, no_event_action_timeout, now)
                     .await
             }
             // No registry, or not assigned yet: timestamp only, as before.
@@ -1246,6 +1356,9 @@ where
     }
 
     fn set_worker_registry(&mut self, worker_registry: SharedWorkerRegistry) {
+        worker_registry.set_leases(Arc::new(StoreWorkerLeases {
+            store: self.store.clone(),
+        }));
         self.worker_registry = Some(worker_registry);
     }
 
@@ -1260,6 +1373,7 @@ where
                 UpdateFleetCapabilities(FleetCapabilities {
                     scheduler_id: scheduler_id.to_string(),
                     workers: local,
+                    renews_worker_leases: true,
                 }),
                 Some(ttl),
             )
@@ -1279,6 +1393,7 @@ where
                 peers.push(PeerScheduler {
                     scheduler_id: record.scheduler_id,
                     workers: record.workers,
+                    renews_worker_leases: record.renews_worker_leases,
                 });
                 Ok(peers)
             })
