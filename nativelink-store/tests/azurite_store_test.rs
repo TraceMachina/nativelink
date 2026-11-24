@@ -160,34 +160,35 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
 
-    if let Err(_) = timeout(
-        Duration::from_secs(10),
-        helper.store.update_oneshot(digest, data.clone()),
-    )
+    if timeout(Duration::from_secs(10), async {
+        helper.store.update_oneshot(digest, data.clone()).await?;
+        let result = helper.store.has(digest).await?;
+        assert!(
+            result.is_some(),
+            "Expected azure store to have hash: {VALID_HASH1}",
+        );
+
+        let result = helper
+            .store
+            .get_part_unchunked(digest, 0, Some(data.len() as u64))
+            .await?;
+
+        assert_eq!(result, data, "Expected azure store to have updated value");
+
+        return Ok::<(), Error>(());
+    })
     .await
+    .is_err()
     {
         if let Some(local) = &helper.azurite_local {
             let log_data = fs::read_to_string(&local.process.log_path).await?;
-            println!("{log_data}");
+            eprintln!("{log_data}");
         }
         return Err(make_err!(
             Code::DeadlineExceeded,
             "Timeout in azurite process"
         ));
     }
-
-    let result = helper.store.has(digest).await?;
-    assert!(
-        result.is_some(),
-        "Expected azure store to have hash: {VALID_HASH1}",
-    );
-
-    let result = helper
-        .store
-        .get_part_unchunked(digest, 0, Some(data.len() as u64))
-        .await?;
-
-    assert_eq!(result, data, "Expected azure store to have updated value");
 
     Ok(())
 }
