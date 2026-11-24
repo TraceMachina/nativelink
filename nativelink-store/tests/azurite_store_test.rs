@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use nativelink_config::stores::ExperimentalAzureSpec;
@@ -23,8 +23,10 @@ use nativelink_store::azure_blob_store::AzureBlobStore;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::StoreLike;
+use tokio::fs;
+use tokio::time::timeout;
 use tonic::Code;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 mod azurite_runner;
@@ -135,9 +137,9 @@ impl Drop for TestAzuriteHelper {
         // No cleanup beyond what dropping `azurite_local` already does
         // (killing the process), the container itself is left in place
         // for inspection, same as Mongo's helper leaves its database.
-        eprintln!(
-            "Test container retained for inspection: {}",
-            self.spec.container
+        info!(
+            container = self.spec.container,
+            "Test container retained for inspection",
         );
     }
 }
@@ -147,7 +149,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let helper = match TestAzuriteHelper::new().await {
         Ok(p) => p,
         Err(e) if e.code == Code::NotFound => {
-            warn!("Error getting azurite helper, skipping: {e}");
+            warn!(?e, "Error getting azurite helper, skipping");
             return Ok(());
         }
         Err(e) => {
@@ -158,7 +160,21 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
 
-    helper.store.update_oneshot(digest, data.clone()).await?;
+    if let Err(_) = timeout(
+        Duration::from_secs(10),
+        helper.store.update_oneshot(digest, data.clone()),
+    )
+    .await
+    {
+        if let Some(local) = &helper.azurite_local {
+            let log_data = fs::read_to_string(&local.process.log_path).await?;
+            println!("{log_data}");
+        }
+        return Err(make_err!(
+            Code::DeadlineExceeded,
+            "Timeout in azurite process"
+        ));
+    }
 
     let result = helper.store.has(digest).await?;
     assert!(
@@ -183,7 +199,7 @@ async fn upload_empty_data() -> Result<(), Error> {
     let helper = match TestAzuriteHelper::new().await {
         Ok(p) => p,
         Err(e) if e.code == Code::NotFound => {
-            warn!("Error getting azurite helper, skipping: {e}");
+            warn!(?e, "Error getting azurite helper, skipping");
             return Ok(());
         }
         Err(e) => {
@@ -208,7 +224,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     let helper = match TestAzuriteHelper::new().await {
         Ok(p) => p,
         Err(e) if e.code == Code::NotFound => {
-            warn!("Error getting azurite helper, skipping: {e}");
+            warn!(?e, "Error getting azurite helper, skipping");
             return Ok(());
         }
         Err(e) => {
