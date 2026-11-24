@@ -3567,6 +3567,11 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let timeout = Duration::from_secs(self.worker_timeout_s);
         let now = UNIX_EPOCH + Duration::from_secs(now_timestamp);
         let timeout_threshold = now_timestamp.saturating_sub(self.worker_timeout_s);
+        // Runs every second; the leases are renewed every third of the
+        // worker timeout.
+        self.worker_registry
+            .renew_leases(&self.scheduler_id, timeout, now)
+            .await;
 
         let workers_to_check: Vec<(WorkerId, bool, bool)> = {
             let inner = self.inner.lock().await;
