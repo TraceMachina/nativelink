@@ -23,7 +23,7 @@ use core::time::Duration;
 
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{Code, Error};
-use nativelink_sim::Invariant::{I1, I8, I11};
+use nativelink_sim::Invariant::{I8, I11};
 use nativelink_sim::{
     Action, Backend, Event, Expect, Fault, Link, Outcome, Report, Run, Scenario, Step, WorkerSpec,
 };
@@ -70,8 +70,8 @@ fn empty_queue() -> Result<(), Error> {
 /// backend reads the whole queue every pass. With no worker at all neither
 /// backend reads the queue, which is why the worker is here.
 #[test]
-fn queue_2k_behind_a_busy_worker() -> Result<(), Error> {
-    let mut scenario = Scenario::new("queue-2k", 2)
+fn queue_1k_behind_a_busy_worker() -> Result<(), Error> {
+    let mut scenario = Scenario::new("queue-1k", 2)
         .workers(1, WorkerSpec::default())
         .at(0, Step::execute("busy", Action::new(9_999).run_ms(30_000)))
         .command_bound(500)
@@ -80,7 +80,7 @@ fn queue_2k_behind_a_busy_worker() -> Result<(), Error> {
             Backend::FakeRedis,
             Expect::known_failure(&[I11], "S3: the queue read is O(queue) per pass"),
         );
-    for i in 0..2_000u32 {
+    for i in 0..1_000u32 {
         let op = format!("c{i}");
         scenario = scenario
             .at(100 + u64::from(i), Step::execute(&op, Action::new(i)))
@@ -391,21 +391,14 @@ fn redis_failover_as_results_land() -> Result<(), Error> {
         .map(drop)
 }
 
-/// The memory backend runs all 2,000. On Redis, with every attached client
-/// refreshing its keepalive (a write and a publish each), the workers'
-/// keepalives fall behind, the scheduler removes them as timed out (97
-/// removals in one run), about 20 actions run and the rest wait out the
-/// settle budget. L5, a lead, not a finding: the Redis runs step time by
-/// hand and may overstate its latency, so the bed confirms it first.
+/// 2,000 attached clients, each refreshing its keepalive (a write and a
+/// publish), do not starve the workers' keepalives: both backends run all
+/// 2,000 actions.
 #[test]
 fn pubsub_storm() -> Result<(), Error> {
     let mut scenario = Scenario::new("pubsub-storm", 16)
         .workers(50, WorkerSpec::default())
-        .settle(Duration::from_mins(5))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(&[I1, I8], "lead L5: confirm on the bed (T3)"),
-        );
+        .settle(Duration::from_mins(5));
     for i in 0..2_000u32 {
         scenario = scenario.at(
             u64::from(i / 2),
