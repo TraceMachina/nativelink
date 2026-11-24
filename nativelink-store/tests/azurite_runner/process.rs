@@ -21,7 +21,7 @@ use nativelink_error::{Error, ResultExt, make_err};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tonic::Code;
-use tracing::info;
+use tracing::{info, trace};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -173,12 +173,16 @@ impl Drop for AzuriteProcess {
         // the zombie, same reasoning as MongoProcess's Drop about never
         // panicking here, since this also runs during unwind from a failed
         // assertion.
+        trace!("Checking if azurite process is already exited");
         if let Ok(Some(_)) = self.child.try_wait() {
+            trace!("Already exited azurite process");
             return; // Already exited.
         }
+        trace!("Trying to kill azurite process");
         if let Err(e) = self.child.start_kill() {
             eprintln!("Failed to kill azurite-blob: {e}");
         }
+        trace!("Ended kill azurite process");
     }
 }
 
