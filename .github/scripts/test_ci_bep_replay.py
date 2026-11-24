@@ -338,7 +338,7 @@ class ProtoTest(unittest.TestCase):
                          self.origin.updated + ci_bep_replay.CLOCK_SKEW)
         self.assertEqual(dict(metadata.build_metadata.metadata),
                          ci_bep_replay.trusted_metadata(self.origin))
-        self.assertEqual([item.key for item in status.workspace_status.item], ['BUILD_HOST'])
+        self.assertEqual([(item.key, item.value) for item in status.workspace_status.item], [('BUILD_HOST', 'runner'), ('BUILD_USER', '<from replay>')])
         self.assertEqual(action.action.stdout.WhichOneof('file'), None)
         self.assertEqual(action.action.stderr.WhichOneof('file'), None)
         self.assertEqual(action.action.primary_output.uri, 'bytestream://cas.example/blobs/abc/1')
