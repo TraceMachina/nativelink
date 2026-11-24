@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import ci_bep_replay
 
@@ -331,21 +332,30 @@ class ProtoTest(unittest.TestCase):
                                       self.origin, 'inv', frozenset({'cas.example'}))
 
     def test_identity_tags_links_and_times_are_rewritten(self):
-        events, report = self.sanitize(self.stream())
-        started, metadata, status, action, finished = events
-        self.assertEqual(started.started.uuid, 'inv')
-        self.assertEqual(started.started.start_time.ToDatetime(tzinfo=datetime.timezone.utc),
-                         self.origin.updated + ci_bep_replay.CLOCK_SKEW)
-        self.assertEqual(dict(metadata.build_metadata.metadata),
-                         ci_bep_replay.trusted_metadata(self.origin))
-        self.assertEqual([(item.key, item.value) for item in status.workspace_status.item], [('BUILD_HOST', 'runner'), ('BUILD_USER', '<from replay>')])
-        self.assertEqual(action.action.stdout.WhichOneof('file'), None)
-        self.assertEqual(action.action.stderr.WhichOneof('file'), None)
-        self.assertEqual(action.action.primary_output.uri, 'bytestream://cas.example/blobs/abc/1')
-        self.assertEqual(action.action.action_metadata_logs[0].uri, 'file:///home/runner/x')
-        self.assertTrue(finished.last_message)
-        self.assertEqual(report, {'clamped times': 1, 'dropped status entries': 3,
-                                  'cleared links': 2, 'dropped after last message': 1})
+        for build_user,expected_build_user in [(None, "<from replay>"), ("test_build_user", "test_build_user")]:
+            with self.subTest(build_user=build_user):
+                if build_user is None:
+                    patched_dict = patch.dict('os.environ')
+                    if "BUILD_USER" in os.environ:
+                        del os.environ['BUILD_USER']
+                else:
+                    patched_dict = patch.dict('os.environ', {'BUILD_USER': build_user})
+                with patched_dict:
+                    events, report = self.sanitize(self.stream())
+                    started, metadata, status, action, finished = events
+                    self.assertEqual(started.started.uuid, 'inv')
+                    self.assertEqual(started.started.start_time.ToDatetime(tzinfo=datetime.timezone.utc),
+                                    self.origin.updated + ci_bep_replay.CLOCK_SKEW)
+                    self.assertEqual(dict(metadata.build_metadata.metadata),
+                                    ci_bep_replay.trusted_metadata(self.origin))
+                    self.assertEqual([(item.key, item.value) for item in status.workspace_status.item], [('BUILD_HOST', 'runner'), ('BUILD_USER', expected_build_user)])
+                    self.assertEqual(action.action.stdout.WhichOneof('file'), None)
+                    self.assertEqual(action.action.stderr.WhichOneof('file'), None)
+                    self.assertEqual(action.action.primary_output.uri, 'bytestream://cas.example/blobs/abc/1')
+                    self.assertEqual(action.action.action_metadata_logs[0].uri, 'file:///home/runner/x')
+                    self.assertTrue(finished.last_message)
+                    self.assertEqual(report, {'clamped times': 1, 'dropped status entries': 3,
+                                            'cleared links': 2, 'dropped after last message': 1})
 
     def test_missing_metadata_is_injected_after_started(self):
         events, report = self.sanitize([self.stream()[0], self.stream()[4]])

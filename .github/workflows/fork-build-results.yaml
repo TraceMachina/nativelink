@@ -48,6 +48,7 @@ jobs:
           NL_FORK_BEP_API_KEY: ${{ secrets.NATIVELINK_FORK_BEP_API_KEY }}
           NL_BEP_ENDPOINT: ${{ vars.NATIVELINK_CLUSTER_BEP_ENDPOINT }}
           NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
+          BUILD_USER: ${{ github.actor }}
         run: |
           publish=()
           if [ -n "$NL_FORK_BEP_API_KEY" ]; then
