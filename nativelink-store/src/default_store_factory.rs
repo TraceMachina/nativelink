@@ -142,6 +142,11 @@ pub fn store_factory<'a>(
                     .await?;
                 ShardStore::new(spec, stores)?
             }
+            StoreSpec::External(spec) => {
+                crate::external_store::make_external_store(spec, store_manager)
+                    .await?
+                    .into_inner()
+            }
         };
 
         if let Some(health_registry_builder) = maybe_health_registry_builder {
