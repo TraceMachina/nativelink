@@ -21,6 +21,7 @@ GUIDE = (f'https://github.com/{REPOSITORY}/blob/main/'
 
 
 def api(path, payload=None):
+    print("running API command", path, payload)
     command = ['gh', 'api', '--method', 'GET' if payload is None else 'POST',
                f'repos/{REPOSITORY}/{path}']
     if payload is not None:
