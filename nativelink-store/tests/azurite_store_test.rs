@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Windows locks up at the end of Azurite testing for some unknown reason
+// Given Linux tests are enough for this, we can skip Windows
+#![cfg(not(target_family = "windows"))]
+
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
