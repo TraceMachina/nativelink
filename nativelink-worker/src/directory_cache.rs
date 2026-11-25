@@ -2124,7 +2124,8 @@ mod tests {
         });
         let pending = {
             let _entered = runtime.enter();
-            futures::poll!(operation.as_mut()).is_pending()
+            let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+            operation.as_mut().poll(&mut cx).is_pending()
         };
         drop(operation);
         let waits_for_io = futures::poll!(Box::pin(scope.wait())).is_pending();
