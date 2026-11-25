@@ -17,7 +17,11 @@ on:
         description: First property seed (empty for one from the date)
         default: ""
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,7 +45,7 @@ jobs:
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Set up Rust toolchain
-        run: rustup update && rustup default stable
+        run: rustup update && rustup default 1.97.1 # Same as Nix
 
       - name: Rust cache
         uses: >- # v2.9.1

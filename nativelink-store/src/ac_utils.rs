@@ -21,7 +21,7 @@ use core::pin::Pin;
 
 use bytes::BytesMut;
 use futures::TryFutureExt;
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasher;
 use nativelink_util::store_trait::{StoreKey, StoreLike};
@@ -62,11 +62,10 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
         .await;
     if let Err(err) = &mut store_data_resp
         && err.code == Code::NotFound
+        && matches!(err.context, ErrorContext::MissingDigest { .. })
     {
-        // Trim the error code. Not Found is quite common and we don't want to send a large
-        // error (debug) message for something that is common. We resize to just the last
-        // message as it will be the most relevant.
-        err.messages.resize_with(1, String::new);
+        // Genuine cache misses need no verbose store stack. Keep local I/O context intact.
+        err.messages.truncate(1);
     }
     let store_data = store_data_resp?;
     let store_data_len =

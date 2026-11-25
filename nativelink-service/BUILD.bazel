@@ -39,7 +39,7 @@ rust_library(
         "@crates//:fastcdc",
         "@crates//:futures",
         "@crates//:http-body-util",
-        "@crates//:hyper-1.7.0",
+        "@crates//:hyper",
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",
         "@crates//:parking_lot",
@@ -63,7 +63,10 @@ rust_library(
 
 rust_test_suite(
     name = "integration",
-    timeout = "short",
+    # "moderate" (300s) rather than "short" (60s): under AddressSanitizer the
+    # fetch server tests run just past the 60s cap (60.2s on three consecutive
+    # sanitizer runs), timing out the suite without any test actually hanging.
+    timeout = "moderate",
     srcs = [
         "tests/ac_server_test.rs",
         "tests/bep_server_test.rs",
@@ -104,7 +107,7 @@ rust_test_suite(
         "@crates//:futures",
         "@crates//:hex",
         "@crates//:http-body-util",
-        "@crates//:hyper-1.7.0",
+        "@crates//:hyper",
         "@crates//:hyper-util",
         "@crates//:opentelemetry",
         "@crates//:opentelemetry-semantic-conventions",

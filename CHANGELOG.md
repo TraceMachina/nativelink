@@ -3,6 +3,236 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0](https://github.com/TraceMachina/nativelink/compare/v1.8.7..v1.9.0) - 2026-11-23
+
+### Upgrade and rollback
+
+- `GetCapabilities` now reports `update_enabled: false` for an instance whose
+  Action Cache is `read_only`, so Bazel stops trying uploads it would be
+  refused. An instance without an Action Cache config stays writable.
+- A server logs one WARN at startup when any worker isn't `single_use` and any
+  Action Cache instance isn't `read_only`. Nothing else changes; a trusted
+  deployment can ignore it.
+- A worker no longer uploads the result of a `do_not_cache` action to the
+  Action Cache.
+- A `MISSING` precondition subject now names a non-default digest function,
+  for example `blobs/blake3/{hash}/{size}`. SHA256 subjects are unchanged.
+- A forwarding scheduler reports a lost upstream as `UNAVAILABLE`, not
+  `INTERNAL`, so clients retry. A result for an operation the worker no longer
+  holds is `FAILED_PRECONDITION`, not `INTERNAL`.
+- The worker API gains an optional `ConnectWorkerRequest.worker_id` and an
+  `ExecuteResultAccepted` update. No worker sends a name yet, and the update
+  goes only to a worker that named itself, so a mixed-version fleet works.
+- If Redis refuses a change notice, the Redis store now logs a warning and
+  reports the write as done instead of failing it.
+- `directory_cache.experimental_clone_executables` is new and off by default.
+  v1.8.7 and older reject the key, so keep it out of shared config until every
+  worker runs v1.9.0.
+- The directory cache sets the mode of empty files on macOS only. Linux is
+  back to the earlier default mode.
+- Releases now include a signed `x86_64-pc-windows-msvc` binary. Windows
+  workers handle console shutdown signals and drain running actions.
+
+### ⛰️  Features
+
+- Warn at startup when shared workers and a writable action cache are combined ([#3252](https://github.com/TraceMachina/nativelink/issues/3252)) - ([7116c7c](https://github.com/TraceMachina/nativelink/commit/7116c7cae4fc68f2a47880141a920bc622b63bc4))
+- tell a worker that named itself when its result is settled ([#3261](https://github.com/TraceMachina/nativelink/issues/3261)) - ([d86e178](https://github.com/TraceMachina/nativelink/commit/d86e178fa9038b05d93ab56c9b9ccdea3e16b710))
+- a worker can name itself, and a reconnect under that name ends its earlier connection ([#3260](https://github.com/TraceMachina/nativelink/issues/3260)) - ([f401455](https://github.com/TraceMachina/nativelink/commit/f401455c9a658ab49f60fd0533d52d7651f5f0b6))
+- handle console shutdown signals and publish signed release binaries ([#3264](https://github.com/TraceMachina/nativelink/issues/3264)) - ([8a38e0a](https://github.com/TraceMachina/nativelink/commit/8a38e0aec85354cfe74b1bb40392a078128630a6))
+- Clone executable inputs into the directory cache on macOS ([#3191](https://github.com/TraceMachina/nativelink/issues/3191)) - ([6887a3f](https://github.com/TraceMachina/nativelink/commit/6887a3f9b94b885933c12f61182ee5b1182bfe40))
+
+### 🐛 Bug Fixes
+
+- *(store)* invalidate ExistenceCacheStore entries on remove ([#3231](https://github.com/TraceMachina/nativelink/issues/3231)) - ([63f26f9](https://github.com/TraceMachina/nativelink/commit/63f26f9edd519e3ed6dbf8439f51aec579da5b9e))
+- Report update_enabled per instance in GetCapabilities ([#3250](https://github.com/TraceMachina/nativelink/issues/3250)) - ([6884cde](https://github.com/TraceMachina/nativelink/commit/6884cdee71b458b2259bd46425e70bf1156241ae))
+- Redis store: a refused change notice no longer fails the write it follows ([#3257](https://github.com/TraceMachina/nativelink/issues/3257)) - ([39a37a7](https://github.com/TraceMachina/nativelink/commit/39a37a77d0ed99719bcd6a5b9d8f3e25dba34a86))
+- a worker is heard from when its message arrives, so a slow store cannot time out live workers ([#3256](https://github.com/TraceMachina/nativelink/issues/3256)) - ([92b086a](https://github.com/TraceMachina/nativelink/commit/92b086a425dac947f2d54e0c14a60fff22b4522f))
+- keep a refused result, report a lost upstream as Unavailable, and the rejoin and clock-step fixes ([#3222](https://github.com/TraceMachina/nativelink/issues/3222)) - ([09bfb7e](https://github.com/TraceMachina/nativelink/commit/09bfb7ec74e39f1e389c484535dbaba55bcce1af))
+- Name the digest function in MISSING precondition subjects ([#3157](https://github.com/TraceMachina/nativelink/issues/3157)) - ([6bf322b](https://github.com/TraceMachina/nativelink/commit/6bf322b6285ded83ce6ad2de8512ae2f97a5230b))
+- Keep do_not_cache results out of the Action Cache on the worker ([#3159](https://github.com/TraceMachina/nativelink/issues/3159)) - ([c41faed](https://github.com/TraceMachina/nativelink/commit/c41faed72a2773309baaf1e6bc931988aa1af1e9))
+- Gate empty-file mode change to macOS ([#3242](https://github.com/TraceMachina/nativelink/issues/3242)) - ([5201eb1](https://github.com/TraceMachina/nativelink/commit/5201eb1cddde0d00c17aaec4c26889435e76996d))
+
+### 📚 Documentation
+
+- Add CI-safe example config with single_use workers ([#3251](https://github.com/TraceMachina/nativelink/issues/3251)) - ([517afc0](https://github.com/TraceMachina/nativelink/commit/517afc0e91d39a79ce86cbf38f025571154fb4e5))
+
+### 🧪 Testing & CI
+
+- Respect platform timestamp precision in scheduler ordering tests ([#3272](https://github.com/TraceMachina/nativelink/issues/3272)) - ([daffed0](https://github.com/TraceMachina/nativelink/commit/daffed06b48eaa7341ecb8547688333532785aa9))
+- Compare the swept attempts with assert_eq so nightly Clippy accepts the empty check ([#3271](https://github.com/TraceMachina/nativelink/issues/3271)) - ([24826fb](https://github.com/TraceMachina/nativelink/commit/24826fb88fe0ae996b2a2248ffc4455c93a811ee))
+- Use same version of rust as nix, not "stable" ([#3249](https://github.com/TraceMachina/nativelink/issues/3249)) - ([060a984](https://github.com/TraceMachina/nativelink/commit/060a98406b311bb1ebc1f9ebf2a911fa449e5f89))
+- Disable namespaces for job control tests ([#3247](https://github.com/TraceMachina/nativelink/issues/3247)) - ([6e81e84](https://github.com/TraceMachina/nativelink/commit/6e81e84a463f892b63407d72d77ecc9265e7840d))
+- Bound the pre-build garbage collection wait on the retained client ([#3248](https://github.com/TraceMachina/nativelink/issues/3248)) - ([9736eae](https://github.com/TraceMachina/nativelink/commit/9736eae1c71dcef6e3a705d0bacccd29a41df6b1))
+- Hold the Nix client lock through artifact transfer ([#3266](https://github.com/TraceMachina/nativelink/issues/3266)) - ([4694deb](https://github.com/TraceMachina/nativelink/commit/4694deb10729d36b2178f02c4f5af21716ad423e))
+- Scope trusted build permissions to the reporting job ([#3263](https://github.com/TraceMachina/nativelink/issues/3263)) - ([41268e4](https://github.com/TraceMachina/nativelink/commit/41268e407f8a5ebaeaea892d40ac7d494e8d6493))
+- Client stream tests: a forwarding scheduler ends its client's stream however the upstream ends, and an unreadable record is an error ([#3259](https://github.com/TraceMachina/nativelink/issues/3259)) - ([d4e1265](https://github.com/TraceMachina/nativelink/commit/d4e1265c7fcc04f436d8c986a95edf50144bb264))
+- Keepalive tests: sends stay on their grid, a failed one reconnects, and one costs the store the same whatever the worker holds ([#3258](https://github.com/TraceMachina/nativelink/issues/3258)) - ([ded74d9](https://github.com/TraceMachina/nativelink/commit/ded74d9695aa9d7e219ebdacd95de4b39cd34629))
+- Scheduler test: a burst is served oldest first when room opens mid-pass, on both backends ([#3255](https://github.com/TraceMachina/nativelink/issues/3255)) - ([7deea71](https://github.com/TraceMachina/nativelink/commit/7deea71325eaed4805995e9a041b4ac740c70d04))
+- Scheduler tests: retention follows real listeners, and the queue order during a rolling upgrade ([#3254](https://github.com/TraceMachina/nativelink/issues/3254)) - ([cf04ada](https://github.com/TraceMachina/nativelink/commit/cf04adad48cb5b77d994fb90a82276d540bbcf00))
+- Scheduler tests: expiring fake Redis, a faithful mock instant, and the retention cases ([#3225](https://github.com/TraceMachina/nativelink/issues/3225)) - ([e082ab1](https://github.com/TraceMachina/nativelink/commit/e082ab1923c4bfeea74ce504a446caf2d82d20af))
+- Scheduler test base: run a case on both backends, show a test fails with its fix reverted, and stop new wall-clock sleeps ([#3176](https://github.com/TraceMachina/nativelink/issues/3176)) - ([8674f01](https://github.com/TraceMachina/nativelink/commit/8674f01a0af466257ad0a0f080354eca4d6b7865))
+- Run the cluster and Nix lanes on the AWS deployment only ([#3245](https://github.com/TraceMachina/nativelink/issues/3245)) - ([e75c2e0](https://github.com/TraceMachina/nativelink/commit/e75c2e0875f4cf17cb84ec53e261ebdfe6fb2ea5))
+
+### ⬆️ Bumps & Version Updates
+
+- Resolve url and chrono RustSec advisories ([#3267](https://github.com/TraceMachina/nativelink/issues/3267)) - ([49a7754](https://github.com/TraceMachina/nativelink/commit/49a7754f6abee7a3fc6bb0b02c90644135dea2ae))
+
+## [1.8.7](https://github.com/TraceMachina/nativelink/compare/v1.8.6..v1.8.7) - 2026-11-20
+
+### Upgrade and rollback
+
+- GPU resource hints are opt-in. A size class can state `gpu_count` and name
+  `gpu_memory_kb`, and the hints write to `gpu_property_name` and
+  `gpu_memory_property_name` (defaults `gpu_count` and `gpu_memory_kb`). An
+  existing configuration schedules as before. v1.8.6 and older reject these
+  keys, so keep them out of shared config until every scheduler runs v1.8.7.
+- Learned hint snapshots are now version 4. This release still reads version
+  3, so an upgrade keeps learned history. v1.8.6 and older refuse a version 4
+  snapshot, so after a rollback the scheduler starts from an empty sketch and
+  relearns.
+- Config durations are parsed by jiff instead of humantime. Values such as
+  `30s`, `5m` or `2h` read the same; calendar units such as `1 month` or
+  `1 year` can come out at a different length, so prefer days or smaller units.
+- A worker that starts before its scheduler is reachable now logs each failed
+  attempt at WARN as "Scheduler connection attempt failed, retrying" with a
+  `failure` field. Attempts after the worker first registers stay at ERROR.
+  Update any log alert that matched the old ERROR line.
+- A local filesystem `NotFound` during input preparation is no longer reported
+  as a missing CAS input, so clients are not asked to re-upload for it. Only a
+  typed digest miss returns `FAILED_PRECONDITION`.
+- On a CAS that forwards to a separate scheduler, the origin event publisher
+  stops writing empty `OriginEvents:` batches. This fix requires no
+  configuration change.
+
+### ⛰️  Features
+
+- a GPU dimension for the resource hints, with device memory learned from a wrapper's report ([#3229](https://github.com/TraceMachina/nativelink/issues/3229)) - ([bf67345](https://github.com/TraceMachina/nativelink/commit/bf6734566d52fef03ac5018cea7322b0b2cbefc9))
+
+### 🐛 Bug Fixes
+
+- Stop the origin event publisher once its senders are gone, and never write an empty batch ([#3232](https://github.com/TraceMachina/nativelink/issues/3232)) - ([f227e90](https://github.com/TraceMachina/nativelink/commit/f227e90b68a01b4f941e8a8b45d7f44f98c03d0b))
+- Preserve local NotFound errors during input preparation ([#3199](https://github.com/TraceMachina/nativelink/issues/3199)) - ([d13fd82](https://github.com/TraceMachina/nativelink/commit/d13fd82e0f9cc69567d4c590a63716b9191aaf79))
+- log worker startup scheduler misses as warnings ([#3210](https://github.com/TraceMachina/nativelink/issues/3210)) - ([9151701](https://github.com/TraceMachina/nativelink/commit/9151701c807a57dded21b98d58bb07c3e941a971))
+
+### 📚 Documentation
+
+- Move comments out of the quickstart snippets ([#3235](https://github.com/TraceMachina/nativelink/issues/3235)) - ([a124922](https://github.com/TraceMachina/nativelink/commit/a12492224f008f9398110f1dca437fcc338b6884))
+- Look up the latest release in quickstart snippets ([#3218](https://github.com/TraceMachina/nativelink/issues/3218)) - ([12e8ae2](https://github.com/TraceMachina/nativelink/commit/12e8ae20df13c92efa74efc5ac7ec8a392ceb35c))
+- 1.7.7 had a non-Vale compliant doc comment ([#3211](https://github.com/TraceMachina/nativelink/issues/3211)) - ([d7c6f45](https://github.com/TraceMachina/nativelink/commit/d7c6f4593aeff5596d8f53becb43f62ef9833187))
+
+### 🧪 Testing & CI
+
+- Add an optional AWS lane to the Nix workflow ([#3239](https://github.com/TraceMachina/nativelink/issues/3239)) - ([b119a03](https://github.com/TraceMachina/nativelink/commit/b119a03285d77ba5f63dd9995fe44d0d70db6a65))
+- Remove stale run directories, not just their GC roots, on the retained Nix client ([#3234](https://github.com/TraceMachina/nativelink/issues/3234)) - ([025e3cb](https://github.com/TraceMachina/nativelink/commit/025e3cb8b3b679f6661b1994e02385ebf698bc86))
+- Name the Bazel client by its own variable in the AWS lane ([#3238](https://github.com/TraceMachina/nativelink/issues/3238)) - ([0f81977](https://github.com/TraceMachina/nativelink/commit/0f81977c6562a6565e7de8c69749b4359b3a08f1))
+- Run the AWS lane for main only ([#3236](https://github.com/TraceMachina/nativelink/issues/3236)) - ([5d67f29](https://github.com/TraceMachina/nativelink/commit/5d67f290fcfb5201a3fac7b8f2244492a2d2ac35))
+- Add an optional AWS lane to the cluster CI workflow ([#3233](https://github.com/TraceMachina/nativelink/issues/3233)) - ([c7c3acb](https://github.com/TraceMachina/nativelink/commit/c7c3acb40b4dea45ce8c535a17d09ac33aa30185))
+- Check quickstart release references on each release ([#3220](https://github.com/TraceMachina/nativelink/issues/3220)) - ([ac7db3c](https://github.com/TraceMachina/nativelink/commit/ac7db3c15c6b451562ef3538a80e789af0458f9d))
+- run trusted fork builds once before merge ([#3219](https://github.com/TraceMachina/nativelink/issues/3219)) - ([e658f7d](https://github.com/TraceMachina/nativelink/commit/e658f7d07932830badd75fcb92eaafaaf88b6c37))
+- Prune stale Nix result roots before building on the retained client ([#3206](https://github.com/TraceMachina/nativelink/issues/3206)) - ([eac2aae](https://github.com/TraceMachina/nativelink/commit/eac2aaeab5720ebf8a5dff868478fda6c4ba9e8e))
+
+### ⬆️ Bumps & Version Updates
+
+- picomatch fixes for GHSA-fc5q-39xc-vjpf ([#3217](https://github.com/TraceMachina/nativelink/issues/3217)) - ([f81fd0e](https://github.com/TraceMachina/nativelink/commit/f81fd0e18357790d66bf42fef7eecc9c2b8273d0))
+- Replace chrono and humantime with jiff ([#3215](https://github.com/TraceMachina/nativelink/issues/3215)) - ([60d64bf](https://github.com/TraceMachina/nativelink/commit/60d64bf0465befc4643319fc4c2f3122150fc810))
+- Update dependency next to v16.4.5 [SECURITY] ([#3205](https://github.com/TraceMachina/nativelink/issues/3205)) - ([7836e5b](https://github.com/TraceMachina/nativelink/commit/7836e5b22b3a7508207f8fff2a47346838b3b3f3))
+- Fix opentelemetry issue ([#3204](https://github.com/TraceMachina/nativelink/issues/3204)) - ([298c460](https://github.com/TraceMachina/nativelink/commit/298c46026a2e766cddf51103015ac2edfa804c88))
+
+## [1.8.6](https://github.com/TraceMachina/nativelink/compare/v1.8.5..v1.8.6) - 2026-11-16
+
+### Upgrade and rollback
+
+- Alibaba Cloud OSS is available as `provider: "oss"` under
+  `experimental_cloud_object_store`. It is opt-in and requires explicit OSS
+  credentials. Older binaries, including v1.8.5, reject this provider; restore
+  a supported store configuration before rolling back. Verify the new backend
+  against a real OSS bucket before production use; the included tests replay
+  the S3-compatible API rather than exercise a live Alibaba Cloud deployment.
+- Malformed `Action.timeout` values now return `INVALID_ARGUMENT`: negative
+  seconds or nanoseconds, and nanoseconds at or above 1,000,000,000, are rejected
+  instead of risking an overflow or an unintended near-infinite timeout.
+  Correct the client's duration rather than retrying the same request.
+- Nested `fast_slow` stores can read objects whose existence check considers
+  them expired while the slow backend can still return their contents. This
+  fix requires no configuration change.
+
+### ⛰️  Features
+
+- *(store)* add Alibaba Cloud OSS through the S3-compatible API ([#3149](https://github.com/TraceMachina/nativelink/issues/3149)) - ([e262950](https://github.com/TraceMachina/nativelink/commit/e2629506eb50d0a9bf8fca71aaa9a80779c2d081))
+
+### 🐛 Bug Fixes
+
+- *(store)* Read expired objects through a nested fast_slow store instead of returning NotFound ([#3187](https://github.com/TraceMachina/nativelink/issues/3187)) - ([b30bb2d](https://github.com/TraceMachina/nativelink/commit/b30bb2d4a5252f153285f7b5ec9f09f22e3a33e4))
+- Mention expiry in the fast_slow store's NotFound message ([#3189](https://github.com/TraceMachina/nativelink/issues/3189)) - ([259dac4](https://github.com/TraceMachina/nativelink/commit/259dac4f3c2a4218b6ab46a8aeffdd14894eb301))
+- Reject a malformed Action.timeout with INVALID_ARGUMENT ([#3134](https://github.com/TraceMachina/nativelink/issues/3134)) - ([cf3c989](https://github.com/TraceMachina/nativelink/commit/cf3c989dc37f6553b36b5a42f20c174c03bd99be))
+- Windows also needs ShutdownGuard ([#3180](https://github.com/TraceMachina/nativelink/issues/3180)) - ([395006f](https://github.com/TraceMachina/nativelink/commit/395006ffe34fcc94d1250968a3bfd4e96614c3af))
+
+### 🧪 Testing & CI
+
+- Free disk space before running Nix shared package ([#3201](https://github.com/TraceMachina/nativelink/issues/3201)) - ([53a03a1](https://github.com/TraceMachina/nativelink/commit/53a03a1c375da8d36671bc939e552e78f5bc1e71))
+- Commit the config reference again after the prettier hook reformats it ([#3178](https://github.com/TraceMachina/nativelink/issues/3178)) - ([ecfd4a4](https://github.com/TraceMachina/nativelink/commit/ecfd4a4fd070f950b422f7f62a1e7ec52fae6c5d))
+- Azurite test runner assumed access to transient dependencies ([#3181](https://github.com/TraceMachina/nativelink/issues/3181)) - ([933bd22](https://github.com/TraceMachina/nativelink/commit/933bd229b7b441a8095ba0fc009df58957ff18a1))
+- link each cluster iteration to its BEP build-results page ([#3122](https://github.com/TraceMachina/nativelink/issues/3122)) - ([90459eb](https://github.com/TraceMachina/nativelink/commit/90459eb301c7ef1229a1699ddc4ac703d2355b42))
+- cap workflow-level token permissions at contents:read ([#3188](https://github.com/TraceMachina/nativelink/issues/3188)) - ([f1bba33](https://github.com/TraceMachina/nativelink/commit/f1bba33c66ea83a5115450ea463961c2ed75ab84))
+- fix fork PRs sometimes missing the git2prod comment ([#3183](https://github.com/TraceMachina/nativelink/issues/3183)) - ([f191422](https://github.com/TraceMachina/nativelink/commit/f191422b478602a592ba8488e563bea2362dd79d))
+- publish fork PR build events to the build-results UI ([#3144](https://github.com/TraceMachina/nativelink/issues/3144)) - ([8370183](https://github.com/TraceMachina/nativelink/commit/83701833970faadc56bbf483a80b10f43cc581a9))
+- stage BEP and failed-test logs on PR lanes without BES ([#3143](https://github.com/TraceMachina/nativelink/issues/3143)) - ([6a38a1e](https://github.com/TraceMachina/nativelink/commit/6a38a1e7038122dcb79b48d122d7607a3f9ba267))
+- keep cluster coordinates out of the step log headers ([#3173](https://github.com/TraceMachina/nativelink/issues/3173)) - ([2ad3146](https://github.com/TraceMachina/nativelink/commit/2ad31464c877bc5668e3e0a3140fbf11afa1aa04))
+
+### ⬆️ Bumps & Version Updates
+
+- *(web)* update Jest glob dependencies for DoS advisories ([#3197](https://github.com/TraceMachina/nativelink/issues/3197)) - ([6fac44a](https://github.com/TraceMachina/nativelink/commit/6fac44adf32b65387c32295ca1443ee1eb06d8c1))
+- Fix several security issues ([#3185](https://github.com/TraceMachina/nativelink/issues/3185)) - ([dbf40b2](https://github.com/TraceMachina/nativelink/commit/dbf40b2a0701caa47f36bc432f58ff96723e309b))
+
+## [1.8.5](https://github.com/TraceMachina/nativelink/compare/v1.8.4..v1.8.5) - 2026-11-11
+
+### Upgrade and rollback
+
+- Memory escalation on worker loss is **on by default**: once the same action
+  has lost `escalate_after_worker_losses` workers (default 2), each further
+  re-dispatch steps its memory reservation up, bounded by the fleet's largest
+  worker and the existing loss budget. An action that repeatedly loses workers
+  for non-memory reasons (spot preemption, node drains) inflates its
+  reservation too; set `escalate_after_worker_losses: 0` under
+  `memory_escalation` for the v1.8.4 behavior. Older binaries, including
+  v1.8.4, reject a config that names the field.
+- A memory-kill escalation now steps the reservation past the sampled peak,
+  not just past the old reservation, so a single escalation can jump several
+  size classes at once (still bounded by the fleet ceiling).
+- Workers report each running action's peak memory on the keepalive
+  (new `RunningOperations.memory` proto field). Mixed fleets are fine in both
+  directions: an older worker just never reports, and the scheduler falls back
+  to the loss-count rule; an older scheduler ignores the field.
+- Unknown instance names and missing request fields now return
+  `INVALID_ARGUMENT` instead of `INTERNAL` (#3154). Clients fail fast instead
+  of retrying: a mistyped `--remote_instance_name` errors immediately rather
+  than after Bazel's retry backoff.
+
+### ⛰️  Features
+
+- Report each running action's memory peak on the keepalive and escalate a lost worker's action that was over its reservation ([#3170](https://github.com/TraceMachina/nativelink/issues/3170)) - ([5ca5732](https://github.com/TraceMachina/nativelink/commit/5ca5732efc94835156410be34c1bdd48ca4761b0))
+- escalate memory on the second worker lost under an action ([#3168](https://github.com/TraceMachina/nativelink/issues/3168)) - ([a51db80](https://github.com/TraceMachina/nativelink/commit/a51db80f71ca339112e4fe59c840b8fe8db3f090))
+
+### 🐛 Bug Fixes
+
+- Gate the caps dependency to Linux ([#3174](https://github.com/TraceMachina/nativelink/issues/3174)) - ([1a29204](https://github.com/TraceMachina/nativelink/commit/1a292040c34af0d02a359525801753b82fdb40e8))
+- Fix FS issues running as root ([#3166](https://github.com/TraceMachina/nativelink/issues/3166)) - ([736e9ed](https://github.com/TraceMachina/nativelink/commit/736e9edc14559d21df6bce4edf12d7e1efd3ae4c))
+- Return INVALID_ARGUMENT for unknown instances and missing request fields ([#3154](https://github.com/TraceMachina/nativelink/issues/3154)) - ([ab987d0](https://github.com/TraceMachina/nativelink/commit/ab987d0d5573ee451a9116a9c9fde1ac08bc05f2))
+
+### 🧪 Testing & CI
+
+- Give the service integration tests the moderate timeout ([#3177](https://github.com/TraceMachina/nativelink/issues/3177)) - ([2ed2fc5](https://github.com/TraceMachina/nativelink/commit/2ed2fc51aa2078dc6e897d6edfb04aa8e362b3f3))
+- run Bazel 8 compatibility nightly and on demand ([#3171](https://github.com/TraceMachina/nativelink/issues/3171)) - ([6efef3e](https://github.com/TraceMachina/nativelink/commit/6efef3e63044487a4baf930a49e421681bd8f7bb))
+- Add logging to flaky filesystem tests ([#3164](https://github.com/TraceMachina/nativelink/issues/3164)) - ([433edda](https://github.com/TraceMachina/nativelink/commit/433edda1799bae857a2aa3c04c0cc2ffceae280e))
+
+### ⚙️ Miscellaneous
+
+- pricing page rewrite, comparison table, trial request, and ranked type and radius scales ([#3167](https://github.com/TraceMachina/nativelink/issues/3167)) - ([af1646c](https://github.com/TraceMachina/nativelink/commit/af1646c15953c0eaba0c10c6882b4eb2bdb168d9))
+
+### ⬆️ Bumps & Version Updates
+
+- Re-vendor remote_execution.proto from REAPI v2.12.0 ([#3163](https://github.com/TraceMachina/nativelink/issues/3163)) - ([80f952e](https://github.com/TraceMachina/nativelink/commit/80f952e81fd4b25c4dfa9dc11c9bee9e0aea83c6))
+
 ## [1.8.4](https://github.com/TraceMachina/nativelink/compare/v1.8.3..v1.8.4) - 2026-11-09
 
 ### Upgrade and rollback

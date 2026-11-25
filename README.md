@@ -78,25 +78,34 @@ NativeLink seamlessly integrates with build tools that use the Remote Execution 
 
 ## 🚀 Quickstart
 
-To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are for trying NativeLink out; for production, pin an exact release as described under [Prebuilt images](#-prebuilt-images). See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 
 ### 📦 Prebuilt images
 
-Fast to spin up, but currently limited to `x86_64` systems. See the [container
+Fast to spin up. The images are multi-arch (`x86_64` and `ARM64`), so they run
+natively on Apple Silicon too. See the [container
 registry](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 for all image tags and the [contribution docs](https://nativelink.com/docs/contribute/nix)
 for how to build the images yourself.
 
-**Linux x86_64**
+These snippets look up the newest release each time they run, so they never go
+stale. For production, pin an exact release tag instead and upgrade on purpose;
+don't resolve "latest" at deploy time. See
+[pinning a version](https://nativelink.com/docs/getting-started/shared-cache#container-registry).
+
+**Linux and macOS**
+
+Look up the newest release tag, such as `vX.Y.Z`, download the example
+configuration into the current directory, and start the server:
 
 ```bash
-NATIVELINK_VERSION=1.8.3
-
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
 curl -fsSLO \
-    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5"
-
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5" &&
 docker run --rm -it \
     -v "$(pwd)/basic_cas.json5:/config:ro" \
     -p 50051:50051 \
@@ -104,21 +113,29 @@ docker run --rm -it \
     /config
 ```
 
-**Windows x86_64**
+**Windows**
+
+The same steps in PowerShell: look up the newest release tag, download the
+configuration file into the current directory, and run the Docker container
+with that file mounted:
 
 ```powershell
-# Download the configuration file
-Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.8.3/nativelink-config/examples/basic_cas.json5" `
-    -OutFile "basic_cas.json5"
+$NATIVELINK_VERSION = (Invoke-RestMethod `
+    "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
-# Run the Docker container
-# Note: Adjust the path if the script is not run from the directory containing basic_cas.json5
-docker run `
-    -v ${PWD}/basic_cas.json5:/config `
-    -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v1.8.3 `
-    config
+if (-not $NATIVELINK_VERSION) {
+    Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
+} else {
+    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
+        -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
+        -OutFile "basic_cas.json5"
+
+    docker run `
+        -v ${PWD}/basic_cas.json5:/config `
+        -p 50051:50051 `
+        "ghcr.io/tracemachina/nativelink:$NATIVELINK_VERSION" `
+        config
+}
 ```
 
 ### ❄️ Raw executable with Nix
@@ -148,11 +165,16 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 
 **Linux, MacOS, WSL2**
 
-```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, download the example configuration, and run
+that release from its flake:
 
-nix run github:TraceMachina/nativelink ./basic_cas.json5
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5" &&
+nix run "github:TraceMachina/nativelink/${NATIVELINK_VERSION}" ./basic_cas.json5
 ```
 
 See the [contribution docs](https://nativelink.com/docs/contribute/nix) for further information.

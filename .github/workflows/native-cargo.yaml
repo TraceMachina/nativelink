@@ -9,7 +9,11 @@ on:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,10 +32,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2022]
-        toolchain: [stable]
+        toolchain: [1.97.1] # Same as Nix
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: >- # v6.0.2

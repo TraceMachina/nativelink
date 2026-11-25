@@ -2,7 +2,7 @@
 name: CI / Bazel
 
 on:
-  # Check Bazel 8 compatibility and Redis topologies before merging.
+  # Check Redis topologies before merging; Bazel 8 runs on the daily schedule.
   # CI / NativeLink runs the project-pinned Bazel suite separately.
   # Web-only changes are covered by CI / Web and skip the Bazel lanes.
   pull_request:
@@ -19,7 +19,12 @@ on:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,12 +32,9 @@ concurrency:
 
 jobs:
   unit-tests:
-    # Bazel 8 compatibility is informational, not a per-change correctness
-    # gate: the pinned Bazel 9 suite runs on every pull request, and a
-    # compatibility regression is caught on the merge itself or by the
-    # nightly schedule. Keeping this lane off the pull-request path removes
-    # its runner cost and remote-cache flake surface from every PR.
-    if: ${{ github.event_name != 'pull_request' }}
+    # Check Bazel 8 on the nightly schedule or by manual dispatch. The pinned
+    # Bazel 9 suite continues to test pull requests and branch pushes.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +97,8 @@ jobs:
           # The staging remote cache can drop a blob between its existence
           # check and the consuming action ("lost inputs"). Let Bazel retry
           # the invocation and re-execute the producers instead of failing.
-          ./tools/bazel-retry.sh test //... \
+          # Bazel records the client environment; keep the job token out.
+          env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \

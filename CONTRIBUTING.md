@@ -600,7 +600,11 @@ workflow` (entering the tag) or fall back to the manual procedure below.
 changes`. This is a fairly free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
-10. Once all notes are in line, click `Publish Release`.
+10. Once all notes are in line, and the `Images / SemVer OCI` run for the tag
+    is green, click `Publish Release`. Publishing moves `/releases/latest`,
+    which is what the README and docs quickstart snippets pull, so
+    publishing before the images exist breaks every quickstart until they
+    land.
 
 11. Publishing the release triggers the
     [`Signed release artifacts`](.github/workflows/release.yaml) workflow. It
@@ -611,8 +615,9 @@ changes`. This is a fairly free-form section that doesn't have any explicit
     cosign signatures on the GHCR container images are not visible to that check.
 
     Wait for the workflow to finish, then confirm the release page lists, for
-    each target, a `*.tar.gz` plus its `*.sig`/`*.pem`, an `*.spdx.json` SBOM,
-    and a `*.intoto.jsonl` provenance file. You can verify any asset locally:
+    each target, a `*.tar.gz` (Unix) or `*.zip` (Windows) plus its `*.sig`/`*.pem`,
+    an `*.spdx.json` SBOM, and a `*.intoto.jsonl` provenance file. You can verify
+    any asset locally:
 
     ```bash
     # Verify the SLSA provenance covers the artifact.
@@ -634,6 +639,25 @@ changes`. This is a fairly free-form section that doesn't have any explicit
     `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
     `v1.x.y`). It will rebuild, re-sign, and attach the assets to that existing
     release.
+
+12. Check that the quickstart snippets still work. The README and docs
+    snippets don't hard-code a version: they look up the newest release when
+    a reader runs them, so publishing the release is what updates them.
+    Publishing also triggers the
+    [`Release references`](.github/workflows/release-refs.yaml) workflow,
+    which fetches every config URL, image tag and nix flake ref those
+    snippets use with the new tag. Confirm that run passed, or run the same
+    check locally:
+
+    ```bash
+    node web/apps/docs/scripts/check-release-refs.mjs --resolve
+    ```
+
+    If it fails because the release moved or renamed an example config the
+    snippets download, fix the snippets on `main`. Don't add a hard-coded
+    version to the README or docs; use the `NATIVELINK_VERSION` lookup the
+    snippets use, or `vX.Y.Z` in prose. Production guidance stays the same:
+    pin an exact tag, never a version resolved at deploy time.
 
 ## Conduct
 

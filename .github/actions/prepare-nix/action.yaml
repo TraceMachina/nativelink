@@ -32,6 +32,16 @@ runs:
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
 
+    - name: Expose Nix to later job steps
+      # The installer adds these through its own GITHUB_PATH write, but a
+      # runtime that drops composite-nested PATH additions at the job
+      # boundary leaves later `run:` steps without `nix`. Idempotent on
+      # runners where the installer's write already propagated.
+      shell: bash
+      run: |
+        echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+
     - name: Configure public read-only cache
       if: ${{ inputs.read_only == 'true' }}
       shell: bash
