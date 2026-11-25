@@ -1210,6 +1210,86 @@ async fn checksum_algorithm_can_match_or_differ_from_cas_digest() {
     }
 }
 
+fn sri_sha2(algorithm: &str, content: &[u8]) -> Qualifier {
+    use sha2::Digest as _;
+    let hash = match algorithm {
+        "sha384" => sha2::Sha384::digest(content).to_vec(),
+        "sha512" => sha2::Sha512::digest(content).to_vec(),
+        _ => unreachable!("not a SHA-2 SRI algorithm: {algorithm}"),
+    };
+    Qualifier {
+        name: "checksum.sri".into(),
+        value: format!(
+            "{algorithm}-{}",
+            base64::engine::general_purpose::STANDARD.encode(hash)
+        ),
+    }
+}
+
+#[nativelink_test]
+async fn sha384_and_sha512_checksums_verify_and_store_under_cas_digest() {
+    for algorithm in ["sha384", "sha512"] {
+        for cas_function in [DigestHasherFunc::Sha256, DigestHasherFunc::Blake3] {
+            let body = Bytes::from_static(b"npm tarball");
+            let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+            let (server, stores, cas) = downloader_server(downloader_config()).await;
+            let mut hasher = cas_function.hasher();
+            hasher.update(&body);
+            let expected = hasher.finalize_digest();
+            let mut request = fetch_request(&origin.url);
+            request.digest_function = cas_function.proto_digest_func().into();
+            request.qualifiers = vec![sri_sha2(algorithm, b"incorrect bytes")];
+            let rejected = fetch(&server, request.clone()).await;
+            assert_eq!(rejected.status.unwrap().code, tonic::Code::DataLoss as i32);
+            assert!(cas.has(expected).await.unwrap().is_none());
+            let key =
+                RemoteAssetQuery::new(origin.url.clone(), request.qualifiers.clone()).digest();
+            assert!(
+                stores
+                    .get_store("test_fetch_store")
+                    .unwrap()
+                    .has(key)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            request.qualifiers = vec![sri_sha2(algorithm, &body)];
+            for _ in 0..2 {
+                let response = fetch(&server, request.clone()).await;
+                assert_eq!(response.status.unwrap().code, 0);
+                assert_eq!(response.digest_function, request.digest_function);
+                assert_eq!(
+                    DigestInfo::try_from(response.blob_digest.unwrap()).unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(
+                cas.get_part_unchunked(expected, 0, None).await.unwrap(),
+                body
+            );
+            assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+        }
+    }
+}
+
+#[nativelink_test]
+async fn sha512_match_passes_alongside_a_mismatched_cas_algorithm_checksum() {
+    let body = Bytes::from_static(b"mixed alternatives");
+    let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+    let (server, _stores, cas) = downloader_server(downloader_config()).await;
+    let mut request = fetch_request(&origin.url);
+    request.qualifiers = vec![Qualifier {
+        name: "checksum.sri".into(),
+        value: format!(
+            "{} {}",
+            sri(b"other bytes").value,
+            sri_sha2("sha512", &body).value
+        ),
+    }];
+    assert_cas(&cas, &fetch(&server, request).await, &body).await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
+}
+
 #[nativelink_test]
 async fn unsupported_or_malformed_checksums_fail_before_origin_access() {
     let origin = http_fixture(
@@ -1223,10 +1303,13 @@ async fn unsupported_or_malformed_checksums_fail_before_origin_access() {
         "",
         " \t",
         "sha512-AAAA",
+        "sha384-AAAA",
         "blake3-@@@",
         "blake3-AA==",
         "blake3",
         "sha256-@@@ sha512-AAAA",
+        "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "md5-AAAAAAAAAAAAAAAAAAAAAA==",
     ] {
         let mut request = fetch_request(&origin.url);
         request.qualifiers = vec![Qualifier {
@@ -1510,8 +1593,8 @@ async fn unsupported_checksum_alternative_does_not_hide_supported_match() {
     let (server, _stores, cas) = downloader_server(downloader_config()).await;
     let mut request = fetch_request(&origin.url);
     let unsupported = format!(
-        "sha512-{}",
-        base64::engine::general_purpose::STANDARD.encode([0; 64])
+        "sha1-{}",
+        base64::engine::general_purpose::STANDARD.encode([0; 20])
     );
     request.qualifiers = vec![Qualifier {
         name: "checksum.sri".into(),

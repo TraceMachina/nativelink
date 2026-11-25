@@ -361,6 +361,8 @@ pub struct FetchDownloaderConfig {
     pub no_proxy: Vec<String>,
 
     /// Reject downloads without a supported checksum. Default: false.
+    /// Supported `checksum.sri` algorithms: sha256, sha384, sha512 and blake3,
+    /// independent of the digest function the blob is stored under in CAS.
     #[serde(default)]
     pub require_checksum: bool,
 
