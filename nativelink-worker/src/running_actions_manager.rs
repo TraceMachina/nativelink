@@ -2484,6 +2484,12 @@ async fn upload_symlink(
     })
 }
 
+/// Uploads the directory at `full_dir_path` and everything below it.
+///
+/// Returns the directory's own `Directory` and every directory below it, in
+/// post-order (a subdirectory after its own subdirectories, siblings in name
+/// order). The directory itself is never in that list, so a caller can use it
+/// as `REv2` `Tree.children` as is.
 fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     cas_store: Pin<&'a impl StoreLike>,
     full_dir_path: P,
@@ -2524,7 +2530,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             digest_uploaders.clone(),
                             uploads.clone(),
                         )
-                        .and_then(|(dir, all_dirs)| async move {
+                        .and_then(|(dir, mut all_dirs)| async move {
                             let directory_name = full_path
                                 .file_name()
                                 .err_tip(|| {
@@ -2544,6 +2550,8 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                                 serialize_and_upload_message(&dir, cas_store, &mut hasher.hasher())
                                     .await
                                     .err_tip(|| format!("for {}", full_path.display()))?;
+                            // The subdirectory follows its own subdirectories.
+                            all_dirs.push_back(dir);
 
                             Result::<(DirectoryNode, VecDeque<Directory>), Error>::Ok((
                                 DirectoryNode {
@@ -2626,19 +2634,16 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             symlinks,
             node_properties: None, // We don't support file properties.
         };
-        all_child_directories.push_back(directory.clone());
 
         Ok((directory, all_child_directories))
     })
 }
 
 /// Builds the `Tree` for an output directory from `upload_directory`'s
-/// result. That result lists every directory below the root and then the
-/// root itself, last; the root belongs in `Tree.root` only. REv2
-/// `Tree.children`: "the directories referred to by the root and,
+/// result: its root and the directories below it, which never include the
+/// root. `REv2` `Tree.children`: "the directories referred to by the root and,
 /// recursively, all its children".
-fn output_tree(root: Directory, mut children: VecDeque<Directory>) -> ProtoTree {
-    children.pop_back();
+fn output_tree(root: Directory, children: VecDeque<Directory>) -> ProtoTree {
     ProtoTree {
         root: Some(root),
         children: children.into(),
