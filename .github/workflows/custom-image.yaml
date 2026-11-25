@@ -80,6 +80,18 @@ jobs:
                 core.setOutput('should_build', 'false');
                 return;
               }
+              // The build runs the pull request's code with the publish
+              // tokens, so only someone with write access may start it.
+              const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.payload.comment.user.login,
+              });
+              if (!['admin', 'write'].includes(perm.permission)) {
+                await tryComment('`/build-image` requires write access to this repository.');
+                core.setOutput('should_build', 'false');
+                return;
+              }
               image = match[1];
               if (!image || !validImages.includes(image)) {
                 const hint = image
