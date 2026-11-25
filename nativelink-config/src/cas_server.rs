@@ -2418,10 +2418,25 @@ impl CasConfig {
                 );
             }
             if let Some(worker_api) = &services.worker_api {
-                checker.scheduler(
-                    &format!("{prefix}.worker_api.scheduler"),
-                    &worker_api.scheduler,
-                );
+                let path = format!("{prefix}.worker_api.scheduler");
+                checker.scheduler(&path, &worker_api.scheduler);
+                // Startup resolves the last scheduler declared under a name.
+                let spec = self
+                    .schedulers
+                    .iter()
+                    .flatten()
+                    .rev()
+                    .find(|scheduler| scheduler.name == worker_api.scheduler)
+                    .map(|scheduler| &scheduler.spec);
+                if let Some(spec) = spec
+                    && !accepts_workers(spec)
+                {
+                    checker.problems.push(format!(
+                        "{path} references scheduler '{}', which forwards to a remote \
+                         scheduler and cannot accept workers",
+                        worker_api.scheduler
+                    ));
+                }
             }
             if let Some(bep) = &services.experimental_bep {
                 checker.store(&format!("{prefix}.experimental_bep.store"), &bep.store);
@@ -2470,6 +2485,21 @@ impl CasConfig {
             }
         }
         duplicates
+    }
+}
+
+/// Whether startup builds a worker scheduler for `spec`, which the worker API
+/// service needs. Only a `simple` scheduler accepts workers; the wrapping
+/// schedulers pass through whatever their nested scheduler provides, and a
+/// `grpc` scheduler forwards actions to another server and has no workers.
+/// The match is exhaustive so a new scheduler kind forces a decision here.
+fn accepts_workers(spec: &SchedulerSpec) -> bool {
+    match spec {
+        SchedulerSpec::Simple(_) => true,
+        SchedulerSpec::Grpc(_) => false,
+        SchedulerSpec::CacheLookup(inner) => accepts_workers(&inner.scheduler),
+        SchedulerSpec::PropertyModifier(inner) => accepts_workers(&inner.scheduler),
+        SchedulerSpec::HistoricalResource(inner) => accepts_workers(&inner.scheduler),
     }
 }
 
@@ -3004,6 +3034,50 @@ mod tests {
         assert!(
             message.contains("servers[0].services.cas[main].cas_store"),
             "error must name the reference site: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_flags_worker_api_on_grpc_scheduler() {
+        // A grpc scheduler, even behind a wrapper, builds no worker scheduler,
+        // so startup cannot serve the worker API from it.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [
+                    { name: "REMOTE", grpc: { endpoint: { address: "grpc://127.0.0.1:50052" } } },
+                    { name: "WRAPPED", property_modifier: {
+                        modifications: [],
+                        scheduler: { grpc: { endpoint: { address: "grpc://127.0.0.1:50052" } } },
+                    } },
+                    { name: "LOCAL", simple: {} },
+                ],
+                servers: [
+                    {
+                        listener: { http: { socket_address: "0.0.0.0:50061" } },
+                        services: { worker_api: { scheduler: "REMOTE" } },
+                    },
+                    {
+                        listener: { http: { socket_address: "0.0.0.0:50062" } },
+                        services: { worker_api: { scheduler: "WRAPPED" } },
+                    },
+                    {
+                        listener: { http: { socket_address: "0.0.0.0:50063" } },
+                        services: { worker_api: { scheduler: "LOCAL" } },
+                    },
+                ],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("scheduler 'REMOTE', which forwards")
+                && message.contains("scheduler 'WRAPPED', which forwards"),
+            "error must name both schedulers that cannot accept workers: {message}"
+        );
+        assert!(
+            !message.contains("'LOCAL'"),
+            "a simple scheduler accepts workers: {message}"
         );
     }
 

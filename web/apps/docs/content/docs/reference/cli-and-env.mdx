@@ -48,6 +48,8 @@ The check covers:
   a Redis-backed scheduler;
 - every `ref_store` nested inside a declared store, whether or not anything
   uses that store, because startup constructs all of them;
+- a `worker_api` service pointed at a `grpc` scheduler, which forwards actions
+  to another server and cannot accept workers;
 - duplicate store names, which startup also rejects.
 
 A scheduler name declared more than once is a warning, not a failure: startup
