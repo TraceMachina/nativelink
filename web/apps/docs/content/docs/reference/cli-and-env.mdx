@@ -33,7 +33,7 @@ flag. The binary is a [clap](https://docs.rs/clap) parser with `version`,
 | Argument | Required | Meaning |
 | --- | --- | --- |
 | `<config_file>` | Yes | Path to the JSON5 configuration file. Parsed with `serde_json5`; the config structs are `deny_unknown_fields`, so an unrecognised key is a startup failure, not a warning. |
-| `--check` | No | Parse the file, validate every store and scheduler reference, and exit. Exit status `0` with a one-line `OK:` summary on stdout, or `1` with a `FAIL:` line and one line per problem on stderr. Nothing else is started: no runtime, no socket, no backend connection, no directory. |
+| `--check` | No | Parse the file, validate every store and scheduler reference, and exit. Exit status `0` with a one-line `OK:` summary on stdout, or `1` with a `FAIL:` line and one line per problem on stderr. A file that does not parse fails the same way. Nothing else is started: no runtime, no socket, no backend connection, no directory. |
 | `--help` | No | Print usage and exit. |
 | `--version` | No | Print the crate version and exit. |
 
@@ -48,8 +48,11 @@ The check covers:
   a Redis-backed scheduler;
 - every `ref_store` nested inside a declared store, whether or not anything
   uses that store, because startup constructs all of them;
-- duplicate store and scheduler names, since name resolution is last-wins and
-  would otherwise silently drop the earlier definition.
+- duplicate store names, which startup also rejects.
+
+A scheduler name declared more than once is a warning, not a failure: startup
+accepts it and uses the last definition, so `--check` prints a `WARN:` line on
+stderr and still exits `0`. Startup logs the same warning.
 
 All problems are reported together, each with the path of the field that
 holds the bad name. It does not check that a Redis endpoint answers or that a
@@ -57,7 +60,7 @@ filesystem path is writable; those still fail at startup.
 
 ```sh
 $ nativelink --check nativelink-config/examples/basic_cas.json5
-OK: nativelink-config/examples/basic_cas.json5 — 2 stores, 1 schedulers, 2 servers, all references resolve
+OK: nativelink-config/examples/basic_cas.json5 — 2 stores, 1 scheduler, 2 servers, all references resolve
 ```
 
 No `--port`, no `--log-level`, no `--config-from-env` exist. If you are

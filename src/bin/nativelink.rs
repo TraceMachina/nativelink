@@ -91,56 +91,71 @@ async fn inner_main(
     Ok(())
 }
 
-fn get_config() -> Result<(Args, CasConfig), Error> {
-    let args = Args::parse();
-    let cfg = CasConfig::try_from_json5_file(&args.config_file)
-        .err_tip(|| format!("While loading config file {}", args.config_file))?;
-    Ok((args, cfg))
+fn load_config(config_file: &str) -> Result<CasConfig, Error> {
+    CasConfig::try_from_json5_file(config_file)
+        .err_tip(|| format!("While loading config file {config_file}"))
+}
+
+/// Formats `count` with `noun`, adding an `s` unless `count` is one.
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Runs `--check` on `config_file` and returns the process exit code.
+///
+/// A parse failure and a reference failure are both reported the same way:
+/// a `FAIL:` line and one line per problem on stderr, exit code 1. Warnings
+/// about configs that start but are probably wrong go to stderr as `WARN:`
+/// lines and do not change the exit code.
+#[allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "`--check` reports its result on stdout and stderr for CI"
+)]
+fn check_config(config_file: &str) -> i32 {
+    let result = load_config(config_file).and_then(|cfg| cfg.validate_references().map(|()| cfg));
+    match result {
+        Ok(cfg) => {
+            for name in cfg.duplicate_scheduler_names() {
+                eprintln!(
+                    "WARN: scheduler name '{name}' is declared more than once; only the last definition is used"
+                );
+            }
+            println!(
+                "OK: {config_file} — {}, {}, {}, all references resolve",
+                plural(cfg.stores.len(), "store"),
+                plural(cfg.schedulers.as_ref().map_or(0, Vec::len), "scheduler"),
+                plural(cfg.servers.len(), "server"),
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("FAIL: {config_file} — configuration is invalid");
+            for message in &err.messages {
+                eprintln!("{message}");
+            }
+            1
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     install_default_rustls_crypto_provider();
 
-    // Parse args and load the config *before* building any runtime so that
-    // `--check` can run a fully offline validation and exit without starting
-    // a serving runtime, binding a socket, connecting to a backend, or
-    // creating any store directories.
-    let (args, mut cfg) = get_config()?;
+    let args = Args::parse();
 
+    // `--check` runs before any runtime is built, so it validates fully
+    // offline and exits without starting a serving runtime, binding a
+    // socket, connecting to a backend, or creating any store directories.
     if args.check {
-        return match cfg.validate_references() {
-            Ok(()) => {
-                let num_schedulers = cfg.schedulers.as_ref().map_or(0, Vec::len);
-                #[allow(
-                    clippy::print_stdout,
-                    reason = "`--check` reports its success summary on stdout for CI"
-                )]
-                {
-                    println!(
-                        "OK: {} — {} stores, {} schedulers, {} servers, all references resolve",
-                        args.config_file,
-                        cfg.stores.len(),
-                        num_schedulers,
-                        cfg.servers.len(),
-                    );
-                }
-                Ok(())
-            }
-            Err(err) => {
-                #[allow(
-                    clippy::print_stderr,
-                    reason = "`--check` reports validation failures on stderr for CI"
-                )]
-                {
-                    eprintln!("FAIL: {} — configuration is invalid", args.config_file);
-                    for message in &err.messages {
-                        eprintln!("{message}");
-                    }
-                }
-                std::process::exit(1);
-            }
-        };
+        std::process::exit(check_config(&args.config_file));
     }
+
+    let mut cfg = load_config(&args.config_file)?;
 
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core

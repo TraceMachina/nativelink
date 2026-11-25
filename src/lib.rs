@@ -214,6 +214,12 @@ pub async fn build_server(
     // with its config path, instead of surfacing one at a time from whichever
     // factory happens to resolve it first.
     cfg.validate_references()?;
+    for name in cfg.duplicate_scheduler_names() {
+        warn!(
+            scheduler = name,
+            "Scheduler name is declared more than once; only the last definition is used"
+        );
+    }
 
     if cfg.shares_workers_with_writable_action_cache() {
         warn!(

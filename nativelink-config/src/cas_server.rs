@@ -2283,15 +2283,18 @@ impl CasConfig {
     /// such as `servers[0].services.cas[main].cas_store references
     /// undefined store 'CAS_STORE'`, rather than failing on the first one.
     ///
-    /// Duplicate store names and duplicate scheduler names are also reported,
-    /// because [`crate::stores`] / the store manager resolve names last-wins
-    /// and would otherwise silently drop the earlier definition.
+    /// Duplicate store names are also reported, because the store manager
+    /// refuses to register a second store under a name it already holds, so
+    /// startup rejects them too.
+    ///
+    /// Duplicate scheduler names are not an error here: startup accepts them
+    /// and the last definition wins. Use [`Self::duplicate_scheduler_names`]
+    /// to warn about them.
     ///
     /// # Errors
     ///
     /// Returns `Err(Code::InvalidArgument)` if any referenced store/scheduler
-    /// name is undeclared, or if a store/scheduler name is declared more than
-    /// once.
+    /// name is undeclared, or if a store name is declared more than once.
     pub fn validate_references(&self) -> Result<(), Error> {
         let mut problems: Vec<String> = Vec::new();
 
@@ -2302,12 +2305,12 @@ impl CasConfig {
                 problems.push(format!("duplicate store name '{}'", store.name));
             }
         }
-        let mut scheduler_names: HashSet<&str> = HashSet::new();
-        for scheduler in self.schedulers.iter().flatten() {
-            if !scheduler_names.insert(scheduler.name.as_str()) {
-                problems.push(format!("duplicate scheduler name '{}'", scheduler.name));
-            }
-        }
+        let scheduler_names: HashSet<&str> = self
+            .schedulers
+            .iter()
+            .flatten()
+            .map(|scheduler| scheduler.name.as_str())
+            .collect();
 
         let mut checker = ReferenceChecker {
             store_names,
@@ -2448,6 +2451,25 @@ impl CasConfig {
                 checker.problems.join("\n  - ")
             ))
         }
+    }
+
+    /// Returns each scheduler name that is declared more than once, in the
+    /// order its second declaration appears.
+    ///
+    /// Startup builds every declared scheduler, and the last one with a given
+    /// name is the one services resolve, so earlier definitions are silently
+    /// unused. This is a warning, not an error, because such a config starts.
+    #[must_use]
+    pub fn duplicate_scheduler_names(&self) -> Vec<&str> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut duplicates: Vec<&str> = Vec::new();
+        for scheduler in self.schedulers.iter().flatten() {
+            let name = scheduler.name.as_str();
+            if !seen.insert(name) && !duplicates.contains(&name) {
+                duplicates.push(name);
+            }
+        }
+        duplicates
     }
 }
 
@@ -3203,23 +3225,39 @@ mod tests {
     }
 
     #[test]
-    fn validate_references_flags_duplicate_scheduler_name() {
+    fn validate_references_accepts_duplicate_scheduler_name() {
+        // Startup accepts a repeated scheduler name (the last one wins), so
+        // validation must too; it is surfaced as a warning instead.
         let cfg = parse_cas_config(
             r#"{
                 stores: [{ name: "CAS", memory: {} }],
                 schedulers: [
+                    { name: "SCHED", simple: {} },
+                    { name: "OTHER", simple: {} },
                     { name: "SCHED", simple: {} },
                     { name: "SCHED", simple: {} },
                 ],
                 servers: [],
             }"#,
         );
-        let err = cfg.validate_references().unwrap_err();
-        let message = err.messages.join("\n");
-        assert!(
-            message.contains("duplicate scheduler name 'SCHED'"),
-            "error must report the duplicate scheduler: {message}"
+        cfg.validate_references()
+            .expect("duplicate scheduler names must not fail validation");
+        assert_eq!(cfg.duplicate_scheduler_names(), vec!["SCHED"]);
+    }
+
+    #[test]
+    fn duplicate_scheduler_names_empty_without_duplicates() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                schedulers: [
+                    { name: "A", simple: {} },
+                    { name: "B", simple: {} },
+                ],
+                servers: [],
+            }"#,
         );
+        assert!(cfg.duplicate_scheduler_names().is_empty());
     }
 
     #[test]
