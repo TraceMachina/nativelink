@@ -2000,6 +2000,72 @@ mod tests {
         .await
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a separate one-thread blocking pool makes cancellation ordering deterministic"
+    )]
+    #[nativelink_test]
+    async fn cancelled_filesystem_operation_keeps_cleanup_pending() -> Result<(), Error> {
+        let temp_dir = TempDir::new()?;
+        let (store, _slow) = make_fast_slow_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        let scratch = temp_dir.path().join("scratch");
+        fs::create_dir_all(&scratch).await?;
+        let late_directory = scratch.join("late/leaf");
+        let scope = DirectoryWorkScope::new(None);
+        let guard = scope.register();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()?;
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let blocker = runtime.spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.expect("blocking worker started");
+
+        // Poll the real filesystem call while its blocking worker is occupied.
+        // Dropping the outer job must not release cleanup ahead of that call.
+        let mut operation = Box::pin(async {
+            let _guard = guard;
+            cache.create_dir_writable(&late_directory).await
+        });
+        let pending = {
+            let _entered = runtime.enter();
+            futures::poll!(operation.as_mut()).is_pending()
+        };
+        drop(operation);
+        let waits_for_io = futures::poll!(Box::pin(scope.wait())).is_pending();
+        if !waits_for_io {
+            DirectoryCache::remove_tree_best_effort(&scratch).await;
+        }
+        drop(release);
+        blocker.await.expect("blocking worker released");
+        runtime
+            .spawn_blocking(|| ())
+            .await
+            .expect("filesystem queue drained");
+        runtime.shutdown_background();
+        scope.wait().await;
+        let recreated = scratch.exists();
+        DirectoryCache::remove_tree_best_effort(&scratch).await;
+        assert!(pending, "filesystem operation must have been queued");
+        assert!(
+            waits_for_io,
+            "cleanup was allowed before cancelled filesystem I/O completed; scratch recreated: {recreated}"
+        );
+        Ok(())
+    }
+
     async fn filesystem_cancellation_case(subtree: bool, cancel_root: bool) -> Result<(), Error> {
         let temp_dir = TempDir::new()?;
         let (store, slow) = make_fast_slow_store(&temp_dir).await;

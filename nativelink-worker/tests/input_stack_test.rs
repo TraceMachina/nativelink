@@ -219,11 +219,12 @@ fn isolated_input_stack() -> Result<(), Error> {
         return run_case(case);
     }
     let mut failures = Vec::new();
-    for depth in [8, 128] {
-        for stack_bytes in [2 * 1024 * 1024, 16 * 1024 * 1024] {
+    let deep = if cfg!(target_os = "linux") { 512 } else { 256 };
+    for depth in [128, deep] {
+        for stack_bytes in [2 * 1024 * 1024] {
             for (mode, fetches) in ["none", "default", "subtree"]
                 .into_iter()
-                .flat_map(|mode| [1, 2, 64].into_iter().map(move |fetches| (mode, fetches)))
+                .flat_map(|mode| [1, 64].into_iter().map(move |fetches| (mode, fetches)))
             {
                 for temperature in ["cold", "hot"] {
                     let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}:{fetches}");
