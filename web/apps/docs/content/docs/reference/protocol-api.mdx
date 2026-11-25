@@ -164,6 +164,15 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
+**Parents of outputs exist before the action runs.** The worker creates the
+directories leading up to every entry of `output_paths`, and of the legacy
+`output_files` and `output_directories`, but not the output paths themselves.
+
+**A result with an error status is never cached.** Whatever
+`upload_ac_results_strategy` is set to, a result whose `ExecuteResponse.status`
+is not `OK` (a timeout, say, even when the process exited 0) is not written to
+the Action Cache, as the REAPI requires. Historical results are unaffected.
+
 **`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
 action is never answered from the Action Cache, never shares an execution with
 an identical action that is already running, and the worker does not write its

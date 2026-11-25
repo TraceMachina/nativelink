@@ -3412,10 +3412,19 @@ impl RunningActionImpl {
                     Result::<(), Error>::Ok(())
                 }
             };
+            // REv2 creates the parents of the legacy `output_directories` too:
+            // "Directories leading up to the output directories (but not the
+            // output directories themselves) are created by the worker prior
+            // to execution". `prepare_output_directories` creates only the
+            // parent, so it serves both fields.
             self.metrics()
                 .prepare_output_files
                 .wrap(try_join_all(
-                    command.output_files.iter().map(prepare_output_directories),
+                    command
+                        .output_files
+                        .iter()
+                        .chain(command.output_directories.iter())
+                        .map(prepare_output_directories),
                 ))
                 .await?;
             self.metrics()
@@ -5497,11 +5506,18 @@ impl UploadActionResults {
     ) -> Result<(), Error> {
         let should_upload_historical_results =
             Self::should_cache_result(self.upload_historical_results_strategy, action_result, true);
-        // REv2 `Action.do_not_cache`: "If true, then the Action's result
-        // cannot be cached". The historical results store is a debugging
-        // record under its own digest, not the Action Cache, so it is
-        // unaffected.
+        // Two REv2 rules keep a result out of the Action Cache whatever the
+        // strategy says:
+        // - `Action.do_not_cache`: "If true, then the Action's result cannot
+        //   be cached".
+        // - `ExecuteResponse.status`: "If the status code is other than `OK`,
+        //   then the result MUST NOT be cached." An error here is that
+        //   status, even when the process exited 0 (a timed-out action that
+        //   handles SIGTERM and exits cleanly).
+        // The historical results store is a debugging record under its own
+        // digest, not the Action Cache, so neither rule applies to it.
         let should_upload_ac_results = !do_not_cache
+            && action_result.error.is_none()
             && Self::should_cache_result(self.upload_ac_results_strategy, action_result, false);
         // Shortcut so we don't need to convert to proto if not needed.
         if !should_upload_ac_results && !should_upload_historical_results {
