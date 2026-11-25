@@ -179,7 +179,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
         assert_eq!(result, data, "Expected azure store to have updated value");
 
-        return Ok::<(), Error>(());
+        Ok::<(), Error>(())
     })
     .await
     .is_err()
