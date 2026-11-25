@@ -79,6 +79,35 @@ pub enum CloneMethod {
 /// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
+    hardlink_directory_tree_with_guard(src_dir, dst_dir, ()).await
+}
+
+/// Retains a caller's cleanup guard until the filesystem operation stops,
+/// including when the awaiting future is cancelled. Stops between entries
+/// after cancellation; a syscall already in progress is allowed to finish.
+pub async fn hardlink_directory_tree_with_guard<G: Send + 'static>(
+    src_dir: &Path,
+    dst_dir: &Path,
+    guard: G,
+) -> Result<CloneMethod, Error> {
+    let src_dir = src_dir.to_path_buf();
+    let dst_dir = dst_dir.to_path_buf();
+    let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+    let result = crate::spawn_blocking!("hardlink_directory_tree", move || {
+        let _guard = guard;
+        hardlink_directory_tree_blocking(&src_dir, &dst_dir, &cancel)
+    })
+    .await
+    .err_tip(|| "Hardlink directory task failed")?;
+    drop(cancelled);
+    result
+}
+
+fn hardlink_directory_tree_blocking(
+    src_dir: &Path,
+    dst_dir: &Path,
+    cancel: &tokio::sync::oneshot::Sender<()>,
+) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
@@ -99,7 +128,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
         // itself via `fs::create_dir_all(dst_dir)`, so this pre-step is only
         // needed for the clonefile case.
         if let Some(parent) = dst_dir.parent() {
-            fs::create_dir_all(parent).await.err_tip(|| {
+            std::fs::create_dir_all(parent).err_tip(|| {
                 format!(
                     "Failed to create parent of destination: {}",
                     parent.display()
@@ -107,7 +136,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
             })?;
         }
 
-        match try_clonefile(src_dir, dst_dir).await {
+        match try_clonefile(src_dir, dst_dir) {
             Ok(()) => {
                 // `clonefile(2)` copies the source's modes verbatim. A
                 // directory cache entry locked down by
@@ -118,9 +147,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
                 // immutable. No per-directory chmod walk is needed. The root
                 // is still chmod'd here as a defensive guarantee for callers
                 // that pass a source whose root was not pre-marked writable.
-                chmod_dir_writable(dst_dir)
-                    .await
-                    .err_tip(|| "Failed to chmod cloned tree root")?;
+                chmod_dir_0o755(dst_dir).err_tip(|| "Failed to chmod cloned tree root")?;
                 return Ok(CloneMethod::Clonefile);
             }
             Err(e) => {
@@ -132,22 +159,21 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
                 );
                 // clonefile(2) is atomic — on failure dst should not exist —
                 // but be defensive in case a partial tree was left behind.
-                let _cleanup = fs::remove_dir_all(dst_dir).await;
+                let _cleanup = std::fs::remove_dir_all(dst_dir);
             }
         }
     }
 
     // Create the root destination directory
-    fs::create_dir_all(dst_dir).await.err_tip(|| {
+    std::fs::create_dir_all(dst_dir).err_tip(|| {
         format!(
             "Failed to create destination directory: {}",
             dst_dir.display()
         )
     })?;
-    chmod_dir_0o755(dst_dir).await?;
+    chmod_dir_0o755(dst_dir)?;
 
-    // Recursively hardlink the directory tree
-    hardlink_directory_tree_recursive(src_dir, dst_dir).await?;
+    hardlink_directory_tree_contents(src_dir, dst_dir, cancel)?;
     Ok(CloneMethod::Hardlink)
 }
 
@@ -159,12 +185,11 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
 /// are 0o755" invariant umask-independent. (The macOS `clonefile` path is
 /// unaffected: it copies the source's modes verbatim, and cache-entry
 /// sources are built at 0o755.)
-async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
+fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-            .await
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
             .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
     }
     #[cfg(not(unix))]
@@ -180,12 +205,10 @@ async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
 /// clones), or any other errno; callers are expected to fall back to per-file
 /// hardlinks.
 #[cfg(target_os = "macos")]
-async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     let src_c = path_to_cstring(src)?;
     let dst_c = path_to_cstring(dst)?;
-    crate::spawn_blocking!("clonefile", move || clonefile_nofollow(&src_c, &dst_c))
-        .await
-        .map_err(std::io::Error::other)?
+    clonefile_nofollow(&src_c, &dst_c)
 }
 
 #[cfg(target_os = "macos")]
@@ -249,6 +272,17 @@ fn clonefile_nofollow(src: &core::ffi::CStr, dst: &core::ffi::CStr) -> std::io::
 /// names.
 #[cfg(target_os = "macos")]
 pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::Result<()> {
+    clone_file_pristine_with_guard(src, dst, mode, ()).await
+}
+
+/// Keeps a cleanup guard inside the blocking clone until it completes.
+#[cfg(target_os = "macos")]
+pub async fn clone_file_pristine_with_guard<G: Send + 'static>(
+    src: &Path,
+    dst: &Path,
+    mode: u32,
+    guard: G,
+) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let src_c = path_to_cstring(src)?;
@@ -256,6 +290,7 @@ pub async fn clone_file_pristine(src: &Path, dst: &Path, mode: u32) -> std::io::
     let dst = dst.to_path_buf();
     let src = src.to_path_buf();
     crate::spawn_blocking!("clone_file_pristine", move || {
+        let _guard = guard;
         check_no_file_flags(&std::fs::symlink_metadata(&src)?, "source")?;
         clonefile_nofollow(&src_c, &dst_c)?;
         let Err(rejected) = check_clone_is_pristine(&dst, &dst_c)
@@ -359,37 +394,30 @@ fn check_clone_is_pristine(path: &Path, path_c: &core::ffi::CStr) -> std::io::Re
     }
 }
 
-/// Sets the directory `dir`'s mode to 0o755 so callers can create new
-/// entries inside it. Used after `clonefile(2)` on the materialized
-/// destination root as a defensive guarantee: a directory cache entry locked
-/// down by [`set_readonly_recursive`] already has writable directories, so
-/// for those callers this is a no-op, but it keeps `hardlink_directory_tree`
-/// correct for any source whose root was not pre-marked writable. Existing
-/// entries inside `dir` are intentionally left at their cloned perms — files
-/// stay read-only (the hermeticity contract), directories stay writable.
-#[cfg(target_os = "macos")]
-async fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-        .await
-        .err_tip(|| format!("Failed to chmod {} to 0o755", dir.display()))
-}
-
-/// Internal recursive function to hardlink directory contents
-fn hardlink_directory_tree_recursive<'a>(
-    src: &'a Path,
-    dst: &'a Path,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-    Box::pin(async move {
-        let mut entries = fs::read_dir(src)
-            .await
+fn hardlink_directory_tree_contents(
+    src: &Path,
+    dst: &Path,
+    cancel: &tokio::sync::oneshot::Sender<()>,
+) -> Result<(), Error> {
+    let mut directories = vec![(src.to_path_buf(), dst.to_path_buf())];
+    while let Some((src, dst)) = directories.pop() {
+        if cancel.is_closed() {
+            return Err(make_err!(
+                Code::Cancelled,
+                "Directory materialization cancelled"
+            ));
+        }
+        let entries = std::fs::read_dir(&src)
             .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .err_tip(|| format!("Failed to get next entry in: {}", src.display()))?
-        {
+        for entry in entries {
+            if cancel.is_closed() {
+                return Err(make_err!(
+                    Code::Cancelled,
+                    "Directory materialization cancelled"
+                ));
+            }
+            let entry =
+                entry.err_tip(|| format!("Failed to get next entry in: {}", src.display()))?;
             let entry_path = entry.path();
             let file_name = entry.file_name().into_string().map_err(|os_str| {
                 make_err!(
@@ -406,7 +434,6 @@ fn hardlink_directory_tree_recursive<'a>(
             // recreates them as symlinks rather than dereferencing them.
             let metadata = entry
                 .metadata()
-                .await
                 .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
 
             if metadata.is_symlink() {
@@ -415,39 +442,34 @@ fn hardlink_directory_tree_recursive<'a>(
                 // never treated as a real directory and recursed *through*
                 // (which would dereference the link and potentially escape
                 // the tree).
-                let target = fs::read_link(&entry_path)
-                    .await
+                let target = std::fs::read_link(&entry_path)
                     .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
 
                 #[cfg(unix)]
-                fs::symlink(&target, &dst_path)
-                    .await
+                std::os::unix::fs::symlink(&target, &dst_path)
                     .err_tip(|| format!("Failed to create symlink: {}", dst_path.display()))?;
 
                 #[cfg(windows)]
                 {
                     if target.is_dir() {
-                        fs::symlink_dir(&target, &dst_path).await.err_tip(|| {
+                        std::os::windows::fs::symlink_dir(&target, &dst_path).err_tip(|| {
                             format!("Failed to create directory symlink: {}", dst_path.display())
                         })?;
                     } else {
-                        fs::symlink_file(&target, &dst_path).await.err_tip(|| {
+                        std::os::windows::fs::symlink_file(&target, &dst_path).err_tip(|| {
                             format!("Failed to create file symlink: {}", dst_path.display())
                         })?;
                     }
                 }
             } else if metadata.is_dir() {
-                // Create subdirectory and recurse
-                fs::create_dir(&dst_path)
-                    .await
+                std::fs::create_dir(&dst_path)
                     .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
-                chmod_dir_0o755(&dst_path).await?;
+                chmod_dir_0o755(&dst_path)?;
 
-                hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
+                directories.push((entry_path, dst_path));
             } else if metadata.is_file() {
                 // Hardlink the file
-                fs::hard_link(&entry_path, &dst_path)
-                    .await
+                std::fs::hard_link(&entry_path, &dst_path)
                     .err_tip(|| {
                         format!(
                             "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
@@ -457,9 +479,8 @@ fn hardlink_directory_tree_recursive<'a>(
                     })?;
             }
         }
-
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Locks down a directory tree as an immutable cache entry: every **file** is

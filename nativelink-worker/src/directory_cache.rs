@@ -42,7 +42,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 #[cfg(target_os = "macos")]
 use nativelink_util::fs_util::clone_file_pristine;
-use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
+use nativelink_util::fs_util::{
+    CloneMethod, hardlink_directory_tree_with_guard, set_dir_writable_recursive,
+};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
 use tokio::fs;
@@ -87,6 +89,7 @@ struct DirectoryWork<'a> {
 
 // Count every queued task in each ancestor scope, so cancelling a task does
 // not let its parent clean up while that task's descendants are still alive.
+#[derive(Debug)]
 struct DirectoryWorkScope {
     parent: Option<Arc<Self>>,
     pending: AtomicUsize,
@@ -119,6 +122,26 @@ impl DirectoryWorkScope {
 }
 
 struct DirectoryWorkGuard(Arc<DirectoryWorkScope>);
+
+tokio::task_local! {
+    static LEAF_SCOPE: Arc<DirectoryWorkScope>;
+}
+
+// Keep the guard in the blocking closure so dropping its waiter cannot
+// release scratch cleanup before the syscall returns.
+async fn leaf_io<F>(operation: F) -> Result<(), Error>
+where
+    F: FnOnce() -> std::io::Result<()> + Send + 'static,
+{
+    let guard = LEAF_SCOPE.try_with(DirectoryWorkScope::register).ok();
+    nativelink_util::spawn_blocking!("directory_leaf_io", move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .err_tip(|| "Directory file operation failed")??;
+    Ok(())
+}
 
 impl Drop for DirectoryWorkGuard {
     fn drop(&mut self) {
@@ -282,11 +305,15 @@ impl PreparedDirectory {
 #[derive(Debug)]
 struct ScratchGuard {
     path: Option<PathBuf>,
+    scope: Arc<DirectoryWorkScope>,
 }
 
 impl ScratchGuard {
-    const fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+    const fn new(path: PathBuf, scope: Arc<DirectoryWorkScope>) -> Self {
+        Self {
+            path: Some(path),
+            scope,
+        }
     }
 
     fn disarm(&mut self) {
@@ -297,7 +324,11 @@ impl ScratchGuard {
 impl Drop for ScratchGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            DirectoryCache::dispatch_evictions(vec![path]);
+            let scope = self.scope.clone();
+            background_spawn!("cancelled_scratch_cleanup", async move {
+                scope.wait().await;
+                DirectoryCache::dispatch_evictions(vec![path]);
+            });
         }
     }
 }
@@ -721,7 +752,10 @@ impl DirectoryCache {
         acquire_digest(lease, &digest);
 
         // Fast path: serve from an existing entry.
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+        if let Some(size) = self
+            .try_materialize_from_cache(&digest, dest_path, work.scope.as_ref())
+            .await?
+        {
             return Ok((true, size));
         }
 
@@ -775,6 +809,7 @@ impl DirectoryCache {
         &self,
         digest: &DigestInfo,
         dest_path: &Path,
+        scope: Option<&Arc<DirectoryWorkScope>>,
     ) -> Result<Option<u64>, Error> {
         let Some(PreparedDirectory {
             path: cache_path,
@@ -785,7 +820,13 @@ impl DirectoryCache {
             return Ok(None);
         };
         debug!(?digest, ?cache_path, "Directory cache HIT");
-        match hardlink_directory_tree(&cache_path, dest_path).await {
+        match hardlink_directory_tree_with_guard(
+            &cache_path,
+            dest_path,
+            scope.map(DirectoryWorkScope::register),
+        )
+        .await
+        {
             Ok(method) => {
                 drop(pin);
                 self.record_clone_method(method);
@@ -829,16 +870,24 @@ impl DirectoryCache {
         // we waited on the construction lock. If the entry turns out to be
         // damaged it is invalidated and we fall through to rebuild it fresh
         // (exactly once — we hold the construction lock).
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+        if let Some(size) = self
+            .try_materialize_from_cache(&digest, dest_path, work.scope.as_ref())
+            .await?
+        {
             return Ok((true, size));
         }
 
+        let scope = work.scope.clone();
         let prepared = self
             .construct_entry(digest, protos, prefetch_on_miss, lease, work)
             .await?;
-        let method = hardlink_directory_tree(prepared.path(), dest_path)
-            .await
-            .err_tip(|| "Failed to hardlink newly cached directory")?;
+        let method = hardlink_directory_tree_with_guard(
+            prepared.path(),
+            dest_path,
+            scope.as_ref().map(DirectoryWorkScope::register),
+        )
+        .await
+        .err_tip(|| "Failed to hardlink newly cached directory")?;
         self.record_clone_method(method);
         Ok((false, prepared.size))
     }
@@ -883,13 +932,19 @@ impl DirectoryCache {
         };
         let protos = prefetched.map(Arc::new).or(protos);
         let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
-        let mut temp_guard = ScratchGuard::new(temp_path.clone());
+        let scope = DirectoryWorkScope::new(work.scope);
+        let work = DirectoryWork {
+            sender: work.sender,
+            scope: Some(scope.clone()),
+        };
+        let mut temp_guard = ScratchGuard::new(temp_path.clone(), scope.clone());
         let size = match self
             .construct_directory(digest, &temp_path, protos, lease, work)
             .await
         {
             Ok(size) => size,
             Err(e) => {
+                scope.wait().await;
                 temp_guard.disarm();
                 Self::remove_tree_best_effort(&temp_path).await;
                 return Err(e);
@@ -1216,7 +1271,7 @@ impl DirectoryCache {
             // Create the destination directory. It must be writable while it
             // is being populated; 0o755 is its final mode too, so set it now
             // (umask-independent) — no post-construction permission walk.
-            self.create_dir_writable(dest_path).await?;
+            Self::create_dir_writable(dest_path, &scope).await?;
 
             let mut total_size: u64 = 0;
             for file in &directory.files {
@@ -1241,8 +1296,12 @@ impl DirectoryCache {
                 directory.files.len() + directory.directories.len() + directory.symlinks.len(),
             );
             for file in &directory.files {
+                let scope = scope.clone();
                 node_futures.push(Box::pin(async move {
-                    self.create_file(dest_path, file).await.map(|()| 0)
+                    LEAF_SCOPE
+                        .scope(scope, self.create_file(dest_path, file))
+                        .await
+                        .map(|()| 0)
                 }));
             }
             for dir_node in &directory.directories {
@@ -1275,8 +1334,12 @@ impl DirectoryCache {
                 }));
             }
             for symlink in &directory.symlinks {
+                let scope = scope.clone();
                 node_futures.push(Box::pin(async move {
-                    self.create_symlink(dest_path, symlink).await.map(|()| 0)
+                    LEAF_SCOPE
+                        .scope(scope, self.create_symlink(dest_path, symlink))
+                        .await
+                        .map(|()| 0)
                 }));
             }
             let children = futures::stream::iter(node_futures)
@@ -1295,18 +1358,23 @@ impl DirectoryCache {
     /// Creates `dir` (and any missing parents) and sets its mode to 0o755 so
     /// that it is writable while the cache entry is being populated and stays
     /// at a stable, umask-independent final mode afterwards.
-    async fn create_dir_writable(&self, dir: &Path) -> Result<(), Error> {
-        fs::create_dir_all(dir)
-            .await
-            .err_tip(|| format!("Failed to create directory: {}", dir.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-                .await
-                .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
-        }
-        Ok(())
+    async fn create_dir_writable(dir: &Path, scope: &Arc<DirectoryWorkScope>) -> Result<(), Error> {
+        let dir = dir.to_owned();
+        let guard = scope.register();
+        nativelink_util::spawn_blocking!("create_cache_directory", move || {
+            let _guard = guard;
+            std::fs::create_dir_all(&dir)
+                .err_tip(|| format!("Failed to create directory: {}", dir.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+                    .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
+            }
+            Ok(())
+        })
+        .await
+        .err_tip(|| "Directory creation task failed")?
     }
 
     /// Creates a file from a `FileNode` inside a cache entry.
@@ -1347,7 +1415,8 @@ impl DirectoryCache {
         // and a single failure aborts the whole DirectoryCache construction.
         // Short-circuit and write the empty file directly.
         if is_zero_digest(digest) {
-            fs::write(&file_path, b"")
+            let dst = file_path.clone();
+            leaf_io(move || std::fs::write(dst, b""))
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
             // macOS only: read-only like every other materialized input, and
@@ -1362,9 +1431,12 @@ impl DirectoryCache {
                 } else {
                     0o444
                 };
-                fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
-                    .await
-                    .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+                let dst = file_path.clone();
+                leaf_io(move || {
+                    std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode))
+                })
+                .await
+                .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
             }
             return Ok(());
         }
@@ -1462,12 +1534,15 @@ impl DirectoryCache {
             digest,
             "hardlink",
             move |src| async move {
-                fs::hard_link(&src, &file_path).await.err_tip(|| {
-                    format!(
-                        "Failed to hardlink CAS blob into cache entry: {}",
-                        file_path.display()
-                    )
-                })
+                let dst = file_path.clone();
+                leaf_io(move || std::fs::hard_link(src, dst))
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to hardlink CAS blob into cache entry: {}",
+                            file_path.display()
+                        )
+                    })
             },
         )
         .await
@@ -1539,14 +1614,19 @@ impl DirectoryCache {
     ) -> Result<(), Error> {
         let dst = file_path.to_path_buf();
         self.with_cas_blob_path_locked(filesystem_store, digest, "clone", move |src| async move {
-            clone_file_pristine(Path::new(&src), &dst, 0o555)
-                .await
-                .err_tip(|| {
-                    format!(
-                        "Failed to clone CAS blob into cache entry: {}",
-                        dst.display()
-                    )
-                })
+            nativelink_util::fs_util::clone_file_pristine_with_guard(
+                Path::new(&src),
+                &dst,
+                0o555,
+                LEAF_SCOPE.try_with(DirectoryWorkScope::register).ok(),
+            )
+            .await
+            .err_tip(|| {
+                format!(
+                    "Failed to clone CAS blob into cache entry: {}",
+                    dst.display()
+                )
+            })
         })
         .await
     }
@@ -1569,7 +1649,8 @@ impl DirectoryCache {
                 .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?
         };
 
-        fs::write(file_path, data.as_ref())
+        let dst = file_path.to_owned();
+        leaf_io(move || std::fs::write(dst, data.as_ref()))
             .await
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
@@ -1583,7 +1664,8 @@ impl DirectoryCache {
             // blob or another action's hardlink — unlike the hardlink path,
             // where the shared read-only blob must never be chmod'd.
             let mode = if executable { 0o555 } else { 0o444 };
-            fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
+            let dst = file_path.to_owned();
+            leaf_io(move || std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode)))
                 .await
                 .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
         }
@@ -1662,15 +1744,21 @@ impl DirectoryCache {
         trace!(?link_path, ?target, "Creating symlink");
 
         #[cfg(unix)]
-        fs::symlink(&target, &link_path)
-            .await
-            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+        {
+            let dst = link_path.clone();
+            let target = target.to_owned();
+            leaf_io(move || std::os::unix::fs::symlink(target, dst))
+                .await
+                .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+        }
 
         #[cfg(windows)]
         {
             // On Windows, we need to know if target is a directory
             // For now, assume files (can be improved later)
-            fs::symlink_file(&target, &link_path)
+            let dst = link_path.clone();
+            let target = target.to_owned();
+            leaf_io(move || std::os::windows::fs::symlink_file(target, dst))
                 .await
                 .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
         }
@@ -2007,15 +2095,6 @@ mod tests {
     #[nativelink_test]
     async fn cancelled_filesystem_operation_keeps_cleanup_pending() -> Result<(), Error> {
         let temp_dir = TempDir::new()?;
-        let (store, _slow) = make_fast_slow_store(&temp_dir).await;
-        let cache = DirectoryCache::new(
-            DirectoryCacheConfig {
-                cache_root: temp_dir.path().join("cache"),
-                ..Default::default()
-            },
-            store,
-        )
-        .await?;
         let scratch = temp_dir.path().join("scratch");
         fs::create_dir_all(&scratch).await?;
         let late_directory = scratch.join("late/leaf");
@@ -2037,7 +2116,7 @@ mod tests {
         // Dropping the outer job must not release cleanup ahead of that call.
         let mut operation = Box::pin(async {
             let _guard = guard;
-            cache.create_dir_writable(&late_directory).await
+            DirectoryCache::create_dir_writable(&late_directory, &scope).await
         });
         let pending = {
             let _entered = runtime.enter();
