@@ -2026,7 +2026,7 @@ mod tests {
             .max_blocking_threads(1)
             .build()?;
         let (started, started_rx) = oneshot::channel();
-        let (release, release_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
         let blocker = runtime.spawn_blocking(move || {
             let _ = started.send(());
             let _ = release_rx.recv();

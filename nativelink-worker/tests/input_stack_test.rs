@@ -220,23 +220,22 @@ fn isolated_input_stack() -> Result<(), Error> {
     }
     let mut failures = Vec::new();
     let deep = if cfg!(target_os = "linux") { 512 } else { 256 };
+    let stack_bytes = 2 * 1024 * 1024;
     for depth in [128, deep] {
-        for stack_bytes in [2 * 1024 * 1024] {
-            for (mode, fetches) in ["none", "default", "subtree"]
-                .into_iter()
-                .flat_map(|mode| [1, 64].into_iter().map(move |fetches| (mode, fetches)))
-            {
-                for temperature in ["cold", "hot"] {
-                    let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}:{fetches}");
-                    eprintln!("CASE {case} BEGIN");
-                    let status = Command::new(std::env::current_exe()?)
-                        .args(["--exact", "isolated_input_stack", "--nocapture"])
-                        .env(CHILD_ENV, &case)
-                        .status()?;
-                    eprintln!("CASE {case} EXIT {status}");
-                    if !status.success() {
-                        failures.push(case);
-                    }
+        for (mode, fetches) in ["none", "default", "subtree"]
+            .into_iter()
+            .flat_map(|mode| [1, 64].into_iter().map(move |fetches| (mode, fetches)))
+        {
+            for temperature in ["cold", "hot"] {
+                let case = format!("{mode}:{temperature}:{depth}:{stack_bytes}:{fetches}");
+                eprintln!("CASE {case} BEGIN");
+                let status = Command::new(std::env::current_exe()?)
+                    .args(["--exact", "isolated_input_stack", "--nocapture"])
+                    .env(CHILD_ENV, &case)
+                    .status()?;
+                eprintln!("CASE {case} EXIT {status}");
+                if !status.success() {
+                    failures.push(case);
                 }
             }
         }
