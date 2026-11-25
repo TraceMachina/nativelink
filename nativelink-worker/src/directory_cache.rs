@@ -87,8 +87,7 @@ struct DirectoryWork<'a> {
     scope: Option<Arc<DirectoryWorkScope>>,
 }
 
-// Count every queued task in each ancestor scope, so cancelling a task does
-// not let its parent clean up while that task's descendants are still alive.
+// A child scope holds one registration in its parent for its entire lifetime.
 #[derive(Debug)]
 struct DirectoryWorkScope {
     parent: Option<Arc<Self>>,
@@ -98,6 +97,9 @@ struct DirectoryWorkScope {
 
 impl DirectoryWorkScope {
     fn new(parent: Option<Arc<Self>>) -> Arc<Self> {
+        if let Some(parent) = &parent {
+            parent.retain();
+        }
         Arc::new(Self {
             parent,
             pending: AtomicUsize::new(0),
@@ -106,17 +108,34 @@ impl DirectoryWorkScope {
     }
 
     fn register(self: &Arc<Self>) -> DirectoryWorkGuard {
-        let mut scope = Some(self.as_ref());
-        while let Some(current) = scope {
-            current.pending.fetch_add(1, Ordering::SeqCst);
-            scope = current.parent.as_deref();
-        }
+        self.retain();
         DirectoryWorkGuard(self.clone())
     }
 
+    fn retain(&self) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release(&self) {
+        if self.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle.notify_one();
+        }
+    }
+
     async fn wait(&self) {
-        while self.pending.load(Ordering::SeqCst) != 0 {
+        while self.pending.load(Ordering::Acquire) != 0 {
             self.idle.notified().await;
+        }
+    }
+}
+
+impl Drop for DirectoryWorkScope {
+    fn drop(&mut self) {
+        // Unwind uniquely owned ancestors without nesting their destructors.
+        let mut parent = self.parent.take();
+        while let Some(scope) = parent {
+            scope.release();
+            parent = Arc::into_inner(scope).and_then(|mut scope| scope.parent.take());
         }
     }
 }
@@ -125,6 +144,11 @@ struct DirectoryWorkGuard(Arc<DirectoryWorkScope>);
 
 tokio::task_local! {
     static LEAF_SCOPE: Arc<DirectoryWorkScope>;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static SCRATCH_CLEANUP_STARTED: Arc<Notify>;
 }
 
 // Keep the guard in the blocking closure so dropping its waiter cannot
@@ -145,13 +169,7 @@ where
 
 impl Drop for DirectoryWorkGuard {
     fn drop(&mut self) {
-        let mut scope = Some(self.0.as_ref());
-        while let Some(current) = scope {
-            if current.pending.fetch_sub(1, Ordering::SeqCst) == 1 {
-                current.idle.notify_one();
-            }
-            scope = current.parent.as_deref();
-        }
+        self.0.release();
     }
 }
 
@@ -946,6 +964,8 @@ impl DirectoryCache {
             Err(e) => {
                 scope.wait().await;
                 temp_guard.disarm();
+                #[cfg(test)]
+                let _ = SCRATCH_CLEANUP_STARTED.try_with(|started| started.notify_one());
                 Self::remove_tree_best_effort(&temp_path).await;
                 return Err(e);
             }
@@ -2043,6 +2063,18 @@ mod tests {
     use super::*;
 
     #[nativelink_test]
+    async fn dropping_deep_work_scopes_releases_the_root() {
+        let root = DirectoryWorkScope::new(None);
+        let mut leaf = root.clone();
+        for _ in 0..8_192 {
+            leaf = DirectoryWorkScope::new(Some(leaf));
+        }
+        assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+        drop(leaf);
+        root.wait().await;
+    }
+
+    #[nativelink_test]
     async fn work_scope_waits_for_cancelled_descendants() {
         let root = DirectoryWorkScope::new(None);
         let child = DirectoryWorkScope::new(Some(root.clone()));
@@ -2052,10 +2084,10 @@ mod tests {
         drop(child_job);
         assert!(futures::poll!(Box::pin(root.wait())).is_pending());
         assert!(futures::poll!(Box::pin(child.wait())).is_pending());
+        drop(child);
 
         drop(descendant_job);
         root.wait().await;
-        child.wait().await;
     }
 
     #[nativelink_test]
@@ -2066,6 +2098,7 @@ mod tests {
                 let child = DirectoryWorkScope::new(Some(root.clone()));
                 let child_job = root.register();
                 let descendant_job = child.register();
+                drop(child);
                 let (started, started_rx) = oneshot::channel();
                 let (release, release_rx) = oneshot::channel::<()>();
                 work.sender
@@ -2225,27 +2258,31 @@ mod tests {
         .await?;
         let destination = temp_dir.path().join("cancelled");
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let mut root = Box::pin(cache.get_or_create_entry(
-            digest,
-            &destination,
-            None,
-            true,
-            None,
-            DirectoryWork {
-                sender,
-                scope: None,
-            },
+        let cleanup_started = Arc::new(Notify::new());
+        let mut root = Box::pin(SCRATCH_CLEANUP_STARTED.scope(
+            cleanup_started.clone(),
+            cache.get_or_create_entry(
+                digest,
+                &destination,
+                None,
+                true,
+                None,
+                DirectoryWork {
+                    sender,
+                    scope: None,
+                },
+            ),
         ));
 
         // Drive production construction against real disk, but retain control
         // of queued jobs so cancellation cannot finish before we inspect cleanup.
-        let mut branch = tokio::select! {
+        let mut first = tokio::select! {
             result = &mut root => panic!("root finished before queuing children: {result:?}"),
-            job = receiver.recv() => job.expect("branch job"),
+            job = receiver.recv() => job.expect("first child job"),
         };
-        let missing_job = tokio::select! {
+        let mut second = tokio::select! {
             result = &mut root => panic!("root finished before queuing failure: {result:?}"),
-            job = receiver.recv() => job.expect("missing job"),
+            job = receiver.recv() => job.expect("second child job"),
         };
         let mut entries = fs::read_dir(&cache_root).await?;
         let scratch = entries.next_entry().await?.expect("root scratch").path();
@@ -2259,6 +2296,12 @@ mod tests {
         assert!(entries.next_entry().await?.is_none());
         let marker = scratch.join("cleanup-marker");
         fs::write(&marker, b"parent still owns this tree").await?;
+        // Only the missing child can finish while its sibling's queued
+        // descendants are held by the test.
+        let mut branch = tokio::select! {
+            () = &mut first => second,
+            () = &mut second => first,
+        };
         let mut middle = tokio::select! {
             () = &mut branch => panic!("branch finished before queuing middle"),
             job = receiver.recv() => job.expect("middle job"),
@@ -2270,26 +2313,24 @@ mod tests {
 
         if cancel_root {
             drop(root);
-            drop(missing_job);
             branch.await;
             middle.await;
             leaf.await;
         } else {
-            missing_job.await;
             tokio::select! {
                 biased;
                 result = &mut root => panic!("parent cleaned up before branch stopped: {result:?}"),
                 () = &mut branch => {},
             }
+            assert!(futures::poll!(root.as_mut()).is_pending());
             assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(200), root.as_mut(),)
-                    .await
-                    .is_err(),
+                futures::poll!(Box::pin(cleanup_started.notified())).is_pending(),
                 "parent completed while a cancelled descendant was still alive"
             );
             assert_eq!(fs::read(&marker).await?, b"parent still owns this tree");
             middle.await;
             assert!(futures::poll!(root.as_mut()).is_pending());
+            assert!(futures::poll!(Box::pin(cleanup_started.notified())).is_pending());
             assert!(
                 marker.exists(),
                 "parent cleaned up before queued leaf stopped"
