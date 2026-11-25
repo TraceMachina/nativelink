@@ -719,35 +719,27 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 )];
                 metrics.execution_active_count.add(1, &new_stage_attrs);
 
-                // Record completion metrics with action digest for failure tracking
-                let action_digest = old_awaited_action.action_info().digest().to_string();
+                // Record completion metrics. Attributes here must stay bounded:
+                // a per-action value such as the digest takes one of the
+                // OpenTelemetry SDK's attribute-set slots per distinct action
+                // and pushes every later set, including the bounded per-worker
+                // ones, into the single overflow series. Per-action detail
+                // belongs in logs and traces.
                 if let ActionStage::Completed(action_result) = new_stage {
-                    let result_attrs = vec![
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            if action_result.exit_code == 0 {
-                                ExecutionResult::Success
-                            } else {
-                                ExecutionResult::Failure
-                            },
-                        ),
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
-                            action_digest,
-                        ),
-                    ];
+                    let result_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_RESULT,
+                        if action_result.exit_code == 0 {
+                            ExecutionResult::Success
+                        } else {
+                            ExecutionResult::Failure
+                        },
+                    )];
                     metrics.execution_completed_count.add(1, &result_attrs);
                 } else if let ActionStage::CompletedFromCache(_) = new_stage {
-                    let result_attrs = vec![
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            ExecutionResult::CacheHit,
-                        ),
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
-                            action_digest,
-                        ),
-                    ];
+                    let result_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_RESULT,
+                        ExecutionResult::CacheHit,
+                    )];
                     metrics.execution_completed_count.add(1, &result_attrs);
                 }
 
