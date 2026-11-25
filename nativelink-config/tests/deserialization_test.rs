@@ -92,7 +92,7 @@ mod duration_tests {
             (r#"{"duration": 10}"#, 10),
             (r#"{"duration": "  1m 10s  "}"#, 70),
             // Complex duration formats
-            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_735_967),
+            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_714_367),
             (r#"{"duration": "0s"}"#, 0),
             (r#"{"duration": "1ns"}"#, 0), // Sub-second rounds to 0
             (r#"{"duration": "999h"}"#, 3_596_400),
@@ -128,10 +128,13 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (r#"{"duration": "invalid"}"#, "expected number at 0"),
+            (
+                r#"{"duration": "invalid"}"#,
+                "expected duration to start with a unit value (a decimal integer) after an optional sign, but no integer was found",
+            ),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
-                "number is too large",
+                "number too big to parse into 64-bit integer",
             ),
         ];
 
@@ -139,7 +142,10 @@ mod duration_tests {
             let error = serde_json5::from_str::<DurationEntity>(input)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected_error));
+            assert!(
+                error.contains(expected_error),
+                "{error} != {expected_error}"
+            );
         }
     }
 
@@ -798,6 +804,26 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
 }
 
 #[test]
+fn directory_cache_clone_executables_defaults_and_overrides() {
+    use nativelink_config::cas_server::DirectoryCacheConfig;
+
+    for (input, expected) in [
+        ("{}", false),
+        ("{experimental_clone_executables: true}", true),
+        ("{experimental_clone_executables: false}", false),
+    ] {
+        let config: DirectoryCacheConfig = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.experimental_clone_executables, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["experimental_clone_executables"], expected);
+    }
+    for invalid in ["null", "1", "'true'"] {
+        let input = format!("{{experimental_clone_executables: {invalid}}}");
+        assert!(serde_json5::from_str::<DirectoryCacheConfig>(&input).is_err());
+    }
+}
+
+#[test]
 fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
     use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
     let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
@@ -860,4 +886,18 @@ fn oss_cname_defaults_to_false_and_round_trips() {
         let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
         assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
     }
+}
+
+/// `SimpleSpec::from_config_defaults` is what an empty section deserializes
+/// to, so a serde default added to the spec cannot be missed there.
+#[test]
+fn simple_spec_from_config_defaults_matches_an_empty_section() {
+    let empty: nativelink_config::schedulers::SimpleSpec = serde_json5::from_str("{}").unwrap();
+    assert_eq!(
+        format!("{empty:?}"),
+        format!(
+            "{:?}",
+            nativelink_config::schedulers::SimpleSpec::from_config_defaults()
+        )
+    );
 }

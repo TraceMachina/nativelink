@@ -17,6 +17,10 @@ TARGETS = {'nativelink': 'nativelink', 'installation': 'nativelink-is-executable
 STORE_PATH = re.compile(r'/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+')
 # Newest result links kept besides the current run's, so recent closures stay warm.
 RETAINED_RUNS = 2
+# Collection normally takes seconds here. An orphaned collector from a
+# disconnected run can hold the store's exclusive lock for hours, and a
+# bounded wait turns that into a warning instead of the job's whole budget.
+GC_TIMEOUT_SECONDS = 600
 
 
 def outputs():
@@ -53,18 +57,30 @@ def digest(path):
 
 
 def prune_retained_outputs(directory):
-    # Each run's `result` link is a Nix GC root. On this retained client nothing else removes
-    # them, so every run keeps its closure alive and the store eventually fills the disk.
+    # Each run's `result` link is a Nix GC root, and its directory keeps the
+    # multi-gigabyte closure archive. On this retained client nothing else
+    # removes either, so past runs eventually fill the disk and the build
+    # dies mid-compile on ENOSPC. The dispatcher holds ci.lock through the
+    # archive transfer, so a later build can safely prune this copy.
+    # Downstream jobs import the uploaded artifact; retain only the newest
+    # result roots for store warmth.
     current = directory.resolve()
     others = sorted((run for run in directory.parent.iterdir()
                      if run.is_dir() and run.resolve() != current),
                     key=lambda run: run.stat().st_mtime, reverse=True)
+    for retained in others[:RETAINED_RUNS]:
+        (retained / 'closure.nar.gz').unlink(missing_ok=True)
     for stale in others[RETAINED_RUNS:]:
-        (stale / 'result').unlink(missing_ok=True)
-    collected = subprocess.run(['nix-collect-garbage'], check=False)
-    if collected.returncode:
-        print(f'warning: nix-collect-garbage exited {collected.returncode}; building anyway',
-              flush=True)
+        shutil.rmtree(stale, ignore_errors=True)
+    try:
+        collected = subprocess.run(['nix-collect-garbage'], check=False,
+                                   timeout=GC_TIMEOUT_SECONDS)
+        if collected.returncode:
+            print(f'warning: nix-collect-garbage exited {collected.returncode}; building anyway',
+                  flush=True)
+    except subprocess.TimeoutExpired:
+        print(f'warning: nix-collect-garbage still running after {GC_TIMEOUT_SECONDS}s, likely'
+              ' behind a stale lock holder; killed it and building anyway', flush=True)
 
 
 def build(directory, revision):

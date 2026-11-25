@@ -135,6 +135,11 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
@@ -150,16 +155,21 @@ worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
 decorator in front of the scheduler, so the state is skipped entirely. A
 client waiting to observe it will wait forever.
 
+**Binary request headers may be padded.** The
+`build.bazel.remote.execution.v2.requestmetadata-bin` header is read whether
+its base64 carries `=` padding or not, as the gRPC wire format requires.
+
 **Final action failure arrives as success.** An action that exhausts its
 retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
-**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
-an action is never answered from the Action Cache and never shares an
-execution with an identical action that is already running. The worker still
-writes its result to the Action Cache; that part is tracked in
-[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+**`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
+action is never answered from the Action Cache, never shares an execution with
+an identical action that is already running, and the worker does not write its
+result to the Action Cache. A historical result is still uploaded when
+`upload_historical_results_strategy` asks for one: that record is stored under
+its own digest for debugging and is never served as a cached result.
 
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.

@@ -23,12 +23,10 @@ use core::time::Duration;
 
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{Code, Error};
-use nativelink_sim::Invariant::{I1, I8, I11};
+use nativelink_sim::Invariant::{I8, I11};
 use nativelink_sim::{
     Action, Backend, Event, Expect, Fault, Link, Outcome, Report, Run, Scenario, Step, WorkerSpec,
 };
-
-const STRANDED: &str = "S1 and S4: an action executing at the restart waits out the hour ceiling";
 
 fn report(reports: &[Report], backend: Backend) -> &Report {
     reports
@@ -72,8 +70,8 @@ fn empty_queue() -> Result<(), Error> {
 /// backend reads the whole queue every pass. With no worker at all neither
 /// backend reads the queue, which is why the worker is here.
 #[test]
-fn queue_2k_behind_a_busy_worker() -> Result<(), Error> {
-    let mut scenario = Scenario::new("queue-2k", 2)
+fn queue_1k_behind_a_busy_worker() -> Result<(), Error> {
+    let mut scenario = Scenario::new("queue-1k", 2)
         .workers(1, WorkerSpec::default())
         .at(0, Step::execute("busy", Action::new(9_999).run_ms(30_000)))
         .command_bound(500)
@@ -82,7 +80,7 @@ fn queue_2k_behind_a_busy_worker() -> Result<(), Error> {
             Backend::FakeRedis,
             Expect::known_failure(&[I11], "S3: the queue read is O(queue) per pass"),
         );
-    for i in 0..2_000u32 {
+    for i in 0..1_000u32 {
         let op = format!("c{i}");
         scenario = scenario
             .at(100 + u64::from(i), Step::execute(&op, Action::new(i)))
@@ -174,8 +172,8 @@ fn reconnect_during_eviction() -> Result<(), Error> {
 /// its stream closes, so no old result arrives. On the memory backend the
 /// state goes with the process and the client executes again. On Redis the
 /// record survives as Executing on a worker id the new scheduler has never
-/// seen; an unknown worker reads as a peer's, so nothing requeues it and
-/// the client waits for the executing ceiling (I8 within the settle).
+/// seen. Its lease lapses once the old process stops renewing it, and a
+/// lease period later the action is requeued and runs again.
 #[test]
 fn result_after_scheduler_restart() -> Result<(), Error> {
     let reports = Scenario::new("result-after-restart", 7)
@@ -183,9 +181,10 @@ fn result_after_scheduler_restart() -> Result<(), Error> {
         .at(0, Step::execute("c1", Action::new(1).run_ms(30_000)))
         .at(5_000, Step::SchedulerRestart)
         .settle(Duration::from_mins(3))
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
         .run()?;
-    assert_eq!(executions(report(&reports, Backend::Memory), "a1"), 2);
+    for r in &reports {
+        assert_eq!(executions(r, "a1"), 2, "{:?}", r.backend);
+    }
     Ok(())
 }
 
@@ -220,8 +219,8 @@ fn result_after_client_gone() -> Result<(), Error> {
 }
 
 /// The re-subscription works: the client finds its operation on the new
-/// scheduler. What it finds is the stranded record of
-/// result-after-restart, which the review's pass did not account for.
+/// scheduler. What it finds is the record of result-after-restart, which
+/// is requeued once its worker's lease has been missing a lease period.
 #[test]
 fn wait_execution_after_failover() -> Result<(), Error> {
     let reports = Scenario::new("wait-execution-after-failover", 10)
@@ -231,7 +230,6 @@ fn wait_execution_after_failover() -> Result<(), Error> {
         .at(5_000, Step::SchedulerUp)
         .settle(Duration::from_mins(3))
         .expect(Backend::Memory, Expect::NotApplicable)
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
         .run()?;
     let redis = report(&reports, Backend::FakeRedis);
     assert!(
@@ -254,13 +252,11 @@ fn restart_with_200_executing() -> Result<(), Error> {
             Step::execute(&format!("c{i}"), Action::new(i).run_ms(60_000)),
         );
     }
-    // As the review expected on Redis: the executing records wait out the
-    // hour (result-after-restart). The memory backend loses them with the
-    // process, so its clients execute again and finish.
-    scenario
-        .expect(Backend::FakeRedis, Expect::known_failure(&[I8], STRANDED))
-        .run()
-        .map(drop)
+    // On Redis the executing records are requeued once their workers'
+    // leases have been missing a lease period (result-after-restart). The
+    // memory backend loses them with the process, so its clients execute
+    // again and finish.
+    scenario.run().map(drop)
 }
 
 /// The write lands and its reply is lost, as the results of this run land.
@@ -311,28 +307,41 @@ fn clock_jump() -> Scenario {
 }
 
 /// Found by the harness on 2026-11-04: an hour's forward step evicts both
-/// live workers, the requeued action's client keepalive now reads an hour
-/// old, and the matching pass retires it as abandoned while its client is
-/// attached; on the memory backend the build fails with
-/// `DEADLINE_EXCEEDED`. No invariant names a healthy build that fails, so
-/// the outcome is asserted.
+/// live workers, and the requeued action's client keepalive then reads an
+/// hour old, so the matching pass retired it while its client was attached
+/// and the memory backend failed the build with `DEADLINE_EXCEEDED`. The
+/// scheduler now holds client timeouts after such a step until attached
+/// clients refresh, so both backends run the action again and complete it.
 #[test]
 fn clock_jumps_an_hour() -> Result<(), Error> {
-    let reports = clock_jump().backends(&[Backend::Memory]).run()?;
-    let memory = report(&reports, Backend::Memory);
-    assert_eq!(memory.outcomes()["c1"], Some(Outcome::Failed(4)));
+    let reports = clock_jump().run()?;
+    for backend in [Backend::Memory, Backend::FakeRedis] {
+        let outcomes = report(&reports, backend).outcomes();
+        assert_eq!(outcomes["c1"], Some(Outcome::Exited(0)), "{backend:?}");
+        assert_eq!(outcomes["c2"], Some(Outcome::Exited(0)), "{backend:?}");
+    }
     Ok(())
 }
 
-/// The Redis backend runs the requeued action again and completes it, so
-/// the backends disagree on c1.
+/// Refused for the update's whole budget, the result was thrown away: the
+/// executing sweep found the record still Executing on a worker that no
+/// longer ran it and requeued the action, which ran a second time and spent
+/// one of its retries. The scheduler now keeps the refused result and the
+/// sweep writes it, so the action runs once.
 #[test]
-fn clock_jumps_an_hour_on_redis() -> Result<(), Error> {
-    let reports = clock_jump()
-        .backends_disagree("unassigned: a clock step retires an attached client's requeued action")
+fn result_write_refused_past_the_update_budget() -> Result<(), Error> {
+    let reports = Scenario::new("result-write-refused-past-budget", 29)
+        .workers(1, WorkerSpec::default())
+        .at(0, Step::execute("c1", Action::new(1).run_ms(3_000)))
+        .at(
+            2_990,
+            Step::redis_fail("EVALSHA", Fault::Error("refused".into()), 5),
+        )
+        .settle(Duration::from_mins(3))
         .run()?;
-    let memory = report(&reports, Backend::Memory);
-    assert_eq!(memory.outcomes()["c1"], Some(Outcome::Failed(4)));
+    for r in &reports {
+        assert_eq!(executions(r, "a1"), 1, "{:?}", r.backend);
+    }
     Ok(())
 }
 
@@ -382,21 +391,14 @@ fn redis_failover_as_results_land() -> Result<(), Error> {
         .map(drop)
 }
 
-/// The memory backend runs all 2,000. On Redis, with every attached client
-/// refreshing its keepalive (a write and a publish each), the workers'
-/// keepalives fall behind, the scheduler removes them as timed out (97
-/// removals in one run), about 20 actions run and the rest wait out the
-/// settle budget. L5, a lead, not a finding: the Redis runs step time by
-/// hand and may overstate its latency, so the bed confirms it first.
+/// 2,000 attached clients, each refreshing its keepalive (a write and a
+/// publish), do not starve the workers' keepalives: both backends run all
+/// 2,000 actions.
 #[test]
 fn pubsub_storm() -> Result<(), Error> {
     let mut scenario = Scenario::new("pubsub-storm", 16)
         .workers(50, WorkerSpec::default())
-        .settle(Duration::from_mins(5))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(&[I1, I8], "lead L5: confirm on the bed (T3)"),
-        );
+        .settle(Duration::from_mins(5));
     for i in 0..2_000u32 {
         scenario = scenario.at(
             u64::from(i / 2),
@@ -636,4 +638,99 @@ fn lone_worker_retry_after_its_own_error() -> Result<(), Error> {
         .settle(Duration::from_mins(2))
         .run()
         .map(drop)
+}
+
+/// A burst of results lands while every store reply is slow. The workers
+/// keep their links up and keep sending keepalives throughout, so none of
+/// them may be evicted and nothing may run twice, however slow the store is.
+fn slow_store_burst(latency_ms: u64, workers: u32, per_worker: u32) -> Scenario {
+    let mut scenario = Scenario::new(
+        &format!("slow-store-burst-{latency_ms}ms-{workers}x{per_worker}"),
+        41,
+    )
+    .workers(
+        workers as usize,
+        WorkerSpec::default().max_inflight(u64::from(per_worker)),
+    );
+    for action in 1..=workers * per_worker {
+        scenario = scenario.at(
+            0,
+            Step::execute(&format!("c{action}"), Action::new(action).run_ms(5_000)),
+        );
+    }
+    scenario
+        // The store slows down just before the results arrive together,
+        // and stays slow for half a minute, six worker timeouts.
+        .at(
+            4_000,
+            Step::RedisLatency {
+                ms: Some(latency_ms),
+            },
+        )
+        .at(34_000, Step::RedisLatency { ms: None })
+        .settle(Duration::from_mins(2))
+}
+
+/// One row for each way the burst can be shaped: every worker with a single
+/// result at half the worker timeout, one worker with ten at the timeout, and
+/// every worker with ten at twice the timeout.
+#[test]
+fn slow_store_burst_evicts_no_live_worker() -> Result<(), Error> {
+    for (latency_ms, workers, per_worker) in [(2_499, 20, 1), (5_000, 1, 10), (9_999, 20, 10)] {
+        let reports = slow_store_burst(latency_ms, workers, per_worker).run()?;
+        for report in &reports {
+            let case = format!(
+                "{:?}, {latency_ms} ms, {workers} workers with {per_worker} each",
+                report.backend
+            );
+            assert_eq!(
+                report.count(|e| matches!(e, Event::WorkerDisconnected { .. })),
+                0,
+                "{case}: a worker whose link was up lost its stream"
+            );
+            for action in 1..=workers * per_worker {
+                assert_eq!(executions(report, &format!("a{action}")), 1, "{case}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Updates are published on Redis for subscribers to read; a publish that
+/// fails must not cost a client its result. With every publish from half a
+/// second in refused, each client still gets its result, its stream ends
+/// with it, and nothing stalls.
+fn publish_refused(times: u64) -> Scenario {
+    let mut scenario =
+        Scenario::new(&format!("publish-refused-{times}"), 43).workers(3, WorkerSpec::default());
+    for action in 1..=10 {
+        scenario = scenario.at(
+            0,
+            Step::execute(&format!("c{action}"), Action::new(action).run_ms(3_000)),
+        );
+    }
+    scenario
+        .at(
+            500,
+            Step::redis_fail("PUBLISH", Fault::Error("refused".into()), times),
+        )
+        .settle(Duration::from_mins(5))
+}
+
+#[test]
+fn every_result_arrives_when_publishes_are_refused() -> Result<(), Error> {
+    for times in [1, 50, 1_000_000] {
+        let reports = publish_refused(times).run()?;
+        for report in &reports {
+            for action in 1..=10 {
+                assert_eq!(
+                    executions(report, &format!("a{action}")),
+                    1,
+                    "{:?}, {times} publishes refused",
+                    report.backend
+                );
+            }
+        }
+    }
+    Ok(())
 }

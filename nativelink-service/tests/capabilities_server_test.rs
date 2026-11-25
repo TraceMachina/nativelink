@@ -33,7 +33,19 @@ use tonic::Request;
 
 const COMPRESSION_INSTANCE: &str = "compression";
 const EXECUTION_INSTANCE: &str = "execution";
+const AC_INSTANCE: &str = "ac";
 const SCHEDULER_NAME: &str = "main_scheduler";
+
+const fn update_enabled(response: &ServerCapabilities) -> bool {
+    response
+        .cache_capabilities
+        .as_ref()
+        .expect("cache capabilities should be set")
+        .action_cache_update_capabilities
+        .as_ref()
+        .expect("action cache update capabilities should be set")
+        .update_enabled
+}
 
 fn capabilities_config(
     instance_name: &str,
@@ -74,6 +86,7 @@ async fn compression_only_instance_advertises_zstd_cache_capabilities()
         &HashMap::new(),
         &remote_cache_compression_instances,
         &[],
+        &HashMap::new(),
     )
     .await?;
 
@@ -112,6 +125,7 @@ async fn compression_only_instance_does_not_advertise_execution_capabilities()
         &HashMap::new(),
         &remote_cache_compression_instances,
         &[],
+        &HashMap::new(),
     )
     .await?;
 
@@ -136,11 +150,13 @@ async fn remote_execution_instance_advertises_execution_capabilities_and_node_pr
     scheduler_map.insert(SCHEDULER_NAME.to_string(), mock_scheduler.clone());
 
     let expected_properties = vec!["cpu".to_string(), "os".to_string()];
+    let ac_read_only_for_instance = HashMap::new();
     let new_server_fut = CapabilitiesServer::new(
         &configs,
         &scheduler_map,
         &remote_cache_compression_instances,
         &[],
+        &ac_read_only_for_instance,
     );
     let expected_scheduler_call_fut =
         mock_scheduler.expect_get_known_properties(Ok(expected_properties.clone()));
@@ -170,6 +186,56 @@ async fn remote_execution_instance_advertises_execution_capabilities_and_node_pr
     assert_eq!(
         execution_capabilities.supported_node_properties,
         expected_properties
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn writable_action_cache_reports_update_enabled_true()
+-> Result<(), Box<dyn core::error::Error>> {
+    let configs = [capabilities_config(AC_INSTANCE, false, false)];
+    let remote_cache_compression_instances =
+        RemoteCacheCompressionInstances::from_capabilities_configs(&configs);
+    let ac_read_only_for_instance = HashMap::from([(AC_INSTANCE.to_string(), false)]);
+    let server = CapabilitiesServer::new(
+        &configs,
+        &HashMap::new(),
+        &remote_cache_compression_instances,
+        &[],
+        &ac_read_only_for_instance,
+    )
+    .await?;
+
+    let response = get_capabilities(&server, AC_INSTANCE).await?;
+
+    assert!(
+        update_enabled(&response),
+        "a writable action cache must advertise update_enabled=true"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn read_only_action_cache_reports_update_enabled_false()
+-> Result<(), Box<dyn core::error::Error>> {
+    let configs = [capabilities_config(AC_INSTANCE, false, false)];
+    let remote_cache_compression_instances =
+        RemoteCacheCompressionInstances::from_capabilities_configs(&configs);
+    let ac_read_only_for_instance = HashMap::from([(AC_INSTANCE.to_string(), true)]);
+    let server = CapabilitiesServer::new(
+        &configs,
+        &HashMap::new(),
+        &remote_cache_compression_instances,
+        &[],
+        &ac_read_only_for_instance,
+    )
+    .await?;
+
+    let response = get_capabilities(&server, AC_INSTANCE).await?;
+
+    assert!(
+        !update_enabled(&response),
+        "a read-only action cache must advertise update_enabled=false"
     );
     Ok(())
 }

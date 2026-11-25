@@ -47,6 +47,15 @@ impl Stage {
     }
 }
 
+/// How a client that stepped away comes back: re-subscribing to its
+/// operation by name, or calling `Execute` again for the same action, which
+/// the scheduler joins to the operation still running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Rejoin {
+    WaitExecution,
+    Execute,
+}
+
 /// How a client's operation ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Outcome {
@@ -86,6 +95,15 @@ pub enum Event {
     /// `Execute` again.
     ClientResubmit {
         op: String,
+    },
+    /// The client dropped its stream and will come back.
+    ClientAway {
+        op: String,
+    },
+    /// The client came back after stepping away.
+    ClientRejoin {
+        op: String,
+        via: Rejoin,
     },
     /// The scheduler sent `StartExecute`. `key` is the scheduler's
     /// operation id, which a requeue keeps and a new execution does not.
@@ -185,6 +203,8 @@ impl fmt::Display for Event {
             Self::ClientGone { op } => write!(f, "gone {op}"),
             Self::ClientReconnect { op, code } => write!(f, "reconnect {op} code {code}"),
             Self::ClientResubmit { op } => write!(f, "resubmit {op}"),
+            Self::ClientAway { op } => write!(f, "away {op}"),
+            Self::ClientRejoin { op, via } => write!(f, "rejoin {op} by {via:?}"),
             Self::Dispatch {
                 worker,
                 action,

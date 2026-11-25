@@ -28,7 +28,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
 use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig};
-use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
@@ -177,6 +177,7 @@ const DEFAULT_KILL_GRACE: Duration = Duration::from_secs(5);
 struct FinishedActionResult {
     action_result: ActionResult,
     resource_usage: Option<ActionResourceUsage>,
+    do_not_cache: bool,
 }
 
 struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> {
@@ -577,6 +578,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
                         }
+                        // This worker does not name itself, so the scheduler
+                        // does not send this; it has nothing to forget.
+                        Update::ExecuteResultAccepted(_) => {}
                         Update::KillOperationRequest(kill_operation_request) => {
                             let operation_id = OperationId::from(kill_operation_request.operation_id);
                             if let Err(err) = self.running_actions_manager.kill_operation(&operation_id).await {
@@ -724,10 +728,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .and_then(RunningAction::upload_results)
                                             .and_then(|action| async move {
                                                 let resource_usage = action.resource_usage();
+                                                let do_not_cache = action.do_not_cache();
                                                 let action_result = action.get_finished_result().await?;
                                                 Ok(FinishedActionResult {
                                                     action_result,
                                                     resource_usage,
+                                                    do_not_cache,
                                                 })
                                             })
                                             // Note: We need ensure we run cleanup even if one of the other steps fail.
@@ -750,10 +756,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     let instance_name = maybe_instance_name
                                         .err_tip(|| "`instance_name` could not be resolved; this is likely an internal error in local_worker.")?;
                                     match res {
-                                        Ok(FinishedActionResult { mut action_result, resource_usage }) => {
+                                        Ok(FinishedActionResult { mut action_result, resource_usage, do_not_cache }) => {
                                             // Save in the action cache before notifying the scheduler that we've completed.
                                             if let Some(digest_info) = action_digest.clone().and_then(|action_digest| action_digest.try_into().ok()) &&
-                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher).await {
+                                                let Err(err) = running_actions_manager.cache_action_result(digest_info, &mut action_result, digest_hasher, do_not_cache).await {
                                                     error!(
                                                         ?err,
                                                         ?action_digest,
@@ -782,6 +788,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             // The manager tags a NotFound on anything the client
                                             // referenced by digest; no store's wording involved.
                                             let is_cas_blob_missing = e.code == Code::NotFound
+                                                && matches!(e.context, ErrorContext::MissingDigest { .. })
                                                 && e.messages.iter().any(|m| m == MISSING_INPUT_ERROR_TIP);
                                             if is_cas_blob_missing {
                                                 warn!(
@@ -792,6 +799,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 // execute response turns it into the
                                                 // PreconditionFailure detail Bazel
                                                 // re-uploads and retries on.
+                                                // Name the action's own digest function
+                                                // in the context: the store only saw the
+                                                // task context, which a spawned fetch can
+                                                // lose.
+                                                let context = match e.context.clone() {
+                                                    ErrorContext::MissingDigest { hash, size, .. } => {
+                                                        ErrorContext::MissingDigest {
+                                                            hash,
+                                                            size,
+                                                            digest_function: digest_hasher
+                                                                .resource_name_segment()
+                                                                .map(str::to_string),
+                                                        }
+                                                    }
+                                                    other @ ErrorContext::None => other,
+                                                };
                                                 let action_result = ActionResult {
                                                     error: Some(
                                                         make_err!(
@@ -799,7 +822,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             "{}",
                                                             e.message_string()
                                                         )
-                                                        .with_context(e.context.clone()),
+                                                        .with_context(context),
                                                     ),
                                                     ..ActionResult::default()
                                                 };
@@ -1160,6 +1183,7 @@ pub async fn new_local_worker(
             experimental_subtree_caching: cache_config.experimental_subtree_caching,
             max_concurrent_fetches: cache_config.max_concurrent_fetches,
             experimental_get_tree_prefetch: cache_config.experimental_get_tree_prefetch,
+            experimental_clone_executables: cache_config.experimental_clone_executables,
         };
 
         match DirectoryCache::new(worker_cache_config, fast_slow_store.clone()).await {
@@ -1582,10 +1606,31 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let attempts = AtomicU32::new(0);
         let attempts_ref = &attempts;
         let jitter_fn = &self.jitter_fn;
-        let error_handler = Box::pin(move |err| async move {
+        let registration = &self.registration;
+        let error_handler = Box::pin(move |err, failure: &'static str| async move {
             let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
             let delay = reconnect_delay(attempt, jitter_fn());
-            error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
+            // A worker that comes up before its scheduler is reachable is
+            // normal (e.g. pods starting together in Kubernetes), so those
+            // startup misses are warnings. Once the worker has registered,
+            // losing the scheduler is an error.
+            if registration.ever_registered.load(Ordering::Acquire) {
+                error!(
+                    ?err,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    failure,
+                    "Scheduler connection attempt failed, retrying"
+                );
+            } else {
+                warn!(
+                    ?err,
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    failure,
+                    "Scheduler connection attempt failed, retrying"
+                );
+            }
             (sleep_fn_pin)(delay).await;
         });
 
@@ -1594,7 +1639,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             let mut client = match (self.connection_factory)().await {
                 Ok(client) => client,
                 Err(e) => {
-                    (error_handler)(e).await;
+                    (error_handler)(e, "connect").await;
                     continue; // Try to connect again.
                 }
             };
@@ -1604,7 +1649,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             // Next register our worker with the scheduler.
             let (inner, update_for_worker_stream) = match self.register_worker(&mut client).await {
                 Err(e) => {
-                    (error_handler)(e).await;
+                    (error_handler)(e, "register").await;
                     continue; // Try to connect again.
                 }
                 Ok((worker_id, dispatch_ack, memory, update_for_worker_stream)) => (
@@ -1670,7 +1715,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     );
                 }
                 error!(?err, "Worker disconnected from scheduler, reconnecting");
-                (error_handler)(err).await; // Try to connect again.
+                (error_handler)(err, "disconnect").await; // Try to connect again.
             } else if self.config.single_use {
                 return Ok(());
             }

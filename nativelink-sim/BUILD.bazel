@@ -73,6 +73,7 @@ rust_test_suite(
         "tests/sim_catalogue_test.rs",
         "tests/sim_harness_test.rs",
         "tests/sim_property_test.rs",
+        "tests/sim_retention_test.rs",
         "tests/sim_scale_test.rs",
         "tests/sim_smoke_test.rs",
         "tests/subscriber_cancel_test.rs",

@@ -241,7 +241,12 @@ impl Net {
                     action: self.action_of(&kill.operation_id),
                 });
             }
-            Some(WorkerUpdate::KeepAlive(()) | WorkerUpdate::Disconnect(())) | None => {}
+            Some(
+                WorkerUpdate::KeepAlive(())
+                | WorkerUpdate::Disconnect(())
+                | WorkerUpdate::ExecuteResultAccepted(_),
+            )
+            | None => {}
         }
     }
 
