@@ -220,7 +220,17 @@ pub async fn build_server(
             "Scheduler name is declared more than once; only the last definition is used"
         );
     }
+    construct_server(cfg, shutdown_tx, scheduler_shutdown_tx).await
+}
 
+/// Builds the server without [`CasConfig::validate_references`]. Kept
+/// separate so the tests can show that construction rejects every config
+/// `validate_references` rejects.
+async fn construct_server(
+    cfg: CasConfig,
+    shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    scheduler_shutdown_tx: Sender<()>,
+) -> Result<Server, Error> {
     if cfg.shares_workers_with_writable_action_cache() {
         warn!(
             "Workers are shared across jobs and the action cache accepts client writes. \
@@ -1045,6 +1055,227 @@ mod tests {
             },
         });
 
+        Ok(())
+    }
+
+    /// A one-server config listening on `port` with the given `services`.
+    fn server_config(port: u16, top_level: &str, services: &str) -> String {
+        format!(
+            r#"{{
+                {top_level}
+                servers: [{{
+                    listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }},
+                    services: {{ {services} }},
+                }}],
+            }}"#
+        )
+    }
+
+    /// Broken configs, each with the reason startup rejects it. Every store
+    /// is a memory store so construction needs no network or disk.
+    fn broken_configs(port: u16) -> Vec<(&'static str, String)> {
+        let worker = |store: &str| {
+            format!(
+                r#"workers: [{{ local: {{
+                    worker_api_endpoint: {{ uri: "grpc://127.0.0.1:1" }},
+                    cas_fast_slow_store: "{store}",
+                    work_directory: "/tmp/nativelink-validate-test",
+                    platform_properties: {{}},
+                }} }}],"#
+            )
+        };
+        vec![
+            (
+                "service store missing with an empty store list",
+                server_config(port, "stores: [],", r#"cas: [{ cas_store: "MISSING" }]"#),
+            ),
+            (
+                "worker_api served from a grpc scheduler",
+                server_config(
+                    port,
+                    r#"stores: [], schedulers: [{ name: "REMOTE", grpc: {
+                        endpoint: { address: "grpc://127.0.0.1:1" },
+                    } }],"#,
+                    r#"worker_api: { scheduler: "REMOTE" }"#,
+                ),
+            ),
+            (
+                "worker_api scheduler missing with no schedulers",
+                server_config(
+                    port,
+                    "stores: [],",
+                    r#"worker_api: { scheduler: "MISSING" }"#,
+                ),
+            ),
+            (
+                "unused store with a ref_store to a missing store",
+                r#"{ stores: [{ name: "UNUSED", ref_store: { name: "MISSING" } }], servers: [] }"#
+                    .to_string(),
+            ),
+            (
+                "nested ref_store typo in a store a service uses",
+                server_config(
+                    port,
+                    r#"stores: [
+                        { name: "CAS", memory: {} },
+                        { name: "WRAPPED", fast_slow: {
+                            fast: { ref_store: { name: "CAS_TYPO" } },
+                            slow: { noop: {} },
+                        } },
+                    ],"#,
+                    r#"cas: [{ cas_store: "WRAPPED" }]"#,
+                ),
+            ),
+            (
+                "duplicate store name",
+                r#"{ stores: [{ name: "CAS", memory: {} }, { name: "CAS", memory: {} }], servers: [] }"#
+                    .to_string(),
+            ),
+            (
+                "ac store missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }],"#,
+                    r#"ac: [{ ac_store: "MISSING" }]"#,
+                ),
+            ),
+            (
+                "execution scheduler missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }], schedulers: [{ name: "SCHED", simple: {} }],"#,
+                    r#"execution: [{ cas_store: "CAS", scheduler: "SCHED_TYPO" }]"#,
+                ),
+            ),
+            (
+                "capabilities scheduler missing",
+                server_config(
+                    port,
+                    "stores: [],",
+                    r#"capabilities: [{ remote_execution: { scheduler: "MISSING" } }]"#,
+                ),
+            ),
+            (
+                "bytestream store missing",
+                server_config(port, "stores: [],", r#"bytestream: [{ cas_store: "MISSING" }]"#),
+            ),
+            (
+                "fetch store missing",
+                server_config(port, "stores: [],", r#"fetch: [{ fetch_store: "MISSING" }]"#),
+            ),
+            (
+                "push store missing",
+                server_config(port, "stores: [],", r#"push: [{ push_store: "MISSING" }]"#),
+            ),
+            (
+                "bep store missing",
+                server_config(port, "stores: [],", r#"experimental_bep: { store: "MISSING" }"#),
+            ),
+            (
+                "chunking index store missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }],"#,
+                    r#"cas: [{ cas_store: "CAS", experimental_chunking: { index_store: "MISSING" } }]"#,
+                ),
+            ),
+            (
+                "scheduler redis store missing",
+                r#"{
+                    stores: [],
+                    schedulers: [{ name: "SCHED", simple: {
+                        experimental_backend: { redis: { redis_store: "MISSING" } },
+                    } }],
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "cache_lookup ac store missing inside property_modifier",
+                r#"{
+                    stores: [],
+                    schedulers: [{ name: "SCHED", property_modifier: {
+                        modifications: [],
+                        scheduler: { cache_lookup: { ac_store: "MISSING", scheduler: { simple: {} } } },
+                    } }],
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "origin events store missing",
+                r#"{
+                    stores: [],
+                    experimental_origin_events: { publisher: { store: "MISSING" } },
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "worker store missing",
+                format!("{{ stores: [], {} servers: [] }}", worker("MISSING")),
+            ),
+        ]
+    }
+
+    /// `validate_references` and construction must agree: every config
+    /// `validate_references` rejects, construction rejects on its own too,
+    /// for the same name, so `--check` never rejects a config that would
+    /// have started.
+    #[nativelink_test]
+    async fn validate_rejects_only_what_construction_rejects() -> Result<(), Error> {
+        for (reason, json) in broken_configs(get_ephemeral_port()?) {
+            let config = CasConfig::try_from_json5_str(&json)
+                .unwrap_or_else(|e| panic!("{reason}: fixture does not parse: {e:?}"));
+            let Err(err) = config.validate_references() else {
+                panic!("{reason}: validate_references accepted it");
+            };
+            // The first problem, and the name it complains about, such as
+            // 'MISSING'. The last quoted name is the one that does not
+            // resolve; an earlier one can be the store that holds it.
+            let problems = err.messages.join("\n");
+            let problem = problems
+                .split("\n  - ")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{reason}: no problem listed in {problems}"));
+            let quoted = problem
+                .rsplit('\'')
+                .nth(1)
+                .unwrap_or_else(|| panic!("{reason}: no quoted name in {problem}"));
+
+            let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+            let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+            let Err(err) = construct_server(config, shutdown_tx, scheduler_shutdown_tx).await
+            else {
+                panic!(
+                    "{reason}: construction accepted it, so validate_references is stricter than startup"
+                );
+            };
+            let constructed = err.messages.join(": ");
+            assert!(
+                constructed.contains(quoted),
+                "{reason}: construction failed for another reason: {constructed}"
+            );
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn build_server_reports_every_config_problem() -> Result<(), Error> {
+        let config = CasConfig::try_from_json5_str(&server_config(
+            get_ephemeral_port()?,
+            "stores: [],",
+            r#"cas: [{ cas_store: "BAD_CAS" }], ac: [{ ac_store: "BAD_AC" }]"#,
+        ))?;
+        let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+        let Err(err) = build_server(config, shutdown_tx, scheduler_shutdown_tx).await else {
+            panic!("build_server accepted a config with two missing stores");
+        };
+        assert_eq!(err.code, Code::InvalidArgument);
+        let message = err.messages.join("\n");
+        assert!(message.contains("BAD_CAS"), "{message}");
+        assert!(message.contains("BAD_AC"), "{message}");
         Ok(())
     }
 }
