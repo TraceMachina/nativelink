@@ -120,29 +120,36 @@ fn validate_identity_batch_update(data: Bytes, expected_size: usize) -> Result<B
     Ok(data)
 }
 
+/// Checks that a `BatchUpdateBlobs` entry's `compressor` is IDENTITY or a
+/// compressor this instance accepts, and returns it.
+pub fn validate_batch_update_compressor(
+    compressor_i32: i32,
+    remote_cache_compression_enabled: bool,
+) -> Result<compressor::Value, Error> {
+    let request_compressor = compressor::Value::try_from(compressor_i32)
+        .map_err(|_| make_input_err!("Unknown compressor value: {}", compressor_i32))?;
+    match request_compressor {
+        compressor::Value::Identity => Ok(request_compressor),
+        compressor::Value::Zstd if remote_cache_compression_enabled => Ok(request_compressor),
+        compressor::Value::Zstd => Err(make_input_err!(
+            "Remote cache compression is not supported by this instance"
+        )),
+        other => Err(make_input_err!("Unsupported wire compressor: {:?}", other)),
+    }
+}
+
 pub async fn decompress_batch_update(
     data: Bytes,
     compressor_i32: i32,
     expected_size: usize,
     remote_cache_compression_enabled: bool,
 ) -> Result<Bytes, Error> {
-    let request_compressor = compressor::Value::try_from(compressor_i32)
-        .map_err(|_| make_input_err!("Unknown compressor value: {}", compressor_i32))?;
-
-    match request_compressor {
-        compressor::Value::Identity => validate_identity_batch_update(data, expected_size),
-        compressor::Value::Zstd => {
-            if !remote_cache_compression_enabled {
-                return Err(make_input_err!(
-                    "Remote cache compression is not supported by this instance"
-                ));
-            }
-            spawn_blocking!("cas_decode_compressed_upload", move || {
-                decompress(&data, compressor::Value::Zstd, expected_size)
-            })
-            .await
-            .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?
-        }
-        other => Err(make_input_err!("Unsupported wire compressor: {:?}", other)),
+    match validate_batch_update_compressor(compressor_i32, remote_cache_compression_enabled)? {
+        compressor::Value::Zstd => spawn_blocking!("cas_decode_compressed_upload", move || {
+            decompress(&data, compressor::Value::Zstd, expected_size)
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Decompression task failed: {}", e))?,
+        _ => validate_identity_batch_update(data, expected_size),
     }
 }
