@@ -3412,6 +3412,90 @@ async fn wait_execution_rejoin_past_the_client_timeout_finds_the_action_live() -
     Ok(())
 }
 
+/// A `WaitExecution` rejoin while the action is still queued, and then a
+/// worker: the action is assigned once, under its own operation id, and the
+/// rejoined client sees it executing. Before the fix the memory backend stored
+/// the rejoining client's operation id in the queued record, matching assigned
+/// under that id, found nothing, still sent the action, and dispatched it
+/// again on every pass.
+#[nativelink_test]
+async fn a_rejoin_while_queued_is_dispatched_once_under_the_operations_own_id() -> Result<(), Error>
+{
+    for backend in Backend::ALL {
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let action_listener = setup_action(
+            &scheduler,
+            DigestInfo::new([97u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let client_id = action_listener
+            .as_state()
+            .await?
+            .0
+            .client_operation_id
+            .clone();
+
+        let Some(mut rejoined) = scheduler
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(client_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .next()
+            .await
+        else {
+            panic!("{backend:?}: the rejoin found nothing");
+        };
+        assert_eq!(
+            rejoined.changed().await?.0.stage,
+            ActionStage::Queued,
+            "{backend:?}"
+        );
+
+        let mut rx_from_worker = setup_new_worker(
+            &scheduler,
+            WorkerId("worker_id".to_string()),
+            PlatformProperties::default(),
+        )
+        .await?;
+        scheduler.do_try_match_for_test().await?;
+        let Some(update_for_worker::Update::StartAction(start)) =
+            rx_from_worker.recv().await.and_then(|msg| msg.update)
+        else {
+            panic!("{backend:?}: the worker was not sent the action");
+        };
+        assert_ne!(
+            start.operation_id,
+            client_id.to_string(),
+            "{backend:?}: the action was assigned under the client's operation id"
+        );
+        assert_eq!(
+            rejoined.as_state().await?.0.stage,
+            ActionStage::Executing,
+            "{backend:?}: the scheduler did not record the action as assigned"
+        );
+
+        // Another matching pass leaves the executing action where it is.
+        scheduler.do_try_match_for_test().await?;
+        tokio::task::yield_now().await;
+        assert!(
+            rx_from_worker.try_recv().is_err(),
+            "{backend:?}: the action was dispatched again"
+        );
+        drop(action_listener);
+    }
+    Ok(())
+}
+
 /// RFC-0064 `action-retention-tied-to-real-listeners/05`: once the action
 /// has completed, a `WaitExecution` by the client's id gets the result for
 /// the retention window and nothing after it, the same on both backends.

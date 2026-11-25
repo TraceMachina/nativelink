@@ -644,6 +644,17 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         &mut self,
         mut new_awaited_action: AwaitedAction,
     ) -> Result<(), Error> {
+        // A client's subscriber hands the action out under that client's
+        // operation id (`borrow`, `changed`), so an update built from one
+        // carries it. The stored record keeps the operation's own id, as the
+        // store-backed database's write does too: matching reads it to
+        // assign the operation, and assigning under a client's id finds
+        // nothing, so the worker's result is dropped and the action is
+        // dispatched again.
+        let operation_id = new_awaited_action.operation_id().clone();
+        if new_awaited_action.state().client_operation_id != operation_id {
+            new_awaited_action.set_client_operation_id(operation_id);
+        }
         let tx = self
             .operation_id_to_awaited_action
             .get(new_awaited_action.operation_id())
