@@ -1,15 +1,15 @@
 name: Images / Custom
 
-# Publish an image for the commit selected in workflow_dispatch. Dispatch
-# requires write access, and the workflow file and the checkout are that
-# same commit, so the publish credentials stay on a commit that already
-# lives in this repository.
+# Two ways to publish:
 #
-# A pull-request comment is not a trigger. issue_comment runs the workflow
-# from the default branch and still has the GHCR publish token and the Attic
-# cache token. The previous job checked out the pull request head and ran
-# that head's composite actions, so anyone who could comment could take both
-# tokens and push through them.
+# 1. A maintainer comments `/build-image <name>` on a pull request, including
+#    one from a fork. The pull request is built, then pushed under a
+#    `pr-<number>-<sha>` tag so it can be pulled and tested. The publish
+#    token is used only after the pull request checkout has been wiped and
+#    the default-branch files put back.
+# 2. Someone with write access runs this workflow from the Actions tab on a
+#    branch that is already in this repository. That run checks out the same
+#    commit as the workflow file.
 on:
   workflow_dispatch:
     inputs:
@@ -28,73 +28,289 @@ on:
         default: true
         type: boolean
 
+  issue_comment:
+    types: [created]
+
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-image:
-    name: Build and push
+  check-trigger:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
     permissions:
       contents: read
+      pull-requests: read
+      issues: write
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      untrusted: ${{ steps.check.outputs.untrusted }}
+      head_repo: ${{ steps.check.outputs.head_repo }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
+      pr_number: ${{ steps.check.outputs.pr_number }}
+      image: ${{ steps.check.outputs.image }}
+      multi_arch: ${{ steps.check.outputs.multi_arch }}
+      components: ${{ steps.check.outputs.components }}
     steps:
-      - name: Checkout
+      - name: Checkout the trusted image list
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
 
-      - name: Resolve image
-        id: image
+      - name: Decide whether to build
+        id: check
         env:
-          IMAGE: ${{ inputs.image }}
-        run: |
-          entry=$(jq -c --arg image "$IMAGE" '.include[] | select(.image == $image)' .github/images-matrix.json)
-          if [ -z "$entry" ]; then
-            echo "Unknown image: $IMAGE" >&2
-            exit 1
-          fi
-          {
-            echo "multi-arch=$(jq -r '.["multi-arch"]' <<<"$entry")"
-            echo "components=$(jq -r '.components // ""' <<<"$entry")"
-          } >> "$GITHUB_OUTPUT"
+          IMAGE_INPUT: ${{ inputs.image }}
+        uses: >- # v8.0.0
+          actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            const fs = require('fs');
+            const matrix = JSON.parse(fs.readFileSync('.github/images-matrix.json', 'utf8'));
+            const valid = new Map(matrix.include.map((entry) => [entry.image, entry]));
 
-      - name: Prepare Worker
+            const select = (image) => {
+              const option = valid.get(image);
+              if (!option) return null;
+              core.setOutput('image', image);
+              core.setOutput('multi_arch', String(option['multi-arch']));
+              core.setOutput('components', option.components || '');
+              return option;
+            };
+
+            const comment = async (body) => {
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.issue.number,
+                  body,
+                });
+              } catch (error) {
+                core.warning(`Could not post comment: ${error.message}`);
+              }
+            };
+
+            if (context.eventName === 'workflow_dispatch') {
+              if (!select(process.env.IMAGE_INPUT)) {
+                core.setFailed(`Unknown image: ${process.env.IMAGE_INPUT}`);
+                return;
+              }
+              core.setOutput('should_build', 'true');
+              core.setOutput('untrusted', 'false');
+              core.setOutput('head_repo', `${context.repo.owner}/${context.repo.repo}`);
+              core.setOutput('head_sha', context.sha);
+              core.setOutput('pr_number', '');
+              return;
+            }
+
+            core.setOutput('should_build', 'false');
+            if (context.eventName !== 'issue_comment') return;
+
+            const body = (context.payload.comment.body || '').trim();
+            const match = body.match(/^\/build-image(?:\s+(\S+))?/i);
+            if (!context.payload.issue.pull_request || !match) return;
+
+            const {data: permission} = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login,
+            });
+            if (permission.permission !== 'admin' && permission.permission !== 'write') {
+              await comment('`/build-image` has to be run by someone with write access.');
+              return;
+            }
+
+            const image = match[1];
+            if (!image || !select(image)) {
+              const names = [...valid.keys()].map((name) => `\`${name}\``).join(', ');
+              await comment(image
+                ? `Unknown image: \`${image}\`\n\nValid options: ${names}`
+                : `Specify an image to build.\n\nValid options: ${names}`);
+              return;
+            }
+
+            const {data: pullRequest} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput('should_build', 'true');
+            core.setOutput('untrusted', 'true');
+            core.setOutput('head_repo', pullRequest.head.repo.full_name);
+            core.setOutput('head_sha', pullRequest.head.sha);
+            core.setOutput('pr_number', String(context.payload.issue.number));
+
+            try {
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: context.payload.comment.id,
+                content: 'rocket',
+              });
+            } catch (error) {
+              core.warning(`Could not add reaction: ${error.message}`);
+            }
+
+  build-image:
+    name: Build and push
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the branch to publish
+        if: needs.check-trigger.outputs.untrusted != 'true'
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.check-trigger.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Checkout the trusted workflow
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Checkout the pull request
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ needs.check-trigger.outputs.head_repo }}
+          ref: ${{ needs.check-trigger.outputs.head_sha }}
+          path: src
+          persist-credentials: false
+
+      - name: Prepare Nix for a repository branch
+        if: needs.check-trigger.outputs.untrusted != 'true'
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Prepare Nix to read the public cache
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        uses: ./.github/actions/prepare-nix
+        with:
+          read_only: "true"
+          nativelink_attic_token: ""
+
       - id: version
+        if: needs.check-trigger.outputs.untrusted != 'true'
         uses: ./.github/actions/generate-version
 
       - name: Upload image
+        if: needs.check-trigger.outputs.untrusted != 'true'
         uses: ./.github/actions/test-and-upload-image
         with:
           testing: false
-          image: ${{ inputs.image }}
-          multi-arch: ${{ steps.image.outputs.multi-arch }}
-          components: ${{ steps.image.outputs.components }}
+          image: ${{ needs.check-trigger.outputs.image }}
+          multi-arch: ${{ needs.check-trigger.outputs.multi_arch }}
+          components: ${{ needs.check-trigger.outputs.components }}
           tag: ${{ steps.version.outputs.version-string }}
           GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
           force-push: true
 
-      - name: Output image info
+      - name: Build the pull request image
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        working-directory: src
         env:
-          IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}:${{ steps.version.outputs.version-string }}
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          IMAGE: ${{ needs.check-trigger.outputs.image }}
+          MULTI_ARCH: ${{ needs.check-trigger.outputs.multi_arch }}
+          COMPONENTS: ${{ needs.check-trigger.outputs.components }}
         run: |
-          echo "### Published Image" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Components come from the trusted image list. Splitting them is intentional.
+          # shellcheck disable=SC2086
+          bash "$GITHUB_WORKSPACE/.github/scripts/build-pr-image.sh" \
+            "$RUNNER_TEMP/oci" \
+            "$IMAGE" \
+            "$MULTI_ARCH" \
+            $COMPONENTS
 
-      - name: Teardown Worker
+      - name: Restore the trusted checkout
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          persist-credentials: false
+
+      - name: Push the pull request image
+        if: needs.check-trigger.outputs.untrusted == 'true'
+        env:
+          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          IMAGE: ${{ needs.check-trigger.outputs.image }}
+          TAG: pr-${{ needs.check-trigger.outputs.pr_number }}-${{ needs.check-trigger.outputs.head_sha }}
+        run: bash .github/scripts/push-pr-image.sh "$IMAGE" "$TAG" "$RUNNER_TEMP/oci"
+
+      - name: Record the published name
+        env:
+          DISPATCH_REF: ghcr.io/${{ github.repository_owner }}/${{ needs.check-trigger.outputs.image }}:${{ steps.version.outputs.version-string }}
+          PULL_REF: ghcr.io/${{ github.repository_owner }}/${{ needs.check-trigger.outputs.image }}:pr-${{ needs.check-trigger.outputs.pr_number }}-${{ needs.check-trigger.outputs.head_sha }}
+          UNTRUSTED: ${{ needs.check-trigger.outputs.untrusted }}
+        run: |
+          if [ "$UNTRUSTED" = "true" ]; then
+            ref=$PULL_REF
+          else
+            ref=$DISPATCH_REF
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published Image"
+            echo '```'
+            echo "$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        id: published
+
+      - name: Teardown Nix
+        if: always() && needs.check-trigger.outputs.untrusted != 'true'
         uses: ./.github/actions/end-nix
-        if: always()
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+  comment:
+    name: Comment the pull command
+    needs: [check-trigger, build-image]
+    if: >-
+      needs.check-trigger.outputs.untrusted == 'true' &&
+      needs.build-image.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Comment on the pull request
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ needs.check-trigger.outputs.image }}:pr-${{ needs.check-trigger.outputs.pr_number }}-${{ needs.check-trigger.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.check-trigger.outputs.pr_number }}
+        uses: >- # v8.0.0
+          actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body: [
+                'Image is ready to pull and test:',
+                '',
+                '```',
+                `docker pull ${process.env.IMAGE_REF}`,
+                '```',
+              ].join('\n'),
+            });
