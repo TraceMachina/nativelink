@@ -179,6 +179,12 @@ request missing a digest it requires, is a client error, so every service
 answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
 `INTERNAL` with backoff but fail fast on `INVALID_ARGUMENT`.
 
+**Empty executable inputs are executable on every Unix host.** The worker's
+directory cache writes a zero-byte input file without fetching it. On macOS it
+then sets the mode to `0o555` for an executable and `0o444` otherwise. On other
+Unix hosts it leaves the default mode, except that a file whose `FileNode` sets
+`is_executable` is set to `0o755`, so an empty wrapper script can still run.
+
 ## Intentional deviations from the specification [#intentional-deviations]
 
 Two behaviors differ from what the REAPI or ByteStream text suggests. Both are

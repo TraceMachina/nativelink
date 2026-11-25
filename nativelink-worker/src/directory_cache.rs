@@ -1225,10 +1225,8 @@ impl DirectoryCache {
             fs::write(&file_path, b"")
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
-            // macOS only: read-only like every other materialized input, and
-            // +x when asked for, so an empty wrapper script still execs. Linux
-            // keeps the default mode, as before, to avoid an extra chmod per
-            // empty file there.
+            // macOS: read-only like every other materialized input, and +x
+            // when asked for, so an empty wrapper script still execs.
             #[cfg(target_os = "macos")]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1238,6 +1236,18 @@ impl DirectoryCache {
                     0o444
                 };
                 fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
+                    .await
+                    .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+            }
+            // Other Unix hosts keep the default mode from `fs::write`, as
+            // before, so the many empty marker files cost no extra chmod.
+            // Only an executable one is changed: REv2 `FileNode.is_executable`
+            // means it must exec, and an empty wrapper script cannot without
+            // +x. 0o755 keeps it owner-writable, like the other empty files.
+            #[cfg(all(unix, not(target_os = "macos")))]
+            if file_node.is_executable {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o755))
                     .await
                     .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
             }
@@ -2038,16 +2048,19 @@ mod tests {
         }
         // Elsewhere empty files keep the default mode from `fs::write`, which
         // is owner-writable; a chmod to 0o444 or 0o555 would clear that bit.
+        // Only the executable one gains its +x bits (REv2
+        // `FileNode.is_executable`: an empty wrapper script must still exec).
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use std::os::unix::fs::PermissionsExt;
-            for name in ["empty.txt", "empty.sh"] {
+            for (name, executable) in [("empty.txt", false), ("empty.sh", true)] {
                 let mode = fs::metadata(dest.join(name))
                     .await
                     .unwrap()
                     .permissions()
                     .mode();
-                assert_ne!(mode & 0o200, 0, "{name} must not be chmod'd: mode {mode:o}");
+                assert_ne!(mode & 0o200, 0, "{name} must stay writable: mode {mode:o}");
+                assert_eq!((mode & 0o111) != 0, executable, "{name}: mode {mode:o}");
             }
         }
 
