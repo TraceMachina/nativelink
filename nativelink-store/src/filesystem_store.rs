@@ -1910,6 +1910,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
+        // Box the rename future before spawning to keep it off the input worker's stack.
         background_spawn!(
             "filesystem_store_emplace_file",
             Box::pin(async move {
