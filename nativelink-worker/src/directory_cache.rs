@@ -2088,12 +2088,16 @@ mod tests {
         .await
     }
 
+    #[nativelink_test]
+    async fn cancelled_filesystem_operation_keeps_cleanup_pending() -> Result<(), Error> {
+        check_cancelled_filesystem_operation().await
+    }
+
     #[expect(
         clippy::disallowed_methods,
         reason = "a separate one-thread blocking pool makes cancellation ordering deterministic"
     )]
-    #[nativelink_test]
-    async fn cancelled_filesystem_operation_keeps_cleanup_pending() -> Result<(), Error> {
+    async fn check_cancelled_filesystem_operation() -> Result<(), Error> {
         let temp_dir = TempDir::new()?;
         let scratch = temp_dir.path().join("scratch");
         fs::create_dir_all(&scratch).await?;
