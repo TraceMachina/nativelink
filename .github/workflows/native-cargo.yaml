@@ -2,9 +2,14 @@
 name: CI / Cargo
 
 on:
-  # Cargo Native (Linux + Windows) is deferred to a nightly schedule +
+  # Cargo Native (Linux + macOS + Windows) is deferred to a nightly schedule +
   # on-demand. Per-PR build/test signal is covered by the warm-cluster CI / NativeLink lane;
   # this keeps full cargo and cross-platform coverage running daily against main.
+  pull_request:
+    branches: [main]
+    paths:
+      - .config/nextest.toml
+      - .github/workflows/native-cargo.yaml
   schedule:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
@@ -31,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
         toolchain: [1.97.1] # Same as Nix
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
@@ -50,6 +55,12 @@ jobs:
       - name: Set up Rust toolchain
         run: rustup update && rustup default ${{ matrix.toolchain }}
 
+      - name: Install cargo-nextest
+        uses: >- # v2.90.8
+          taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c
+        with:
+          tool: cargo-nextest
+
       - name: Rust cache
         uses: >- # v2.9.1
           Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
@@ -61,7 +72,10 @@ jobs:
         uses: ./.github/actions/setup-azurite-test-runner
 
       - name: Test on ${{ runner.os }}
-        run: cargo test --all --profile=smol
+        run: cargo nextest run --workspace --cargo-profile=smol --no-fail-fast
+
+      - name: Run doctests on ${{ runner.os }}
+        run: cargo test --workspace --exclude nativelink-proto --doc --profile=smol
 
       - name: Check schema export
         run: cargo run --bin build-schema --features dev-schema --package nativelink-config
