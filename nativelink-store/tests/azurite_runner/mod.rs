@@ -95,20 +95,16 @@ impl AzuriteEmbedded {
     }
 }
 
-/// Resolves the installed `azurite-blob` binary relative to this crate,
-/// rather than shelling out through `npx` per test. `npx`'s own package
-/// resolution adds meaningfully non trivial overhead even when the package
-/// is already cached, negligible for a single manual run, but this test
-/// suite spawns Azurite once per test, so that overhead multiplies across
-/// the whole suite. Requires `npm ci` to have been run in this directory
-/// first; see this crate's `tests/azurite_runner/package.json`.
+/// Resolves the installed `azurite-blob` entrypoint (`node_modules/azurite/dist/src/blob/main.js`)
+/// relative to this crate so `AzuriteProcess::start` can invoke `node`
+/// directly instead of shelling out through `node_modules/.bin/azurite-blob(.cmd)`.
+/// On Windows, the `.cmd` wrapper runs inside `cmd.exe`, and `Child::start_kill()`
+/// only terminates `cmd.exe`, leaving the grandchild `node.exe` process alive
+/// holding the piped `stdout`/`stderr` handles open and hanging Tokio runtime
+/// shutdown at the end of each test.
+/// Requires `pnpm install` to have been run in this directory first; see this
+/// crate's `tests/azurite_runner/package.json`.
 fn find_azurite_binary() -> Result<PathBuf, Error> {
-    let binary_name = if cfg!(windows) {
-        "azurite-blob.cmd"
-    } else {
-        "azurite-blob"
-    };
-
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")
         .map_err(|e| make_err!(Code::Internal, "CARGO_MANIFEST_DIR not set at runtime: {e}"))?;
 
@@ -129,13 +125,16 @@ fn find_azurite_binary() -> Result<PathBuf, Error> {
 
     let runner_path = test_path
         .join("node_modules")
-        .join(".bin")
-        .join(binary_name);
+        .join("azurite")
+        .join("dist")
+        .join("src")
+        .join("blob")
+        .join("main.js");
 
     if !runner_path.exists() {
         return Err(make_err!(
             Code::NotFound,
-            "azurite-blob not found at {}. Try running `pnpm install` in nativelink-store/tests/azurite_runner",
+            "azurite-blob entrypoint not found at {}. Try running `pnpm install` in nativelink-store/tests/azurite_runner",
             runner_path.display()
         ));
     }
