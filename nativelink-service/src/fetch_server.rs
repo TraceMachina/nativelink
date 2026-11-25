@@ -33,13 +33,14 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{
-    DigestHasher, DigestHasherFunc, default_digest_hasher_func, digest_hasher_func_from_context,
-    make_ctx_for_hash_func,
+    DigestHasher, DigestHasherFunc, DigestHasherImpl, default_digest_hasher_func,
+    digest_hasher_func_from_context, make_ctx_for_hash_func,
 };
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use reqwest::{Client, NoProxy, Proxy};
+use sha2::{Digest as _, Sha384, Sha512};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tonic::{Code, Request, Response, Status};
@@ -53,10 +54,86 @@ pub struct FetchStoreInfo {
     downloader: Option<Arc<Downloader>>,
 }
 
+/// `checksum.sri` algorithms, a different set from the CAS digest functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SriAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+    Blake3,
+}
+
+impl SriAlgorithm {
+    fn parse(name: &str) -> Option<Self> {
+        [Self::Sha256, Self::Sha384, Self::Sha512, Self::Blake3]
+            .into_iter()
+            .find(|algorithm| algorithm.name().eq_ignore_ascii_case(name))
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Sha256 => "sha256",
+            Self::Sha384 => "sha384",
+            Self::Sha512 => "sha512",
+            Self::Blake3 => "blake3",
+        }
+    }
+
+    const fn hash_len(self) -> usize {
+        match self {
+            Self::Sha256 | Self::Blake3 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
+        }
+    }
+
+    /// The CAS digest function with the same output, so a match hashes the body once.
+    const fn digest_function(self) -> Option<DigestHasherFunc> {
+        match self {
+            Self::Sha256 => Some(DigestHasherFunc::Sha256),
+            Self::Blake3 => Some(DigestHasherFunc::Blake3),
+            Self::Sha384 | Self::Sha512 => None,
+        }
+    }
+
+    fn hasher(self) -> ChecksumHasher {
+        match self {
+            Self::Sha256 => ChecksumHasher::Digest(DigestHasherFunc::Sha256.hasher()),
+            Self::Blake3 => ChecksumHasher::Digest(DigestHasherFunc::Blake3.hasher()),
+            Self::Sha384 => ChecksumHasher::Sha384(Sha384::new()),
+            Self::Sha512 => ChecksumHasher::Sha512(Sha512::new()),
+        }
+    }
+}
+
+enum ChecksumHasher {
+    Digest(DigestHasherImpl),
+    Sha384(Sha384),
+    Sha512(Sha512),
+}
+
+impl ChecksumHasher {
+    fn update(&mut self, input: &[u8]) {
+        match self {
+            Self::Digest(hasher) => hasher.update(input),
+            Self::Sha384(hasher) => hasher.update(input),
+            Self::Sha512(hasher) => hasher.update(input),
+        }
+    }
+
+    fn finalize(self) -> Vec<u8> {
+        match self {
+            Self::Digest(mut hasher) => hasher.finalize_digest().packed_hash().to_vec(),
+            Self::Sha384(hasher) => hasher.finalize().to_vec(),
+            Self::Sha512(hasher) => hasher.finalize().to_vec(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ExpectedChecksum {
-    function: DigestHasherFunc,
-    hash: [u8; 32],
+    algorithm: SriAlgorithm,
+    hash: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -202,14 +279,14 @@ impl Downloader {
         let mut file = tokio::fs::File::from_std(file);
         let digest_function = digest_hasher_func_from_context();
         let mut hasher = digest_function.hasher();
-        let mut checksum_hashers = Vec::new();
+        let mut checksum_hashers: Vec<(SriAlgorithm, ChecksumHasher)> = Vec::new();
         for expected in checksum.into_iter().flatten() {
-            if expected.function != digest_function
+            if expected.algorithm.digest_function() != Some(digest_function)
                 && !checksum_hashers
                     .iter()
-                    .any(|(function, _)| *function == expected.function)
+                    .any(|(algorithm, _)| *algorithm == expected.algorithm)
             {
-                checksum_hashers.push((expected.function, expected.function.hasher()));
+                checksum_hashers.push((expected.algorithm, expected.algorithm.hasher()));
             }
         }
         let mut size = 0_u64;
@@ -235,22 +312,20 @@ impl Downloader {
         }
         let digest = hasher.finalize_digest();
         if let Some(alternatives) = checksum {
-            let checksum_digests: Vec<_> = checksum_hashers
+            let actual_checksums: Vec<_> = checksum_hashers
                 .into_iter()
-                .map(|(function, mut hasher)| (function, hasher.finalize_digest()))
+                .map(|(algorithm, hasher)| (algorithm, hasher.finalize()))
                 .collect();
             let matches = alternatives.iter().any(|expected| {
-                let actual = if expected.function == digest_function {
-                    Some(&digest)
+                let actual = if expected.algorithm.digest_function() == Some(digest_function) {
+                    Some(digest.packed_hash().as_slice())
                 } else {
-                    checksum_digests
+                    actual_checksums
                         .iter()
-                        .find(|(function, _)| *function == expected.function)
-                        .map(|(_, digest)| digest)
+                        .find(|(algorithm, _)| *algorithm == expected.algorithm)
+                        .map(|(_, hash)| hash.as_slice())
                 };
-                actual.is_some_and(|actual| {
-                    actual.packed_hash().as_slice() == expected.hash.as_slice()
-                })
+                actual == Some(expected.hash.as_slice())
             });
             if !matches {
                 return Err(make_err!(Code::DataLoss, "Fetch checksum mismatch"));
@@ -499,13 +574,13 @@ impl FetchServer {
                     .decode(encoded)
                     .map_err(|_| make_input_err!("Invalid checksum.sri encoding"))?;
                 // Unsupported algorithms may coexist with supported alternatives.
-                let Ok(function) = DigestHasherFunc::try_from(algorithm) else {
+                let Some(algorithm) = SriAlgorithm::parse(algorithm) else {
                     continue;
                 };
-                let hash = hash
-                    .try_into()
-                    .map_err(|_| make_input_err!("Invalid checksum.sri length"))?;
-                alternatives.push(ExpectedChecksum { function, hash });
+                if hash.len() != algorithm.hash_len() {
+                    return Err(make_input_err!("Invalid checksum.sri length"));
+                }
+                alternatives.push(ExpectedChecksum { algorithm, hash });
             }
             if alternatives.is_empty() {
                 return Err(make_input_err!("No supported checksum.sri alternative"));
