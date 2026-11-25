@@ -22,18 +22,43 @@ processes that actions run in.
 
 ```sh
 nativelink <config_file>
+nativelink --check <config_file>
 ```
 
-That is the whole thing. `config_file` is a required positional argument, the
-path to a JSON5 configuration file, and there are no other arguments. The
-binary is a [clap](https://docs.rs/clap) parser with `version`, `about` and
-`author` derived, so `--help` and `--version` work and nothing else does.
+That is nearly the whole thing. `config_file` is a required positional
+argument, the path to a JSON5 configuration file, and `--check` is the one
+flag. The binary is a [clap](https://docs.rs/clap) parser with `version`,
+`about` and `author` derived, so `--help` and `--version` work too.
 
 | Argument | Required | Meaning |
 | --- | --- | --- |
 | `<config_file>` | Yes | Path to the JSON5 configuration file. Parsed with `serde_json5`; the config structs are `deny_unknown_fields`, so an unrecognised key is a startup failure, not a warning. |
+| `--check` | No | Parse the file, validate every store and scheduler reference, and exit. Exit status `0` with a one-line `OK:` summary on stdout, or `1` with a `FAIL:` line and one line per problem on stderr. Nothing else is started: no runtime, no socket, no backend connection, no directory. |
 | `--help` | No | Print usage and exit. |
 | `--version` | No | Print the crate version and exit. |
+
+`--check` is for CI and pre-deploy gates. It runs the same validation that
+startup runs first, so a config that passes `--check` will not fail at boot on
+a reference problem, and a config that fails `--check` would not have booted.
+The check covers:
+
+- every `cas_store`, `ac_store`, `fetch_store`, `push_store`, `scheduler` and
+  similar name a server service, worker or scheduler refers to, including the
+  `experimental_chunking.index_store` of a CAS service and the `redis_store` of
+  a Redis-backed scheduler;
+- every `ref_store` nested inside a declared store, whether or not anything
+  uses that store, because startup constructs all of them;
+- duplicate store and scheduler names, since name resolution is last-wins and
+  would otherwise silently drop the earlier definition.
+
+All problems are reported together, each with the path of the field that
+holds the bad name. It does not check that a Redis endpoint answers or that a
+filesystem path is writable; those still fail at startup.
+
+```sh
+$ nativelink --check nativelink-config/examples/basic_cas.json5
+OK: nativelink-config/examples/basic_cas.json5 — 2 stores, 1 schedulers, 2 servers, all references resolve
+```
 
 No `--port`, no `--log-level`, no `--config-from-env` exist. If you are
 looking for a knob, it is in the configuration file; see the

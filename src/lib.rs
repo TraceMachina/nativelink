@@ -209,6 +209,12 @@ pub async fn build_server(
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
     scheduler_shutdown_tx: Sender<()>,
 ) -> Result<Server, Error> {
+    // Same check as `nativelink --check`, run before any store is constructed
+    // so a dangling reference is reported as one error listing every problem
+    // with its config path, instead of surfacing one at a time from whichever
+    // factory happens to resolve it first.
+    cfg.validate_references()?;
+
     if cfg.shares_workers_with_writable_action_cache() {
         warn!(
             "Workers are shared across jobs and the action cache accepts client writes. \

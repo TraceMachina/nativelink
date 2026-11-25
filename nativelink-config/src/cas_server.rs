@@ -2258,21 +2258,26 @@ impl CasConfig {
         Ok(())
     }
 
-    /// Offline structural validation of every store/scheduler name reference
-    /// in this config. This is a pure, read-only check intended for
-    /// `nativelink --check`: it constructs no stores, binds no sockets, opens
-    /// no connections, and creates no directories.
+    /// Structural validation of every store/scheduler name reference in this
+    /// config. This is a pure, read-only check: it constructs no stores, binds
+    /// no sockets, opens no connections, and creates no directories. It backs
+    /// `nativelink --check` and runs again at the start of normal startup, so
+    /// the two paths reject exactly the same configs.
     ///
-    /// Every store name referenced by a worker or by a server service, and
-    /// every scheduler name referenced by a service, must resolve to a store
-    /// declared in `stores` / a scheduler declared in `schedulers`. Store
-    /// references made *inside* a declared store's spec (the `ref_store`
-    /// wrappers such as `fast_slow`, `dedup`, `completeness_checking`, ...)
-    /// are also resolved, but only for the transitive closure of stores that
-    /// are actually wired to a worker or service. Store definitions that are
-    /// never referenced by any consumer (for example a pure store-catalog
-    /// sample config) are intentionally not walked, so their illustrative
-    /// placeholder references are never flagged.
+    /// Every store name referenced by a worker, by a server service, or by a
+    /// scheduler, and every scheduler name referenced by a service, must
+    /// resolve to a store declared in `stores` / a scheduler declared in
+    /// `schedulers`. Store references made *inside* a declared store's spec
+    /// (the `ref_store` wrappers such as `fast_slow`, `dedup`,
+    /// `completeness_checking`, ...) are resolved for *every* declared store,
+    /// whether or not a consumer is wired to it, because startup constructs
+    /// every declared store and `RefStore::post_init` rejects a dangling name
+    /// regardless of use.
+    ///
+    /// An empty `stores` list or an absent `schedulers` list is not special:
+    /// a reference into an empty registry is unresolved, exactly as it is at
+    /// startup. Illustrative fragments that rely on definitions living
+    /// elsewhere are a test-fixture concern, not a deployment one.
     ///
     /// All problems are collected and reported together, each with a path
     /// such as `servers[0].services.cas[main].cas_store references
@@ -2304,20 +2309,10 @@ impl CasConfig {
             }
         }
 
-        // Only validate a reference category when its registry is non-empty.
-        // A config that declares zero stores (or zero schedulers) is a
-        // fragment or legacy-format sample whose backing definitions live
-        // elsewhere; every reference would then trivially be "unresolved" and
-        // flagging them would be a false positive on an otherwise-valid
-        // sample. Real deployments always declare their stores, so genuine
-        // typos are still caught.
         let mut checker = ReferenceChecker {
-            check_stores: !store_names.is_empty(),
-            check_schedulers: !scheduler_names.is_empty(),
             store_names,
             scheduler_names,
             problems,
-            used_stores: Vec::new(),
         };
 
         for (worker_idx, worker) in self.workers.iter().flatten().enumerate() {
@@ -2405,6 +2400,12 @@ impl CasConfig {
                     &format!("{prefix}.fetch[{name}].fetch_store"),
                     &entry.fetch_store,
                 );
+                if let Some(downloader) = &entry.downloader {
+                    checker.store(
+                        &format!("{prefix}.fetch[{name}].downloader.cas_store"),
+                        &downloader.cas_store,
+                    );
+                }
             }
             for entry in services.push.iter().flatten() {
                 let name = &entry.instance_name;
@@ -2426,19 +2427,16 @@ impl CasConfig {
 
         // Scheduler specs themselves reference stores (and nest further
         // schedulers); walk every declared scheduler so those references are
-        // resolved and their stores seed the `ref_store` reachability walk.
+        // resolved too.
         for scheduler in self.schedulers.iter().flatten() {
             checker.scheduler_spec(&format!("schedulers[{}]", scheduler.name), &scheduler.spec);
         }
 
-        // Resolve `ref_store` references reachable from the wired-up stores.
-        if checker.check_stores {
-            let store_specs: HashMap<&str, &StoreSpec> = self
-                .stores
-                .iter()
-                .map(|store| (store.name.as_str(), &store.spec))
-                .collect();
-            checker.walk_used_stores(&store_specs);
+        // Resolve the `ref_store` names nested inside every declared store.
+        // Startup constructs all of them and runs `post_init` on each, so an
+        // unused store with a dangling `ref_store` still fails to boot.
+        for store in &self.stores {
+            checker.store_internal_refs(&store.name, &store.spec);
         }
 
         if checker.problems.is_empty() {
@@ -2502,23 +2500,13 @@ fn collect_ref_store_names<'a>(spec: &'a StoreSpec, out: &mut Vec<&'a StoreRefNa
 struct ReferenceChecker<'a> {
     store_names: HashSet<&'a str>,
     scheduler_names: HashSet<&'a str>,
-    check_stores: bool,
-    check_schedulers: bool,
     problems: Vec<String>,
-    /// Declared store names reached from a worker/service, used to seed the
-    /// `ref_store` reachability walk.
-    used_stores: Vec<&'a str>,
 }
 
 impl<'a> ReferenceChecker<'a> {
     /// Records that `name` (found at `path`) must resolve to a declared store.
-    fn store(&mut self, path: &str, name: &'a str) {
-        if !self.check_stores {
-            return;
-        }
-        if self.store_names.contains(name) {
-            self.used_stores.push(name);
-        } else {
+    fn store(&mut self, path: &str, name: &str) {
+        if !self.store_names.contains(name) {
             self.problems
                 .push(format!("{path} references undefined store '{name}'"));
         }
@@ -2527,9 +2515,6 @@ impl<'a> ReferenceChecker<'a> {
     /// Records that `name` (found at `path`) must resolve to a declared
     /// scheduler.
     fn scheduler(&mut self, path: &str, name: &str) {
-        if !self.check_schedulers {
-            return;
-        }
         if !self.scheduler_names.contains(name) {
             self.problems
                 .push(format!("{path} references undefined scheduler '{name}'"));
@@ -2562,6 +2547,10 @@ impl<'a> ReferenceChecker<'a> {
                 );
             }
             SchedulerSpec::HistoricalResource(inner) => {
+                // `snapshot_store` is deliberately not checked: by documented
+                // contract a missing name only logs a warning at startup and
+                // disables snapshot persistence, so flagging it here would
+                // make `--check` stricter than boot.
                 self.scheduler_spec(
                     &format!("{path}.historical_resource.scheduler"),
                     &inner.scheduler,
@@ -2572,30 +2561,16 @@ impl<'a> ReferenceChecker<'a> {
         }
     }
 
-    /// Walks the transitive closure of stores reachable from
-    /// [`Self::used_stores`], resolving each nested `ref_store` against the
-    /// declared store set. A visited set bounds the walk against `ref_store`
-    /// cycles.
-    fn walk_used_stores(&mut self, store_specs: &HashMap<&'a str, &'a StoreSpec>) {
-        let mut visited: HashSet<&'a str> = HashSet::new();
-        while let Some(name) = self.used_stores.pop() {
-            if !visited.insert(name) {
-                continue;
-            }
-            let Some(&spec) = store_specs.get(name) else {
-                continue;
-            };
-            let mut refs: Vec<&'a StoreRefName> = Vec::new();
-            collect_ref_store_names(spec, &mut refs);
-            for ref_name in refs {
-                if self.store_names.contains(ref_name.as_str()) {
-                    self.used_stores.push(ref_name.as_str());
-                } else {
-                    self.problems.push(format!(
-                        "store '{name}' references undefined store '{ref_name}'"
-                    ));
-                }
-            }
+    /// Resolves every `ref_store` name nested anywhere inside the declared
+    /// store `name` against the declared store set. Each declared store is
+    /// walked exactly once by the caller, so no visited set is needed and a
+    /// `ref_store` cycle between declared stores is simply two resolved
+    /// references.
+    fn store_internal_refs(&mut self, name: &str, spec: &'a StoreSpec) {
+        let mut refs: Vec<&'a StoreRefName> = Vec::new();
+        collect_ref_store_names(spec, &mut refs);
+        for ref_name in refs {
+            self.store(&format!("store '{name}'"), ref_name.as_str());
         }
     }
 }
@@ -3180,6 +3155,35 @@ mod tests {
     }
 
     #[test]
+    fn validate_references_flags_undefined_fetch_downloader_cas_store() {
+        // The HTTP downloader of a fetch service writes into its own CAS
+        // reference, separate from `fetch_store`.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "FETCH", memory: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: {
+                        fetch: [{
+                            instance_name: "main",
+                            fetch_store: "FETCH",
+                            downloader: { cas_store: "MISSING_CAS" },
+                        }],
+                    },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(
+            err.to_string().contains(
+                "servers[0].services.fetch[main].downloader.cas_store references undefined store 'MISSING_CAS'"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn validate_references_flags_duplicate_store_name() {
         let cfg = parse_cas_config(
             r#"{
@@ -3243,10 +3247,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_references_skips_empty_store_registry() {
-        // A fragment/legacy sample with no declared stores must not be
-        // flagged: every reference would trivially be unresolved, which would
-        // be a false positive on an otherwise-valid sample.
+    fn validate_references_flags_references_into_empty_store_registry() {
+        // `stores: []` is a complete declaration of zero stores, not a
+        // fragment: startup has no other source of definitions, so every
+        // service reference below fails at boot and must fail here too.
         let cfg = parse_cas_config(
             r#"{
                 stores: [],
@@ -3263,26 +3267,78 @@ mod tests {
                 }],
             }"#,
         );
-        cfg.validate_references()
-            .expect("empty registries defer to boot, not a false positive");
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(err.to_string().contains(
+            "servers[0].services.cas[].cas_store references undefined store 'CAS_MAIN_STORE'"
+        ));
+        assert!(err.to_string().contains(
+            "servers[0].services.execution[].cas_store references undefined store 'WORKER_STORE'"
+        ));
+        // `schedulers` is absent entirely; that is an empty registry too.
+        assert!(err.to_string().contains(
+            "servers[0].services.execution[].scheduler references undefined scheduler 'MAIN_SCHEDULER'"
+        ));
     }
 
     #[test]
-    fn validate_references_ignores_unreferenced_store_internal_refs() {
-        // A pure store-catalog config (no servers, no workers) may carry
-        // illustrative placeholder `ref_store` names; because nothing wires
-        // those stores to a consumer, their internal refs are not walked and
-        // must not be flagged.
+    fn validate_references_flags_scheduler_reference_with_no_schedulers_declared() {
+        // A worker API service pointing at a scheduler when the config
+        // declares none fails at startup; `--check` must agree.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50061" } },
+                    services: { worker_api: { scheduler: "MISSING" } },
+                }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(err.to_string().contains(
+            "servers[0].services.worker_api.scheduler references undefined scheduler 'MISSING'"
+        ));
+    }
+
+    #[test]
+    fn validate_references_flags_unreferenced_store_internal_refs() {
+        // Startup constructs every declared store and runs `post_init` on
+        // all of them, so a dangling `ref_store` inside a store that no
+        // service or worker uses still fails to boot. The walker must cover
+        // every declared store, not just the reachable ones.
         let cfg = parse_cas_config(
             r#"{
                 stores: [
                     { name: "REAL", memory: {} },
-                    { name: "SHOWCASE", ref_store: { name: "PLACEHOLDER_NOT_DECLARED" } },
+                    { name: "UNUSED", ref_store: { name: "MISSING" } },
+                ],
+                servers: [],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(
+            err.to_string()
+                .contains("store 'UNUSED' references undefined store 'MISSING'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_references_accepts_ref_store_cycle_between_declared_stores() {
+        // Every declared store is walked once, so a cycle is two resolved
+        // references rather than an infinite walk.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [
+                    { name: "A", ref_store: { name: "B" } },
+                    { name: "B", ref_store: { name: "A" } },
                 ],
                 servers: [],
             }"#,
         );
         cfg.validate_references()
-            .expect("unreferenced catalog stores are not walked");
+            .expect("a ref_store cycle resolves without looping");
     }
 }
