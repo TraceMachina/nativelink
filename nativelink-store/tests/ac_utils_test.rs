@@ -130,6 +130,7 @@ async fn genuine_missing_digest_keeps_context() -> Result<(), Error> {
         ErrorContext::MissingDigest {
             hash: digest.packed_hash().to_string(),
             size: HASH1_SIZE,
+            digest_function: None,
         }
     );
     Ok(())

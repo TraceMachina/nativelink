@@ -227,4 +227,6 @@ pub struct PeerScheduler {
     /// The properties each distinct kind of worker connected to the peer
     /// registered with.
     pub workers: Vec<PlatformProperties>,
+    /// The peer renews its workers' leases; an older one does not.
+    pub renews_worker_leases: bool,
 }

@@ -78,6 +78,29 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.9.0: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Bound the pre-build garbage collection wait on the retained client", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Clone executable inputs into the directory cache on macOS", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Compare the swept attempts with assert_eq", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Gate empty-file mode change to macOS", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Hold the Nix client lock through artifact transfer", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Keep do_not_cache results out of the Action Cache on the worker", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Name the digest function in MISSING precondition subjects", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Redis store: a refused change notice no longer fails the write it follows", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report update_enabled per instance in GetCapabilities", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Resolve url and chrono RustSec advisories", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Run the cluster and Nix lanes on the AWS deployment only", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Scheduler tests: retention follows real listeners", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Scope trusted build permissions to the reporting job", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Use same version of rust as nix", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Warn at startup when shared workers and a writable action cache are combined", group = "<!-- 1 -->⛰️  Features" },
+  { message = "a worker can name itself", group = "<!-- 1 -->⛰️  Features" },
+  { message = "a worker is heard from when its message arrives", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "handle console shutdown signals and publish signed release binaries", group = "<!-- 1 -->⛰️  Features" },
+  { message = "invalidate ExistenceCacheStore entries on remove", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "keep a refused result, report a lost upstream as Unavailable", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "tell a worker that named itself when its result is settled", group = "<!-- 1 -->⛰️  Features" },
+
   # v1.8.7: pinned by subject, since their bodies trip the generic word rules.
   { message = "1.7.7 had a non-Vale compliant doc comment", group = "<!-- 3 -->📚 Documentation" },
   { message = "Add an optional AWS lane to the Nix workflow", group = "<!-- 4 -->🧪 Testing & CI" },

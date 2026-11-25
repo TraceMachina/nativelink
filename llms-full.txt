@@ -7203,6 +7203,8 @@ loadable config.
 | `worker_with_redis_scheduler.json5` | A scheduler whose state lives in Redis |
 | `scheduler_match_logging_disable.json5` | Turning off the periodic match dump |
 | `tmpfs-worker.json5` | A worker whose fast tier and work directory sit on a tmpfs mount |
+| `ci_cache_and_schedulers.json5` | The trusted CI control plane: a writable `main` instance and a read-only `pr` instance for untrusted builds |
+| `ci_single_use_workers.json5` | The untrusted pull-request worker: one `single_use` worker per process, run one-shot per action |
 | `legacy_service_config.json5` | The older service config shape, for migrations |
 
 <SourceLink file="nativelink-config/examples/README.md" />
@@ -7210,6 +7212,15 @@ loadable config.
 Start from the file closest to your situation and read its comments;
 several of them explain constraints you'd otherwise discover the hard way,
 like why a worker's `fast` store must be a filesystem store.
+
+For CI that builds untrusted pull requests, use the pair
+`ci_cache_and_schedulers.json5` and `ci_single_use_workers.json5`. Run the
+first as the long-lived cache and scheduler, with a writable `main` instance
+for trusted branches and a read-only `pr` instance that lets a pull request
+read the cache but never write it. Launch the second as a one-shot process
+per action so each untrusted build runs on a fresh `single_use` worker that
+shares no state with the next. Reach for this whenever a build you don't
+fully trust shares a NativeLink cluster with builds you do.
 
 [How-to guides](/how-to) is the task-oriented version of that table if you
 already know which backend you want.
@@ -10111,6 +10122,9 @@ interval:
 
 It exists because `FindMissingBlobs` against an on-premises S3 endpoint is
 often the slowest thing in the build, and the answer is usually stale-tolerant.
+A `remove` through this store drops the digest from that index and deletes
+the S3 object. A `remove_cached` drops the index entry only and keeps the S3
+object; until the next sync, `has()` treats the digest as missing.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOntapS3Spec" />
 
@@ -11862,6 +11876,14 @@ The `eviction_policy` here governs the existence *index*, not the data. It is
 a small map of digests, so it can hold far more entries than the store itself.
 This is the highest-leverage wrapper in front of object storage, where every
 existence check is a billed request.
+
+A `remove` or `remove_cached` through this wrapper drops that local presence
+entry, so the next `has()` asks the backend again, then forwards the call to
+the wrapped store. `removed=true` means a copy below this wrapper was
+dropped; `remove_cached` only reaches cache tiers and keeps the durable copy.
+A failed or no-op backend removal still leaves the old positive untrusted.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
 
 ### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
 
@@ -16261,13 +16283,18 @@ happens once, at parse time; rotating a certificate on disk needs a restart.
 <Callout type="info" title="client_ca_file is the closest thing to authentication you get">
 
   mTLS proves that a client holds a certificate your CA issued. It does not map
-  that identity to a permission; every authenticated client can do everything.
-  No read-only role, no per-instance-name restriction, and no way exists to
-  let CI write to the cache while developers only read.
+  that identity to a permission: NativeLink has no per-client role, so every
+  authenticated client can do anything the endpoint it reaches allows.
 
-  If you need that distinction, it lives in front of NativeLink: separate
-  listeners, separate CAs, and a proxy or network policy that decides which
-  clients reach which listener.
+  The Action Cache has one per-instance control. An `instance_name` marked
+  `read_only` rejects `UpdateActionResult` while still serving reads, and
+  `GetCapabilities` advertises `update_enabled: false` for it. That restriction
+  belongs to the instance, not the client, so "CI writes while developers only
+  read" still comes down to routing: serve a writable `instance_name` and a
+  read-only one, then let a proxy or network policy in front decide which
+  clients reach which. The
+  [`ci_cache_and_schedulers.json5`](/remote-execution/examples-and-templates#server-configs)
+  example wires exactly that.
 
 </Callout>
 
@@ -21635,6 +21662,11 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
@@ -21650,16 +21682,21 @@ worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
 decorator in front of the scheduler, so the state is skipped entirely. A
 client waiting to observe it will wait forever.
 
+**Binary request headers may be padded.** The
+`build.bazel.remote.execution.v2.requestmetadata-bin` header is read whether
+its base64 carries `=` padding or not, as the gRPC wire format requires.
+
 **Final action failure arrives as success.** An action that exhausts its
 retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
-**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
-an action is never answered from the Action Cache and never shares an
-execution with an identical action that is already running. The worker still
-writes its result to the Action Cache; that part is tracked in
-[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+**`Action.do_not_cache` keeps an action out of the Action Cache.** Such an
+action is never answered from the Action Cache, never shares an execution with
+an identical action that is already running, and the worker does not write its
+result to the Action Cache. A historical result is still uploaded when
+`upload_historical_results_strategy` asks for one: that record is stored under
+its own digest for debugging and is never served as a cached result.
 
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
@@ -24142,9 +24179,9 @@ The shape of it:
     publish. Publishing is what triggers the signed-artifacts workflow.
   </li>
   <li>
-    **Verify the assets landed**: for each target, a `.tar.gz` plus its
-    `.sig` and `.pem`, an `.spdx.json` SBOM, and an `.intoto.jsonl`
-    provenance file.
+    **Verify the assets landed**: for each target, a `.tar.gz` (Unix) or `.zip`
+    (Windows) plus its `.sig` and `.pem`, an `.spdx.json` SBOM, and an
+    `.intoto.jsonl` provenance file.
   </li>
 </Steps>
 
@@ -24157,9 +24194,10 @@ The shape of it:
 | `config-reference.yaml` | `v1.*` tags, and weekly | Regenerated config reference, auto-merged |
 | `release.yaml` | Publishing a GitHub Release | Signed binaries, SBOMs, SLSA provenance |
 
-`release.yaml` builds three targets (`x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`), signs each with
-keyless Sigstore cosign, and attaches SLSA Build Level 3 provenance.
+`release.yaml` builds four targets (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc`), signs each with keyless Sigstore cosign, and attaches
+SLSA Build Level 3 provenance.
 
 <Callout type="info" title="Cosign is pinned to v2.5.3 on purpose">
   Cosign v3 stopped emitting the separate `.sig` and `.pem` files. The

@@ -38,83 +38,8 @@ jobs:
       startsWith(github.ref, 'refs/heads/') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: Build shared Nix package
-    environment: cluster-ci-benchmark
-    permissions:
-      contents: read
-      id-token: write
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    # Job-level rather than step-level: the runner echoes a step's env block
-    # into the log header, and these cluster coordinates do not belong in
-    # console output.
-    env:
-      NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
-      NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
-      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
-      NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
-    outputs:
-      matrix: ${{ steps.manifest.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
-      - name: Test Nix package sharing
-        run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
-
-      - name: Install pinned cluster client
-        run: |
-          curl --fail --location --retry 3 \
-            https://dl.k8s.io/release/v1.36.3/bin/linux/amd64/kubectl \
-            -o "$RUNNER_TEMP/kubectl"
-          echo "ebbd080e7c2e275093b55915722043257eb24004363e20acb3c4d71919f88336  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
-          chmod +x "$RUNNER_TEMP/kubectl"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      - name: Build and export once on the retained client
-        run: |
-          export BENCHMARK_STARTED="$(date +%s)"
-          python3 .github/scripts/cluster_ci.py --task nix \
-            --output "$RUNNER_TEMP/nix-ci"
-
-      - name: Read verified command matrix
-        id: manifest
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'nix-ci/nix.json').read_text())
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('matrix=' + json.dumps(report['matrix'], separators=(',', ':')) + '\n')
-          PY
-
-      - name: Publish the shared Nix store closure
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: nix-ci-package
-          path: ${{ runner.temp }}/nix-ci/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 3
-
-  # The same build on the AWS deployment's Nix client, beside the job above
-  # until it replaces it. The jobs below keep importing the package the job
-  # above publishes; nothing waits for this one or reads what it built. It
-  # never fails a run, builds main only, as that deployment trusts reviewed
-  # code alone, and starts only while the repository variable NL_AWS_LANE is
-  # set.
-  nix-build-aws:
-    if: >-
-      github.repository == 'TraceMachina/nativelink' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.NL_AWS_LANE == 'true'
-    name: Build shared Nix package (AWS)
+    # The Nix client of the AWS deployment, ci.nativelink.com.
     environment: cluster-ci-aws
-    continue-on-error: true
     permissions:
       contents: read
       id-token: write
@@ -130,12 +55,17 @@ jobs:
       NL_GKE_CA_DATA: ${{ secrets.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
       NL_GKE_POD: ${{ vars.NL_GKE_NIX_POD }}
+    outputs:
+      matrix: ${{ steps.manifest.outputs.matrix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
+      # No free-disk step: it removes the AWS CLI, which the cluster client
+      # runs for every token. The build runs on the retained client, and the
+      # runner receives only its report and closure.
+      - name: Test Nix package sharing
+        run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
 
       - name: Install pinned cluster client
         run: |
@@ -165,14 +95,25 @@ jobs:
           python3 .github/scripts/cluster_ci.py --task nix \
             --output "$RUNNER_TEMP/nix-ci"
 
-      - name: Publish the build report
-        if: always()
+      - name: Read verified command matrix
+        id: manifest
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'nix-ci/nix.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps(report['matrix'], separators=(',', ':')) + '\n')
+          PY
+
+      - name: Publish the shared Nix store closure
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: nix-ci-aws
-          path: ${{ runner.temp }}/nix-ci/nix.json
-          if-no-files-found: warn
-          retention-days: 7
+          name: nix-ci-package
+          path: ${{ runner.temp }}/nix-ci/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
