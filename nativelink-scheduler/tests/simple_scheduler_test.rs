@@ -3180,6 +3180,41 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     Ok(())
 }
 
+/// The matching task is spawned while the scheduler is still being built,
+/// so a change notice already waiting can wake it before the scheduler
+/// exists; it must still run its pass, not take that for shutdown. Each
+/// build loses that race rarely, so the test builds many.
+#[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_notice_waiting_at_construction_runs_a_pass() -> Result<(), Error> {
+    for attempt in 0..5_000 {
+        let task_change_notify = Arc::new(Notify::new());
+        task_change_notify.notify_one();
+        let (pass_tx, mut pass_rx) = mpsc::unbounded_channel();
+        let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+            &SimpleSpec::default(),
+            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+            move || {
+                let _ = pass_tx.send(());
+                async {}
+            },
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        // The pass sends; a matching task that returned dropped the sender.
+        let pass = tokio::time::timeout(Duration::from_secs(30), pass_rx.recv())
+            .await
+            .map_err(|_| make_err!(Code::Internal, "no pass and no exit, attempt {attempt}"))?;
+        assert_eq!(
+            pass,
+            Some(()),
+            "the matching task exited, attempt {attempt}"
+        );
+        drop(scheduler);
+    }
+    Ok(())
+}
+
 // Note: This is a regression test for:
 // https://github.com/TraceMachina/nativelink/issues/1197
 #[nativelink_test]
@@ -5745,5 +5780,159 @@ async fn a_record_that_cannot_be_read_ends_the_client_stream_with_an_error() -> 
             }
         }
     }
+    Ok(())
+}
+
+/// A subscriber that hears of no change: its `changed` never returns, as
+/// when the wait that took a change notice was dropped before it read the
+/// record. Reads work.
+struct Deaf<S>(S);
+
+impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for Deaf<S> {
+    fn changed(&mut self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send {
+        std::future::pending()
+    }
+
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send {
+        self.0.borrow()
+    }
+}
+
+/// Hands out `Deaf` subscribers over a real db.
+#[derive(MetricsComponent)]
+struct DeafDb<A: AwaitedActionDb> {
+    inner: A,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for DeafDb<A> {
+    type Subscriber = Deaf<A::Subscriber>;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await?
+            .map(Deaf))
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(self
+            .inner
+            .get_all_awaited_actions()
+            .await?
+            .map(|item| item.map(Deaf)))
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_by_operation_id(operation_id)
+            .await?
+            .map(Deaf))
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        Ok(self
+            .inner
+            .get_range_of_actions(state, start, end, desc)
+            .await?
+            .map(|item| item.map(Deaf)))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        Ok(Deaf(
+            self.inner
+                .add_action(client_operation_id, action_info, no_event_action_timeout)
+                .await?,
+        ))
+    }
+}
+
+/// A client's wait for a change is raced against the worker timeout, and
+/// the race drops the wait, with any change notice it had taken but not
+/// yet read. A client that so missed the notice of its result is told of it
+/// at the next timeout check, not left waiting until the finished record
+/// expires.
+#[nativelink_test]
+async fn a_client_that_missed_the_notice_of_its_result_is_answered_at_the_next_check()
+-> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            worker_timeout_s: 5,
+            ..SimpleSpec::default()
+        },
+        DeafDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let worker_id = WorkerId("worker_id".to_string());
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut listener = setup_action(
+        &scheduler,
+        DigestInfo::new([0x7d; 32], 512),
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let update = tokio::time::timeout(Duration::from_secs(10), rx_from_worker.recv())
+        .await
+        .expect("the action was sent to the worker")
+        .expect("the worker's stream stays open");
+    let (operation_id, _) = start_execute_digest(update);
+    scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(operation_id),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(completed_result(
+                &worker_id,
+            ))),
+        )
+        .await?;
+
+    let completed = async {
+        loop {
+            let (state, _) = listener.changed().await?;
+            if matches!(state.stage, ActionStage::Completed(_)) {
+                return Ok::<_, Error>(());
+            }
+        }
+    };
+    on_the_mock_clock(completed, Duration::from_mins(1))
+        .await
+        .expect("the client was never told of its result")?;
     Ok(())
 }

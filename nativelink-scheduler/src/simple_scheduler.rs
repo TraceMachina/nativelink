@@ -50,7 +50,7 @@ use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::Mutex;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
@@ -1598,10 +1598,17 @@ impl SimpleScheduler {
             })
         };
 
+        // The matching task starts before `new_cyclic` returns, while its weak
+        // handle cannot upgrade yet; woken then (a change notice is often
+        // waiting), it would read that as shutdown and never run again.
+        let (built_tx, built_rx) = oneshot::channel::<()>();
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
+                    if built_rx.await.is_err() {
+                        return;
+                    }
                     let mut last_match_successful = true;
                     let mut worker_match_logging_last: Option<Instant> = None;
                     // Break out of the loop only when the inner is dropped.
@@ -1718,6 +1725,7 @@ impl SimpleScheduler {
                 now_fn: scheduler_now_fn,
             }
         });
+        let _ = built_tx.send(());
         (action_scheduler, worker_scheduler_clone)
     }
 }
