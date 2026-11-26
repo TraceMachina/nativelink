@@ -302,6 +302,10 @@ enum AttemptEndReason {
     /// The worker finished it but the scheduler could not store the result,
     /// so the executing sweep requeued it.
     LOST_RESULT = 9;
+    /// The scheduler took it back while the worker still held it: the
+    /// operation was requeued, given to another worker, finished elsewhere
+    /// or cancelled, and the worker was told to kill it.
+    REVOKED = 10;
 }
 
 /// One attempt at an action ended without the result it was run for.

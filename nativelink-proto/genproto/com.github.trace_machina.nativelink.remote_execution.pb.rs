@@ -576,6 +576,10 @@ pub enum AttemptEndReason {
     /// / The worker finished it but the scheduler could not store the result,
     /// / so the executing sweep requeued it.
     LostResult = 9,
+    /// / The scheduler took it back while the worker still held it: the
+    /// / operation was requeued, given to another worker, finished elsewhere
+    /// / or cancelled, and the worker was told to kill it.
+    Revoked = 10,
 }
 impl AttemptEndReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -594,6 +598,7 @@ impl AttemptEndReason {
             Self::WorkerError => "WORKER_ERROR",
             Self::InputFetchTimeout => "INPUT_FETCH_TIMEOUT",
             Self::LostResult => "LOST_RESULT",
+            Self::Revoked => "REVOKED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -609,6 +614,7 @@ impl AttemptEndReason {
             "WORKER_ERROR" => Some(Self::WorkerError),
             "INPUT_FETCH_TIMEOUT" => Some(Self::InputFetchTimeout),
             "LOST_RESULT" => Some(Self::LostResult),
+            "REVOKED" => Some(Self::Revoked),
             _ => None,
         }
     }

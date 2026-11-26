@@ -4407,36 +4407,38 @@ async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), 
     Ok(())
 }
 
-// An operation the worker was told to kill was already given up on: evicting
-// the worker for not acknowledging the kill reports no lost attempt.
+// The kill ends the attempt on the worker, and is reported once: a second
+// sweep, and evicting the worker for not acknowledging the kill, report
+// nothing more.
 #[nativelink_test]
-async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_kill()
--> Result<(), Error> {
+async fn a_revoked_operation_reports_its_attempt_ended_once() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
-    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+    let (scheduler, mut rx_from_worker, operation_id, _action1_listener) =
         setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
     scheduler.kill_revoked_operations().await?;
     match rx_from_worker.try_recv().unwrap().update {
         Some(update_for_worker::Update::KillOperationRequest(_)) => {}
         v => panic!("Expected KillOperationRequest, got : {v:?}"),
     }
+    scheduler.kill_revoked_operations().await?;
     scheduler
         .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
         .await?;
     drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
     assert!(logs_contain("Evicting worker from pool"));
+    let mut ended = Vec::new();
     while let Ok(event) = origin_event_rx.try_recv() {
-        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
-            assert!(
-                !matches!(
-                    response.event,
-                    Some(response_event::Event::ActionAttemptEnded(_))
-                ),
-                "{response:?}"
-            );
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event)
+            && let Some(response_event::Event::ActionAttemptEnded(attempt)) = response.event
+        {
+            ended.push(attempt);
         }
     }
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0].reason, i32::from(AttemptEndReason::Revoked));
+    assert_eq!(ended[0].operation_id, operation_id.to_string());
+    assert_eq!(ended[0].worker_id, worker_id.to_string());
     Ok(())
 }
 
