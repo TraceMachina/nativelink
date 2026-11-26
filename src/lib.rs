@@ -942,13 +942,13 @@ pub async fn build_server(
     // holds only the worker scheduler, so keep the action schedulers alive here.
     let mut shutdown_rx = shutdown_tx.subscribe();
     root_futures.push(Box::pin(async move {
-        let _action_schedulers = action_schedulers;
         if let Ok(shutdown_guard) = shutdown_rx.recv().await {
             let _ = scheduler_shutdown_tx.send(());
             for (_name, scheduler) in worker_schedulers {
                 scheduler.shutdown(shutdown_guard.clone()).await;
             }
         }
+        drop(action_schedulers);
         Ok(())
     }));
     Ok(Server {
