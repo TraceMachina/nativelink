@@ -2629,7 +2629,7 @@ impl<'a> ReferenceChecker<'a> {
     }
 
     /// Walks a [`SchedulerSpec`] tree, resolving every store reference it
-    /// carries and recursing into nested schedulers. The match is exhaustive
+    /// carries and descending into nested schedulers. The match is exhaustive
     /// on purpose so a newly added scheduler variant forces this to be
     /// revisited (same design as [`collect_ref_store_names`]).
     fn scheduler_spec(&mut self, path: &str, spec: &'a SchedulerSpec) {
@@ -2671,7 +2671,7 @@ impl<'a> ReferenceChecker<'a> {
     /// Resolves every `ref_store` name nested anywhere inside the declared
     /// store `name` against the declared store set. Each declared store is
     /// walked exactly once by the caller, so no visited set is needed and a
-    /// `ref_store` cycle between declared stores is simply two resolved
+    /// `ref_store` cycle between declared stores is two resolved
     /// references.
     fn store_internal_refs(&mut self, name: &str, spec: &'a StoreSpec) {
         let mut refs: Vec<&'a StoreRefName> = Vec::new();
@@ -3365,7 +3365,7 @@ mod tests {
 
     #[test]
     fn validate_references_flags_undefined_cache_lookup_ac_store() {
-        // The nested scheduler inside `cache_lookup` must be recursed into,
+        // The nested scheduler inside `cache_lookup` must be walked too,
         // and its `ac_store` reference resolved.
         let cfg = parse_cas_config(
             r#"{
