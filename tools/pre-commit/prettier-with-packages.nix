@@ -1,52 +1,42 @@
 {
-  stdenv,
+  stdenvNoCC,
+  fetchPnpmDeps,
+  pnpmConfigHook,
   pnpm_11,
   nodejs_22,
-  cacert,
-}: let
-  # This derivation needs to be manually updated every time the pnpm-lock.yaml file changes.
-  outputHash = "sha256-7zJJOP1sxH6YaMcHRJwhp9n+VsCB0cSVLtR28/6sUt4=";
-in
-  stdenv.mkDerivation {
-    pname = "prettier-node-modules";
-    version = "0.0.0";
+}:
+stdenvNoCC.mkDerivation (finalAttrs: {
+  pname = "prettier-node-modules";
+  version = "0.0.0";
 
-    src = ./.;
+  src = ./.;
 
-    outputHashAlgo = "sha256";
-    outputHashMode = "recursive";
-    inherit outputHash;
+  # The pnpm store is fetched for every platform at once, so this one hash
+  # holds on Linux and macOS alike. Update it every time pnpm-lock.yaml
+  # changes: set it to "" and copy the hash Nix reports.
+  pnpmDeps = fetchPnpmDeps {
+    inherit (finalAttrs) pname version src;
+    pnpm = pnpm_11;
+    fetcherVersion = 4;
+    hash = "sha256-eqXuHiwjRXkuh3uijcBGJSpOOVQ/FJoLWEvHflqxJoA=";
+  };
 
-    nativeBuildInputs = [
-      pnpm_11
-      cacert
-      nodejs_22
-    ];
+  nativeBuildInputs = [
+    nodejs_22
+    pnpm_11
+    pnpmConfigHook
+  ];
 
-    buildPhase = ''
-      set -e
-      # Default home at this point is /homeless-shelter, which doesn't exist and breaks pnpm
-      echo "HOME was ''${HOME}"
-      export HOME=$(mktemp -d fake-homeXXXX --tmpdir)
-      echo "HOME is now ''${HOME}"
+  # pnpmConfigHook installs node_modules from the prefetched store, offline.
+  dontBuild = true;
 
-      export NODE_EXTRA_CA_CERTS="${cacert}/etc/ssl/certs/ca-bundle.crt"
-      pnpm install --frozen-lockfile --ignore-scripts
+  installPhase = ''
+    runHook preInstall
+    mkdir -p $out
+    cp package.json pnpm-lock.yaml .prettierrc.json $out/
+    cp -r node_modules $out/
+    runHook postInstall
+  '';
 
-      # they have timestamps, which breaks the hashes. See also https://github.com/pnpm/pnpm/issues/11669
-      rm node_modules/.modules.yaml node_modules/.pnpm-workspace-state-v1.json
-    '';
-
-    installPhase = ''
-      mkdir -p $out
-      ls -l
-      cp package.json pnpm-lock.yaml .prettierrc.json $out/
-      cp -r node_modules $out/
-    '';
-
-    # This is a fixed-output derivation. Patching nix store paths into it would
-    # break it, so disable all automatic adjustments.
-    dontFixup = true;
-    dontPatch = true;
-    dontPatchShebangs = true;
-  }
+  dontFixup = true;
+})
