@@ -483,6 +483,33 @@ Without the wrapper there are no `nativelink_cache_*` series at all, and any
 dashboard panel or alert built on them stays empty forever. The wrapper is opt-in
 because it costs hot-path timing on every operation.
 
+### Check each config before it ships [#check-each-config-before-it-ships]
+
+`nativelink --check` parses a config and checks every store, scheduler,
+worker and listener name it uses, then exits without starting anything. Run
+it in CI on every config you deploy, one file per run:
+
+```sh
+for config in cas.json5 scheduler.json5 worker.json5; do
+  nativelink --check "$config" || exit 1
+done
+```
+
+The container image's entrypoint is the binary, so the same check runs
+against the image you deploy:
+
+```sh
+NATIVELINK_VERSION=vX.Y.Z # the exact tag you deploy
+
+docker run --rm -v "$PWD:/config" "ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION}" \
+  --check /config/cas.json5
+```
+
+Set the same environment variables the deployment sets. A `${VAR}` that is
+not set fails the check, just as it fails startup. What `--check` covers, and
+what still only fails at startup, is listed under
+[the command line](/reference/cli-and-env#the-command-line).
+
 </Steps>
 
 <VerifyBlock>
