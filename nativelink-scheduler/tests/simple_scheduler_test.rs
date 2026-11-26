@@ -3180,6 +3180,41 @@ async fn ensure_task_or_worker_change_notification_received_test() -> Result<(),
     Ok(())
 }
 
+/// The matching task is spawned while the scheduler is still being built,
+/// so a change notice already waiting can wake it before the scheduler
+/// exists; it must still run its pass, not take that for shutdown. Each
+/// build loses that race rarely, so the test builds many.
+#[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_notice_waiting_at_construction_runs_a_pass() -> Result<(), Error> {
+    for attempt in 0..5_000 {
+        let task_change_notify = Arc::new(Notify::new());
+        task_change_notify.notify_one();
+        let (pass_tx, mut pass_rx) = mpsc::unbounded_channel();
+        let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+            &SimpleSpec::default(),
+            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+            move || {
+                let _ = pass_tx.send(());
+                async {}
+            },
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        // The pass sends; a matching task that returned dropped the sender.
+        let pass = tokio::time::timeout(Duration::from_secs(30), pass_rx.recv())
+            .await
+            .map_err(|_| make_err!(Code::Internal, "no pass and no exit, attempt {attempt}"))?;
+        assert_eq!(
+            pass,
+            Some(()),
+            "the matching task exited, attempt {attempt}"
+        );
+        drop(scheduler);
+    }
+    Ok(())
+}
+
 // Note: This is a regression test for:
 // https://github.com/TraceMachina/nativelink/issues/1197
 #[nativelink_test]
