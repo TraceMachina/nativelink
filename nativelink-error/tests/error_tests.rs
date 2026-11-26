@@ -69,7 +69,11 @@ fn unknown_mentioning_transport_error_mid_message_is_preserved() {
 )]
 #[test]
 fn transport_error_in_source_chain_maps_to_unavailable() {
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    // This test checks error conversion and does not need runtime worker threads.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
     let transport_err = runtime.block_on(async {
         let dead_port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
