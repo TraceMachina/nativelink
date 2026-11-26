@@ -7,7 +7,7 @@ on:
     paths-ignore:
       - ".github/styles/**"
       - "web/**"
-  # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
+  # Two jobs run only on the nightly schedule and full manual runs: Cargo Dev
   # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
   # mongo). See their per-job `if`. The installation and
   # RBE toolchain matrix stay on the branch CI path and skip the nightly run via
@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Branch CI only, or include nightly Cargo and integration checks
+        type: choice
+        options: [all, branch]
+        default: all
 
 permissions:
   contents: read
@@ -25,36 +31,39 @@ concurrency:
 
 jobs:
   # Credentialed work uses reviewed repository branches, like the Bazel lane.
-  # Promote reviewed external commits to a repository branch before running it.
+  # The trusted coordinator promotes listed forks; maintainers review others.
   nix-build:
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
       startsWith(github.ref, 'refs/heads/') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: Build shared Nix package
-    environment: cluster-ci-benchmark
+    # The Nix client of the AWS deployment, ci.nativelink.com.
+    environment: cluster-ci-aws
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    # Job-level rather than step-level: the runner echoes a step's env block
-    # into the log header, and these cluster coordinates do not belong in
-    # console output.
+    # The cluster's address, its certificate and the role are environment
+    # secrets: the runner echoes a job's env block into every step's log
+    # header, and it masks a secret wherever it is printed.
     env:
-      NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
-      NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
-      NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
-      NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+      NL_EKS_CLUSTER: ${{ vars.NL_EKS_CLUSTER }}
+      NL_AWS_REGION: ${{ vars.NL_AWS_REGION }}
+      NL_GKE_SERVER: ${{ secrets.NL_GKE_SERVER }}
+      NL_GKE_CA_DATA: ${{ secrets.NL_GKE_CA_DATA }}
       NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
-      NL_GKE_POD: ${{ vars.NL_GKE_POD }}
+      NL_GKE_POD: ${{ vars.NL_GKE_NIX_POD }}
     outputs:
       matrix: ${{ steps.manifest.outputs.matrix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
+      # No free-disk step: it removes the AWS CLI, which the cluster client
+      # runs for every token. The build runs on the retained client, and the
+      # runner receives only its report and closure.
       - name: Test Nix package sharing
         run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
 
@@ -66,6 +75,19 @@ jobs:
           echo "ebbd080e7c2e275093b55915722043257eb24004363e20acb3c4d71919f88336  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/kubectl"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # Short-lived role credentials from this job's OIDC token. The role
+      # holds no AWS permission; the cluster maps it to get and exec on the
+      # client pods only. They outlast the job's time limit: the result is
+      # read with a new cluster token after the build.
+      - name: Assume the dispatch role
+        uses: >- # v6.3.0
+          aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ secrets.NL_AWS_DISPATCH_ROLE_ARN }}
+          aws-region: ${{ vars.NL_AWS_REGION }}
+          mask-aws-account-id: true
+          role-duration-seconds: 14400
 
       - name: Build and export once on the retained client
         run: |
@@ -95,7 +117,7 @@ jobs:
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scope != 'branch') }}
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +190,7 @@ jobs:
           nix run -L .#nativelink-is-executable-test
 
   integration:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scope != 'branch') }}
     name: ${{ matrix.test-name }}
     strategy:
       matrix:

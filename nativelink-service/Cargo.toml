@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-service"
-version = "1.8.5"
+version = "1.9.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -41,6 +41,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 serde_json5 = { version = "0.2.1", default-features = false }
+sha2 = { version = "0.10.8", default-features = false }
 tempfile = { version = "3.8.1", default-features = false }
 tokio = { version = "1.53.3", features = [
   "fs",
@@ -84,7 +85,6 @@ pretty_assertions = { version = "1.4.1", features = [
 serde_json = { version = "1.0.140", default-features = false, features = [
   "std",
 ] }
-sha2 = { version = "0.10.8", default-features = false }
 tokio = { version = "1.53.3", features = [
   "test-util",
 ], default-features = false }

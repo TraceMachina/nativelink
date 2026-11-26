@@ -15,7 +15,7 @@
 use core::future::Future;
 use core::ops::Bound;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,6 +39,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
     KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
+use nativelink_redis_tester::{FakeRedisBackend, Fault};
 use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -48,15 +49,16 @@ use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_fa
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::redis_store::RedisSubscriptionManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId,
-    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, DirectoryInfo,
+    ExecutionMetadata, FileInfo, INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath,
+    OperationId, STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
+    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags, OrderDirection,
     UpdateOperationType,
 };
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
@@ -67,7 +69,10 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
-use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
+use utils::scheduler_utils::{
+    Backend, BackendScheduler, GatedQueueDb, INSTANCE_NAME, gated_scheduler_on,
+    make_base_action_info, scheduler_on, update_eq,
+};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -3257,69 +3262,497 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 #[nativelink_test]
 async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
     const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
-    let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &SimpleSpec {
-            worker_timeout_s: WORKER_TIMEOUT_S,
-            client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+    for backend in Backend::ALL {
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
+
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
+
+            MockClock::advance(Duration::from_secs(2));
+            scheduler.do_try_match_for_test().await?;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
+
+        MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
+
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
+
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
+
+            MockClock::advance(Duration::from_secs(2));
+            tokio::task::yield_now().await;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
+    }
+
+    Ok(())
+}
+
+/// TRA-2340: a client that comes back through `WaitExecution` after a gap
+/// longer than `client_action_timeout_s`, before anything has retired its
+/// action, finds the action live, and the action stays live afterwards.
+/// Before the fix, the lookup judged the stale keepalive first, so the
+/// rejoining client's own request retired the action and it got nothing.
+#[nativelink_test]
+async fn wait_execution_rejoin_past_the_client_timeout_finds_the_action_live() -> Result<(), Error>
+{
+    const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+    // Kept longer than every gap, so the memory backend's client mapping (an
+    // evicting map on this window) outlives the client's absence and the
+    // case isolates the keepalive judgement. The mapping's own expiry is a
+    // separate mechanism (TRA-2341).
+    const RETAIN_COMPLETED_FOR_S: u32 = 3_600;
+    for backend in Backend::ALL {
+        // Inside the timeout (the control), just past it, and well past it.
+        for gap_s in [
+            CLIENT_ACTION_TIMEOUT_S - 1,
+            CLIENT_ACTION_TIMEOUT_S + 1,
+            CLIENT_ACTION_TIMEOUT_S * 10,
+        ] {
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    worker_timeout_s: WORKER_TIMEOUT_S,
+                    client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                    retain_completed_for_s: RETAIN_COMPLETED_FOR_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([98u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            // The client goes away; no matching pass or listing runs in the
+            // meantime, so nothing has retired the action.
+            drop(action_listener);
+            MockClock::advance(Duration::from_secs(gap_s));
+
+            let Some(mut rejoined) = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await
+            else {
+                panic!("{backend:?}, gap {gap_s} s: the rejoin found nothing");
+            };
+            // A new listener's first change is the state it joined at.
+            let stage = rejoined.changed().await?.0.stage.clone();
+            assert_eq!(
+                stage,
+                ActionStage::Queued,
+                "{backend:?}, gap {gap_s} s: the rejoining client found the action retired"
+            );
+
+            // The rejoin counts as the client being back: a matching pass
+            // and a listing right after it do not retire the action.
+            scheduler.do_try_match_for_test().await?;
+            // Listed the way the matcher lists: highest priority first.
+            let mut queued = scheduler
+                .filter_operations(OperationFilter {
+                    stages: OperationStageFlags::Queued,
+                    order_by_priority_direction: Some(OrderDirection::Desc),
+                    ..Default::default()
+                })
+                .await?;
+            while queued.next().await.is_some() {}
+            let changed = rejoined.changed();
+            tokio::pin!(changed);
+            assert_eq!(
+                poll!(&mut changed),
+                Poll::Pending,
+                "{backend:?}, gap {gap_s} s: the action changed state right after the rejoin"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/05`: once the action
+/// has completed, a `WaitExecution` by the client's id gets the result for
+/// the retention window and nothing after it, the same on both backends.
+#[nativelink_test]
+async fn wait_execution_after_completion_answers_for_the_retention_window() -> Result<(), Error> {
+    const RETAIN_S: u64 = 60;
+    for backend in Backend::ALL {
+        for (after_s, kept) in [
+            (0, true),
+            (RETAIN_S - 1, true),
+            (RETAIN_S + 1, false),
+            (RETAIN_S * 10, false),
+        ] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    retain_completed_for_s: u32::try_from(RETAIN_S).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let worker_id = WorkerId("worker_id".to_string());
+            let mut rx_from_worker =
+                setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default())
+                    .await?;
+            let mut action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([97u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            let Some(update_for_worker::Update::StartAction(start_execute)) =
+                rx_from_worker.recv().await.unwrap().update
+            else {
+                panic!("{backend:?}: expected StartAction");
+            };
+            let result = ActionResult {
+                exit_code: 3,
+                ..ActionResult::default()
+            };
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &OperationId::from(start_execute.operation_id),
+                    UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                        result.clone(),
+                    )),
+                )
+                .await?;
+            while !matches!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Completed(_)
+            ) {}
+            drop(action_listener);
+
+            MockClock::advance(Duration::from_secs(after_s));
+            let found = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await;
+            match (found, kept) {
+                (Some(rejoined), true) => {
+                    let stage = rejoined.as_state().await?.0.stage.clone();
+                    assert_eq!(
+                        stage,
+                        ActionStage::Completed(result),
+                        "{backend:?}, {after_s} s after completion"
+                    );
+                }
+                (None, false) => {}
+                (found, kept) => panic!(
+                    "{backend:?}, {after_s} s after completion: expected kept={kept}, found={}",
+                    found.is_some()
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/04`: the client
+/// keepalive key carries the client timeout as its TTL and every refresh
+/// renews it, so a keepalive never outlives the decision it informs and a
+/// waiting client's never runs out.
+#[nativelink_test]
+async fn the_client_keepalive_key_expires_with_the_client_timeout() -> Result<(), Error> {
+    for timeout_s in [30, 3_600] {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(
+            Backend::FakeRedis,
+            &SimpleSpec {
+                client_action_timeout_s: timeout_s,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let fake = fake_redis.expect("the fake Redis backend");
+        let mut action_listener = setup_action(
+            &scheduler,
+            DigestInfo::new([96u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let keepalive = || {
+            let (key, seconds) = fake
+                .expiries
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key.starts_with("ck_"))
+                .map(|(key, seconds)| (key.clone(), *seconds))
+                .expect("the client's keepalive was written");
+            let left = fake.time_to_live(&key);
+            (key, seconds, left)
+        };
+
+        // A waiting client refreshes its keepalive once it is ten seconds
+        // old; the listener does that on its way to waiting for a change.
+        let full = Duration::from_secs(timeout_s);
+        for refresh in 0..2 {
+            MockClock::advance(Duration::from_secs(11));
+            drop(tokio::time::timeout(Duration::from_millis(200), action_listener.changed()).await);
+            let (key, seconds, left) = keepalive();
+            assert_eq!(
+                seconds,
+                i64::try_from(timeout_s).unwrap(),
+                "{key}, refresh {refresh}"
+            );
+            assert_eq!(
+                left,
+                Some(full),
+                "{key}: refresh {refresh} renews the whole TTL"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// How many actions a listing of the queued stage returns, read as the
+/// matcher reads it: no client behind it.
+async fn queued_count(scheduler: &SimpleScheduler) -> Result<usize, Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
             ..Default::default()
-        },
-        memory_awaited_action_db_factory(
-            0,
-            &task_change_notify.clone(),
-            MockInstantWrapped::default,
-        ),
-        || async move {},
-        task_change_notify,
-        MockInstantWrapped::default,
-        None,
-    );
-    let action_digest = DigestInfo::new([99u8; 32], 512);
+        })
+        .await?;
+    let mut count = 0;
+    while queued.next().await.is_some() {
+        count += 1;
+    }
+    Ok(count)
+}
 
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
+/// Lists the queued stage with no client behind the listing, as the matcher
+/// and the admin listings do, and waits briefly on each result's change: an
+/// internal subscriber's `changed()` is where a keepalive could be written.
+async fn read_queued_as_the_scheduler_does(scheduler: &SimpleScheduler) -> Result<(), Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        })
+        .await?;
+    while let Some(mut result) = queued.next().await {
+        drop(tokio::time::timeout(Duration::from_millis(5), result.changed()).await);
+    }
+    Ok(())
+}
 
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
+/// A client waiting passively by `WaitExecution` keeps its queued action
+/// for as long as it waits, past the client timeout; an action nobody waits
+/// on is retired one timeout and one sweep after its client left.
+#[nativelink_test]
+async fn a_passive_wait_execution_keeps_its_action_and_an_abandoned_one_goes() -> Result<(), Error>
+{
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                client_action_timeout_s: TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        // A is submitted and then waited on by name only, as a client does
+        // after its Execute stream broke.
+        let submitted = setup_action(
+            &scheduler,
+            DigestInfo::new([95u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let a_id = submitted.as_state().await?.0.client_operation_id.clone();
+        drop(submitted);
+        let mut a = scheduler
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(a_id),
+                ..Default::default()
+            })
+            .await?
+            .next()
+            .await
+            .expect("A is found by name");
+        // B is submitted and abandoned.
+        drop(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([94u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?,
         );
 
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
-
-        MockClock::advance(Duration::from_secs(2));
-        scheduler.do_try_match_for_test().await.unwrap();
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
-    }
-
-    MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
-
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
-
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
+        let mut b_retired_at = None;
+        for second in 1..=120u64 {
+            MockClock::advance(Duration::from_secs(1));
+            // A's listener is polled as the server's response stream polls it.
+            if let Ok(changed) = tokio::time::timeout(Duration::from_millis(20), a.changed()).await
+            {
+                let stage = changed?.0.stage.clone();
+                assert!(
+                    !stage.is_finished(),
+                    "{backend:?}: A ended at {second} s: {stage:?}"
+                );
+            }
+            scheduler.do_try_match_for_test().await?;
+            scheduler.sweep_abandoned_queued_actions_for_test().await?;
+            if b_retired_at.is_none() && queued_count(&scheduler).await? == 1 {
+                b_retired_at = Some(second);
+            }
+        }
+        let retired_at = b_retired_at.expect("B is retired");
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at),
+            "{backend:?}: B retired at {retired_at} s"
         );
-
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
-
-        MockClock::advance(Duration::from_secs(2));
-        tokio::task::yield_now().await;
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+        assert_eq!(
+            queued_count(&scheduler).await?,
+            1,
+            "{backend:?}: A is still queued"
+        );
     }
+    Ok(())
+}
 
+/// The scheduler's own readers (queued listings, matching passes, the
+/// abandoned-queue sweep) never refresh a client's keepalive. An abandoned
+/// action is retired at the same second however often they read it, and on
+/// Redis its keepalive key is never rewritten after the client left.
+#[nativelink_test]
+async fn internal_readers_never_keep_an_abandoned_action_alive() -> Result<(), Error> {
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        let mut retired_at = Vec::new();
+        for reads_per_second in [0, 1, 60] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    client_action_timeout_s: TIMEOUT_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            drop(
+                setup_action(
+                    &scheduler,
+                    DigestInfo::new([93u8; 32], 512),
+                    HashMap::new(),
+                    make_system_time(1),
+                )
+                .await?,
+            );
+            let keepalive_key = |fake: &FakeRedisBackend<RedisSubscriptionManager>| {
+                let table = fake.table.lock().unwrap();
+                table
+                    .iter()
+                    .find(|(key, _)| key.starts_with("ck_"))
+                    .map(|(key, value)| (key.clone(), format!("{value:?}")))
+            };
+            let written_when_client_left = fake_redis.as_ref().and_then(keepalive_key);
+
+            let mut retired = None;
+            for second in 1..=60u64 {
+                MockClock::advance(Duration::from_secs(1));
+                for _ in 0..reads_per_second {
+                    read_queued_as_the_scheduler_does(&scheduler).await?;
+                    scheduler.do_try_match_for_test().await?;
+                }
+                if let Some(fake) = &fake_redis {
+                    let now = keepalive_key(fake);
+                    assert!(
+                        now.is_none() || now == written_when_client_left,
+                        "{reads_per_second} reads/s at {second} s: a reader rewrote the keepalive"
+                    );
+                }
+                scheduler.sweep_abandoned_queued_actions_for_test().await?;
+                if retired.is_none() && queued_count(&scheduler).await? == 0 {
+                    retired = Some(second);
+                }
+            }
+            retired_at.push(retired.expect("the abandoned action is retired"));
+        }
+        assert!(
+            retired_at.iter().all(|at| *at == retired_at[0]),
+            "{backend:?}: retired at {retired_at:?} s for 0, 1 and 60 reads a second"
+        );
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at[0]),
+            "{backend:?}: retired at {} s",
+            retired_at[0]
+        );
+    }
     Ok(())
 }
 
@@ -4066,89 +4499,6 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     Ok(())
 }
 
-/// Wraps a real `AwaitedActionDb` and makes the matching pass read the
-/// queue one action per permit on `gate`, so a test can do things between
-/// two actions of the same pass. Only queued-range reads are gated.
-#[derive(MetricsComponent)]
-struct GatedQueueDb<A: AwaitedActionDb> {
-    inner: A,
-    gate: Arc<tokio::sync::Semaphore>,
-    /// When set, a queued listing also waits for one permit here before it
-    /// reads the queue at all, so a test can queue several actions and be
-    /// sure one pass lists them all.
-    listing_gate: Option<Arc<tokio::sync::Semaphore>>,
-}
-
-impl<A: AwaitedActionDb> AwaitedActionDb for GatedQueueDb<A> {
-    type Subscriber = A::Subscriber;
-
-    async fn get_awaited_action_by_id(
-        &self,
-        client_operation_id: &OperationId,
-    ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner
-            .get_awaited_action_by_id(client_operation_id)
-            .await
-    }
-
-    async fn get_all_awaited_actions(
-        &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        self.inner.get_all_awaited_actions().await
-    }
-
-    async fn get_by_operation_id(
-        &self,
-        operation_id: &OperationId,
-    ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner.get_by_operation_id(operation_id).await
-    }
-
-    async fn get_range_of_actions(
-        &self,
-        state: SortedAwaitedActionState,
-        start: Bound<SortedAwaitedAction>,
-        end: Bound<SortedAwaitedAction>,
-        desc: bool,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        if let (Some(listing_gate), SortedAwaitedActionState::Queued) = (&self.listing_gate, state)
-        {
-            listing_gate.acquire().await.expect("gate closed").forget();
-        }
-        let items = self
-            .inner
-            .get_range_of_actions(state, start, end, desc)
-            .await?
-            .collect::<Vec<_>>()
-            .await;
-        let gate = matches!(state, SortedAwaitedActionState::Queued).then(|| self.gate.clone());
-        Ok(futures::stream::iter(items).then(move |item| {
-            let gate = gate.clone();
-            async move {
-                if let Some(gate) = gate {
-                    gate.acquire_owned().await.expect("gate closed").forget();
-                }
-                item
-            }
-        }))
-    }
-
-    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
-        self.inner.update_awaited_action(new_awaited_action).await
-    }
-
-    async fn add_action(
-        &self,
-        client_operation_id: OperationId,
-        action_info: Arc<ActionInfo>,
-        no_event_action_timeout: Duration,
-    ) -> Result<Self::Subscriber, Error> {
-        self.inner
-            .add_action(client_operation_id, action_info, no_event_action_timeout)
-            .await
-    }
-}
-
 fn start_execute_digest(update: UpdateForWorker) -> (String, DigestInfo) {
     match update.update {
         Some(update_for_worker::Update::StartAction(start_execute)) => {
@@ -4514,6 +4864,488 @@ async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> 
     Ok(())
 }
 
+/// How the insert times of a burst of actions are spread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spread {
+    /// Every action carries the same timestamp.
+    Identical,
+    NanosApart,
+    MillisApart,
+    /// Evenly over 999 ms.
+    OverASecond,
+}
+
+impl Spread {
+    const ALL: [Self; 4] = [
+        Self::Identical,
+        Self::NanosApart,
+        Self::MillisApart,
+        Self::OverASecond,
+    ];
+
+    /// Nanoseconds after the burst's first insert for action `index` of
+    /// `count`.
+    fn offset_nanos(self, index: usize, count: usize) -> u64 {
+        let index = index as u64;
+        match self {
+            Self::Identical => 0,
+            Self::NanosApart => index,
+            Self::MillisApart => index * 1_000_000,
+            Self::OverASecond => index * 999_000_000 / (count.max(2) as u64 - 1),
+        }
+    }
+}
+
+/// What opens room on the worker while a matching pass is under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// The running action finishes and frees the worker's only slot.
+    SlotFreed,
+    /// A keepalive reports more free memory, with the live memory veto on.
+    MoreMemoryReported,
+}
+
+/// The digest of action `index` of a burst: distinct, so nothing coalesces.
+fn burst_digest(index: usize) -> DigestInfo {
+    let mut hash = [0xb5u8; 32];
+    hash[..8].copy_from_slice(&(index as u64).to_be_bytes());
+    DigestInfo::new(hash, 512)
+}
+
+/// The next action the worker is told to start: its operation id and its
+/// place in the burst.
+async fn next_dispatch(
+    rx_from_worker: &mut mpsc::Receiver<UpdateForWorker>,
+    index_of: &HashMap<DigestInfo, usize>,
+    case: &str,
+) -> (String, usize) {
+    let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{case}: nothing was dispatched within a minute"))
+        .expect("the worker's stream stays open");
+    let (operation_id, digest) = start_execute_digest(update);
+    (operation_id, index_of[&digest])
+}
+
+/// `count` actions of one priority, queued before the pass lists them, on
+/// one worker with one slot. The pass reads `read_before_room` of them, room
+/// opens, and the pass reads on. The room must go to the oldest action
+/// waiting, not to the one the pass reads next; and so must the slot each
+/// time it frees after that.
+async fn check_room_opening_mid_pass(
+    backend: Backend,
+    count: usize,
+    spread: Spread,
+    read_before_room: usize,
+    room: Room,
+) -> Result<(), Error> {
+    let case = format!(
+        "{backend:?}, {count} actions, {spread:?}, room after {read_before_room} read, {room:?}"
+    );
+    let worker_id = WorkerId("worker_id".to_string());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let spec = match room {
+        Room::SlotFreed => SimpleSpec::default(),
+        Room::MoreMemoryReported => SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        },
+    };
+    // Operation ids count up with the burst, so equal timestamps have a
+    // known order: the queue lists equal sort keys highest id first.
+    let next_id = Arc::new(AtomicU64::new(0));
+    let built = gated_scheduler_on(
+        backend,
+        &spec,
+        gate.clone(),
+        Some(listing_gate.clone()),
+        move || OperationId::from(format!("op-{:06}", next_id.fetch_add(1, Ordering::AcqRel))),
+    )
+    .await?;
+    let scheduler = &built.scheduler;
+
+    let (worker_properties, action_properties) = match room {
+        Room::SlotFreed => (PlatformProperties::default(), HashMap::new()),
+        Room::MoreMemoryReported => (
+            PlatformProperties::new(HashMap::from([(
+                "memory_kb".to_string(),
+                PlatformPropertyValue::Minimum(100_000),
+            )])),
+            HashMap::from([("memory_kb".to_string(), "2000".to_string())]),
+        ),
+    };
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            worker_properties,
+            tx,
+            NOW_TIME,
+            1,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+    if room == Room::MoreMemoryReported {
+        // The worker says it has almost nothing free.
+        scheduler
+            .worker_keep_alive_received(
+                &worker_id,
+                NOW_TIME + 1,
+                Some(WorkerLoad {
+                    free_memory_kb: 1_000,
+                }),
+            )
+            .await?;
+    }
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(count);
+    let mut index_of = HashMap::with_capacity(count);
+    let mut insert_times = Vec::with_capacity(count);
+    for index in 0..count {
+        let digest = burst_digest(index);
+        index_of.insert(digest, index);
+        let inserted = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(NOW_TIME)
+            + Duration::from_nanos(spread.offset_nanos(index, count));
+        insert_times.push(inserted);
+        let mut action_info = make_base_action_info(inserted, digest);
+        let action = Arc::make_mut(&mut action_info);
+        action.platform_properties.clone_from(&action_properties);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut oldest_first: Vec<usize> = (0..count).collect();
+    // SystemTime has 100 ns precision on Windows, so distinct offsets can tie.
+    // Order by the timestamps actually submitted, with the same id tie-breaker.
+    oldest_first.sort_by_key(|&index| (insert_times[index], core::cmp::Reverse(index)));
+    let finish = async |operation_id: String| {
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await
+    };
+
+    if let Some(fake_redis) = &built.fake_redis {
+        fake_redis.reset_command_counts();
+    }
+    // One pass lists the whole queue and reads `read_before_room` of it.
+    listing_gate.add_permits(1);
+    let mut waiting = oldest_first.as_slice();
+    let running = if room == Room::SlotFreed {
+        // The first action read takes the slot; the rest read so far wait.
+        gate.add_permits(1);
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, waiting[0],
+            "{case}: the oldest action takes the slot"
+        );
+        waiting = &waiting[1..];
+        gate.add_permits(read_before_room - 1);
+        Some(operation_id)
+    } else {
+        gate.add_permits(read_before_room);
+        None
+    };
+    tokio::time::timeout(Duration::from_mins(1), async {
+        while gate.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{case}: the pass did not read {read_before_room} actions"));
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "{case}: nothing is dispatched while the worker has no room"
+    );
+
+    if let Some(fake_redis) = &built.fake_redis {
+        // The pass listed the queue once and read each record once; the
+        // action it assigned costs a few reads more. A pass that read every
+        // record again for each action it placed would be far over this.
+        const READS_FOR_AN_ASSIGNMENT: u64 = 4;
+        let counts = fake_redis.command_counts();
+        let count_of = |command: &str| counts.get(command).copied().unwrap_or_default();
+        assert_eq!(count_of("FT.AGGREGATE"), 1, "{case}: one listing a pass");
+        assert!(
+            count_of("HMGET") <= read_before_room as u64 + READS_FOR_AN_ASSIGNMENT,
+            "{case}: {} record reads for {read_before_room} actions read",
+            count_of("HMGET")
+        );
+    }
+    match running {
+        Some(operation_id) => finish(operation_id).await?,
+        None => {
+            scheduler
+                .worker_keep_alive_received(
+                    &worker_id,
+                    NOW_TIME + 2,
+                    Some(WorkerLoad {
+                        free_memory_kb: 50_000,
+                    }),
+                )
+                .await?;
+        }
+    }
+    // The rest of this pass, and every pass after it, reads freely.
+    gate.add_permits(1 << 40);
+    listing_gate.add_permits(1 << 40);
+
+    for &oldest_waiting in waiting.iter().take(3) {
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, oldest_waiting,
+            "{case}: room goes to the oldest waiting action, in operation {operation_id}"
+        );
+        finish(operation_id).await?;
+    }
+    drop(listeners);
+    Ok(())
+}
+
+/// Where in a pass over `count` actions room opens: after the first read,
+/// half way, one before the end and at the end.
+fn positions_in_a_pass(count: usize) -> Vec<usize> {
+    let mut positions = vec![1, count / 2, count - 1, count];
+    positions.retain(|&position| position >= 1);
+    positions.dedup();
+    positions
+}
+
+/// A burst of equal-priority actions is served oldest first even when room
+/// opens in the middle of the pass that is reading it, on both backends:
+/// the room goes to the oldest action waiting, not to the one under the
+/// pass's cursor. Equal timestamps go in the order the queue lists them.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_burst_oldest_first() -> Result<(), Error> {
+    for backend in Backend::ALL {
+        for count in [1, 2, 16] {
+            for spread in Spread::ALL {
+                for read_before_room in positions_in_a_pass(count) {
+                    for room in [Room::SlotFreed, Room::MoreMemoryReported] {
+                        check_room_opening_mid_pass(backend, count, spread, read_before_room, room)
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The same at the size the order was first seen to break: 1,000 actions
+/// queued inside a second, and 2,000. Every combination runs on the memory
+/// backend at 1,000 and one of each spread and position at 2,000. On the
+/// fake Redis a burst of 1,000 takes seconds to queue, so it runs the one
+/// row: a millisecond apart, the slot freed half way through the pass.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_thousand_actions_oldest_first() -> Result<(), Error> {
+    let rooms = [Room::SlotFreed, Room::MoreMemoryReported];
+    for spread in Spread::ALL {
+        for read_before_room in positions_in_a_pass(1000) {
+            for room in rooms {
+                check_room_opening_mid_pass(Backend::Memory, 1000, spread, read_before_room, room)
+                    .await?;
+            }
+        }
+    }
+    for (nth, (spread, read_before_room)) in Spread::ALL
+        .into_iter()
+        .zip(positions_in_a_pass(2000))
+        .enumerate()
+    {
+        check_room_opening_mid_pass(
+            Backend::Memory,
+            2000,
+            spread,
+            read_before_room,
+            rooms[nth % 2],
+        )
+        .await?;
+    }
+    check_room_opening_mid_pass(
+        Backend::FakeRedis,
+        1000,
+        Spread::MillisApart,
+        500,
+        Room::SlotFreed,
+    )
+    .await
+}
+
+/// Yields until the fake Redis has seen no command for a while, so the
+/// commands counted next are the ones the step under test causes, not the
+/// tail of the work before it.
+async fn until_redis_is_quiet(fake_redis: &FakeRedisBackend<RedisSubscriptionManager>) {
+    let mut seen = fake_redis.commands_total();
+    let mut quiet = 0;
+    for _ in 0..100_000 {
+        tokio::task::yield_now().await;
+        let now = fake_redis.commands_total();
+        if now == seen {
+            quiet += 1;
+            if quiet == 256 {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet = 0;
+        }
+    }
+    panic!("the fake Redis never went quiet");
+}
+
+/// What one keepalive costs: the Redis commands it causes and the messages
+/// it sends the worker, for a worker holding `in_flight` operations. With
+/// `report` it is a keepalive of today's shape, with the worker's load and
+/// the operations it runs; without, an older worker's, with neither.
+async fn one_keepalive(in_flight: usize, report: bool) -> Result<(u64, usize), Error> {
+    let BackendScheduler {
+        scheduler,
+        fake_redis,
+        ..
+    } = scheduler_on(
+        Backend::FakeRedis,
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..SimpleSpec::default()
+        },
+    )
+    .await?;
+    let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+    let worker_id = WorkerId("worker_id".to_string());
+    let (tx, mut rx_from_worker) = mpsc::channel(in_flight + 16);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            PlatformProperties::default(),
+            tx,
+            NOW_TIME,
+            0,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(in_flight);
+    for index in 0..in_flight {
+        let mut action_info = make_base_action_info(make_system_time(1), burst_digest(index));
+        let action = Arc::make_mut(&mut action_info);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut running = Vec::with_capacity(in_flight);
+    while running.len() < in_flight {
+        let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{in_flight} in flight: only {} dispatched", running.len()))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        let operation_id = OperationId::from(operation_id);
+        scheduler
+            .worker_dispatch_accepted(&worker_id, &operation_id)
+            .await?;
+        running.push(operation_id);
+    }
+    until_redis_is_quiet(&fake_redis).await;
+
+    fake_redis.reset_command_counts();
+    let load = report.then_some(WorkerLoad {
+        free_memory_kb: 1_000_000,
+    });
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 1, load)
+        .await?;
+    if report {
+        scheduler
+            .worker_running_operations_reported(&worker_id, running)
+            .await?;
+    }
+    until_redis_is_quiet(&fake_redis).await;
+    // The total counts from the start; the counts by command are the ones a
+    // reset clears.
+    let commands: u64 = fake_redis.command_counts().values().sum();
+    let mut messages = 0;
+    while rx_from_worker.try_recv().is_ok() {
+        messages += 1;
+    }
+
+    // Whatever its shape, the keepalive keeps the worker alive: a timeout
+    // sweep just short of the worker timeout leaves it in the pool, so a
+    // keepalive after it still finds it.
+    drop(
+        scheduler
+            .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+            .await,
+    );
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + WORKER_TIMEOUT_S, None)
+        .await
+        .unwrap_or_else(|err| {
+            panic!("{in_flight} in flight, report {report}: the worker was evicted: {err:?}")
+        });
+    drop(listeners);
+    Ok((commands, messages))
+}
+
+/// One keepalive costs the store the same however many operations the
+/// worker holds: the operations it reports running need no write, so a
+/// worker with hundreds in flight does not make its own keepalive slow
+/// enough to time it out. It sends the worker at most one message, and an
+/// older worker's keepalive, with no load and no report, keeps it alive
+/// all the same.
+#[nativelink_test]
+async fn a_keepalive_costs_the_same_however_many_operations_the_worker_holds() -> Result<(), Error>
+{
+    // A keepalive can start a matching pass, which lists the queue; that is
+    // the whole of its store work.
+    const MOST_COMMANDS: u64 = 4;
+    for report in [true, false] {
+        let mut costs = Vec::new();
+        for in_flight in [0, 1, 100, 500] {
+            let (commands, messages) = one_keepalive(in_flight, report).await?;
+            assert!(
+                messages <= 1,
+                "{in_flight} in flight, report {report}: {messages} messages to the worker"
+            );
+            costs.push((in_flight, commands));
+        }
+        assert!(
+            costs.iter().all(|&(_, commands)| commands <= MOST_COMMANDS),
+            "report {report}: Redis commands for one keepalive by operations held: {costs:?}"
+        );
+    }
+    Ok(())
+}
+
 /// A peer wins exactly one assignment against a real awaited-action DB.
 #[derive(MetricsComponent)]
 struct AssignmentRaceDb<A: AwaitedActionDb> {
@@ -4728,4 +5560,190 @@ async fn lost_assignment_skips_only_its_shape_until_the_next_pass() -> Result<()
 #[nativelink_test]
 async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<(), Error> {
     check_lost_assignment_skips_shape(true).await
+}
+
+/// Drives `future` while the mock clock moves forward in 100 ms steps, for
+/// at most `mock_limit` of mock time; `None` if it has not finished by then.
+/// Each step also gives it up to 10 ms of real time, for the work the mock
+/// clock does not move, such as a round trip to the fake Redis: one yield a
+/// step would run a minute of mock time in about a millisecond, and a slow
+/// machine could run out of steps before the reply came.
+async fn on_the_mock_clock<F: Future>(future: F, mock_limit: Duration) -> Option<F::Output> {
+    const STEP: Duration = Duration::from_millis(100);
+    const REAL_TIME_A_STEP: Duration = Duration::from_millis(10);
+    tokio::pin!(future);
+    let mut waited = Duration::ZERO;
+    loop {
+        if let Ok(output) = tokio::time::timeout(REAL_TIME_A_STEP, &mut future).await {
+            return Some(output);
+        }
+        if waited >= mock_limit {
+            return None;
+        }
+        MockClock::advance(STEP);
+        waited += STEP;
+    }
+}
+
+/// A change notice goes out after the write it announces has landed, so a
+/// notice Redis refuses must not undo the write: with every notice refused,
+/// the action still reaches a worker, found by the matcher's fallback pass,
+/// and its result still reaches the client, on the client's next poll.
+#[nativelink_test]
+async fn a_refused_change_notice_loses_neither_the_dispatch_nor_the_result() -> Result<(), Error> {
+    // Production's defaults, with the fallback pass every second rather than
+    // five to keep the test short.
+    let spec = SimpleSpec {
+        fallback_match_interval_s: 1,
+        ..SimpleSpec::from_config_defaults()
+    };
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(backend, &spec).await?;
+        if let Some(fake_redis) = &fake_redis {
+            fake_redis.fail_commands("PUBLISH", None, Fault::Error("refused".into()), None);
+        }
+        let worker_id = WorkerId("worker_id".to_string());
+        let (tx, mut rx_from_worker) = mpsc::channel(16);
+        scheduler
+            .add_worker(Worker::new(
+                worker_id.clone(),
+                PlatformProperties::default(),
+                tx,
+                NOW_TIME,
+                1,
+            ))
+            .await?;
+        tokio::task::yield_now().await;
+        verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+        let mut listener = setup_action(
+            &scheduler,
+            DigestInfo::new([1u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+
+        let update = tokio::time::timeout(Duration::from_secs(10), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{backend:?}: the action was never sent to the worker"))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+
+        // The client polls on the mock clock; move it until the result is
+        // read, a minute at most.
+        let completed = async {
+            loop {
+                let (state, _) = listener.changed().await?;
+                if matches!(state.stage, ActionStage::Completed(_)) {
+                    return Ok::<_, Error>(());
+                }
+            }
+        };
+        on_the_mock_clock(completed, Duration::from_mins(1))
+            .await
+            .unwrap_or_else(|| panic!("{backend:?}: the client never read the result"))?;
+    }
+    Ok(())
+}
+
+/// How the record an Execute client listens on goes bad on Redis.
+#[derive(Clone, Copy, Debug)]
+enum RecordFault {
+    /// Every read of it is refused.
+    ReadRefused,
+    /// It is evicted.
+    Evicted,
+}
+
+/// A client whose operation's record can no longer be read is told so with
+/// an error, so it can resubmit, rather than left waiting on a stream that
+/// will never move. Queued or executing, on its next poll.
+#[nativelink_test]
+async fn a_record_that_cannot_be_read_ends_the_client_stream_with_an_error() -> Result<(), Error> {
+    for fault in [RecordFault::ReadRefused, RecordFault::Evicted] {
+        for executing in [false, true] {
+            let case = format!("{fault:?}, executing {executing}");
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(Backend::FakeRedis, &SimpleSpec::default()).await?;
+            let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+            let worker_id = WorkerId("worker_id".to_string());
+            let (tx, mut rx_from_worker) = mpsc::channel(16);
+            if executing {
+                scheduler
+                    .add_worker(Worker::new(
+                        worker_id.clone(),
+                        PlatformProperties::default(),
+                        tx,
+                        NOW_TIME,
+                        1,
+                    ))
+                    .await?;
+                tokio::task::yield_now().await;
+                verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+            }
+            let mut listener = setup_action(
+                &scheduler,
+                DigestInfo::new([1u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let expected = if executing {
+                ActionStage::Executing
+            } else {
+                ActionStage::Queued
+            };
+            loop {
+                let (state, _) = tokio::time::timeout(Duration::from_secs(10), listener.changed())
+                    .await
+                    .unwrap_or_else(|_| panic!("{case}: the client never saw {expected:?}"))?;
+                if state.stage == expected {
+                    break;
+                }
+            }
+
+            match fault {
+                RecordFault::ReadRefused => fake_redis.fail_commands(
+                    "HMGET",
+                    Some("aa_"),
+                    Fault::Error("refused".into()),
+                    None,
+                ),
+                RecordFault::Evicted => {
+                    fake_redis.evict_prefix("aa_");
+                }
+            }
+
+            // The client polls on the mock clock; give it a minute.
+            match on_the_mock_clock(listener.changed(), Duration::from_mins(1)).await {
+                None => panic!("{case}: the client's stream stayed silent for a minute"),
+                Some(Ok((state, _))) => {
+                    panic!(
+                        "{case}: the client was told {:?}, not an error",
+                        state.stage
+                    )
+                }
+                Some(Err(_)) => {}
+            }
+        }
+    }
+    Ok(())
 }

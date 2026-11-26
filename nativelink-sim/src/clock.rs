@@ -49,6 +49,15 @@ pub const STEP: Duration = Duration::from_millis(10);
 /// The most rounds of yields a step waits for a busy store to go quiet.
 const MAX_QUIET_ROUNDS: usize = 1_000;
 
+/// Rounds in a row without a store command before a busy step ends. A command
+/// is counted when the store runs it, and one round can pass with none
+/// while others are still between a client and the store: an operation is
+/// several round trips, and a client waiting for a connection permit sends
+/// only once a reply frees one. Ending the step there lets time run ahead
+/// of the store, and under load the store then serves a few hundred
+/// commands a simulated second where Redis serves tens of thousands.
+const QUIET_ROUNDS_TO_STEP: usize = 3;
+
 /// A counter of work outside the runtime's view, such as the commands a
 /// store has answered; a manual step waits while it moves.
 pub type ActivityProbe = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -115,12 +124,17 @@ impl SimClock {
         let mut left = by;
         while !left.is_zero() {
             let step = left.min(STEP);
+            let start = activity();
             tokio::time::advance(step).await;
             Self::yield_all().await;
+            let mut quiet = 0;
             for _ in 0..MAX_QUIET_ROUNDS {
                 let before = activity();
                 Self::yield_all().await;
-                if activity() == before {
+                let after = activity();
+                quiet = if after == before { quiet + 1 } else { 0 };
+                // A step with no command at all is idle and ends at once.
+                if quiet == QUIET_ROUNDS_TO_STEP || after == start {
                     break;
                 }
             }

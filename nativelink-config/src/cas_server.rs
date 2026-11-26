@@ -361,6 +361,8 @@ pub struct FetchDownloaderConfig {
     pub no_proxy: Vec<String>,
 
     /// Reject downloads without a supported checksum. Default: false.
+    /// Supported `checksum.sri` algorithms: sha256, sha384, sha512 and blake3,
+    /// independent of the digest function the blob is stored under in CAS.
     #[serde(default)]
     pub require_checksum: bool,
 
@@ -1213,6 +1215,12 @@ pub enum EnvironmentSource {
     ///   "failure": "timeout",
     /// }
     ///
+    /// The file may also carry `peak_gpu_memory_kb`, a number: the peak
+    /// device memory the action held on its GPU, in KiB, when whatever
+    /// wraps the action measured it. The worker reads no device itself; it
+    /// reports the figure with the action's other resource usage, and a
+    /// scheduler that learns from its workers sizes the action by it.
+    ///
     /// All fields are optional, file does not need to be created and may be
     /// empty.
     SideChannelFile,
@@ -1876,6 +1884,46 @@ pub struct DirectoryCacheConfig {
     /// Default: false
     #[serde(default)]
     pub experimental_get_tree_prefetch: bool,
+
+    /// Optional and experimental, macOS only: build the cache's copy of an
+    /// executable input file as an APFS `clonefile(2)` clone of the worker's
+    /// local CAS blob instead of reading the blob into memory and writing a
+    /// second copy of it.
+    ///
+    /// A non-executable input is hardlinked from the `filesystem` store. An
+    /// executable one cannot be: the hardlink would share the blob's inode,
+    /// and setting its executable bit would change the mode of the blob
+    /// itself. It is therefore given a private inode, which without this
+    /// option means buffering the whole blob in memory and storing its bytes
+    /// a second time. Bazel marks every file it outputs as executable, so on
+    /// a Bazel workload that can be every input. A clone is also a private
+    /// inode, with its own mode, but it shares the blob's data blocks
+    /// copy-on-write: nothing is read or written.
+    ///
+    /// Requirements: the fast store of the worker's CAS is a `filesystem`
+    /// store, and its `content_path` and this cache's `cache_root` are on
+    /// the same APFS volume. This is checked once at startup; if a clone is
+    /// not possible a warning is logged and executable files are copied as
+    /// before. A single file that cannot be cloned is copied as well. On
+    /// other operating systems the option logs a warning and does nothing.
+    ///
+    /// What changes for an action: a cloned file keeps the modification time
+    /// of the CAS blob (as a hardlinked non-executable input does) where a
+    /// copy has the time the cache entry was built. A clone would also carry
+    /// the blob's extended attributes and BSD file flags, so a blob that has
+    /// either is copied instead.
+    ///
+    /// What does not change: `max_size_bytes` still counts the full size of
+    /// every file in an entry, so the cache evicts exactly as before even
+    /// though clones take no space of their own. Conversely, evicting a blob
+    /// from the `filesystem` store frees no disk space while a cache entry
+    /// or an action directory still holds a clone of it. Disk use is never
+    /// higher than with copies. Each clone is still a file, so the number of
+    /// files in the cache is unchanged.
+    ///
+    /// Default: false (executable files are copied; existing behavior)
+    #[serde(default)]
+    pub experimental_clone_executables: bool,
 }
 
 const fn default_directory_cache_max_entries() -> usize {
@@ -1985,6 +2033,45 @@ impl CasConfig {
         config.validate_single_use_worker()?;
         config.apply_zstd_grpc_store_defaults();
         Ok(config)
+    }
+
+    /// Map each instance name served by an Action Cache service to whether
+    /// that instance is read only. Collected across all server blocks, the
+    /// same way the capabilities service advertises instances that may be
+    /// served from a different block. A later entry for an instance wins.
+    #[must_use]
+    pub fn action_cache_read_only_by_instance(&self) -> HashMap<InstanceName, bool> {
+        self.servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.ac.as_deref())
+            .flatten()
+            .map(|ac| (ac.instance_name.clone(), ac.read_only))
+            .collect()
+    }
+
+    /// True when this process runs shared (non-`single_use`) workers *and* at
+    /// least one Action Cache instance accepts client writes (`read_only` is
+    /// false). That combination is unsafe for untrusted builds: a job can
+    /// leave state on a worker that the next job inherits, and a client can
+    /// write an `ActionResult` that later builds trust. It is only a warning,
+    /// because it is the right configuration when every build is trusted.
+    #[must_use]
+    pub fn shares_workers_with_writable_action_cache(&self) -> bool {
+        let has_shared_worker = self
+            .workers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|WorkerConfig::Local(worker)| !worker.single_use);
+        let action_cache_accepts_client_writes = self
+            .servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+            .filter_map(|services| services.ac.as_deref())
+            .flatten()
+            .any(|ac| !ac.read_only);
+        has_shared_worker && action_cache_accepts_client_writes
     }
 
     fn validate_single_use_worker(&self) -> Result<(), Error> {
@@ -2452,5 +2539,59 @@ mod tests {
         assert!(logs_contain("store=\"nested-upstreams\""));
         assert!(logs_contain("instance_name=\"opt-out\""));
         assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
+    }
+
+    #[test]
+    fn action_cache_read_only_by_instance_reads_each_ac_service() {
+        let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+        // No Action Cache services: the map is empty.
+        assert!(config.action_cache_read_only_by_instance().is_empty());
+
+        config.servers = serde_json5::from_str(
+            r#"[{
+                listener: { http: { socket_address: "127.0.0.1:50051" } },
+                services: { ac: [
+                    { instance_name: "main", ac_store: "AC", read_only: false },
+                    { instance_name: "pr", ac_store: "AC", read_only: true },
+                ] }
+            }]"#,
+        )
+        .unwrap();
+
+        let by_instance = config.action_cache_read_only_by_instance();
+        assert_eq!(by_instance.len(), 2);
+        assert_eq!(by_instance.get("main"), Some(&false));
+        assert_eq!(by_instance.get("pr"), Some(&true));
+    }
+
+    #[test]
+    fn warns_only_for_shared_workers_and_a_writable_action_cache() {
+        fn config(single_use: bool, read_only: bool) -> CasConfig {
+            let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+            config.workers = Some(vec![WorkerConfig::Local(LocalWorkerConfig {
+                single_use,
+                ..Default::default()
+            })]);
+            config.servers = serde_json5::from_str(&format!(
+                r#"[{{
+                    listener: {{ http: {{ socket_address: "127.0.0.1:50051" }} }},
+                    services: {{ ac: [{{ ac_store: "AC", read_only: {read_only} }}] }}
+                }}]"#
+            ))
+            .unwrap();
+            config
+        }
+
+        // Unsafe: shared workers and an action cache that accepts client writes.
+        assert!(config(false, false).shares_workers_with_writable_action_cache());
+        // Safe: `single_use` workers isolate each job.
+        assert!(!config(true, false).shares_workers_with_writable_action_cache());
+        // Safe: the action cache rejects client writes.
+        assert!(!config(false, true).shares_workers_with_writable_action_cache());
+
+        // Safe: a cache-only process has no workers to share.
+        let mut cache_only = config(false, false);
+        cache_only.workers = None;
+        assert!(!cache_only.shares_workers_with_writable_action_cache());
     }
 }

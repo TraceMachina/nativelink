@@ -20,6 +20,7 @@ use std::sync::Arc;
 use nativelink_error::{Error, ResultExt, make_err};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 use tonic::Code;
 use tracing::info;
 use uuid::Uuid;
@@ -38,11 +39,13 @@ pub(crate) struct AzuriteProcess {
     /// a crash can be diagnosed after the fact, see `start`'s stdout
     /// comment for why nothing reads this eagerly/synchronously.
     stderr_lines: Arc<tokio::sync::Mutex<Vec<String>>>,
+    stdout_drain_handle: JoinHandle<()>,
+    stderr_drain_handle: JoinHandle<()>,
 }
 
 impl AzuriteProcess {
     pub(crate) async fn start(
-        binary_path: &Path,
+        entrypoint_path: &Path,
         location: &Path,
         bind_ip: &str,
     ) -> Result<Self, Error> {
@@ -58,7 +61,14 @@ impl AzuriteProcess {
 
         info!(?log_path, ?bind_ip, ?location, "Starting azurite-blob");
 
-        let mut child = Command::new(binary_path)
+        // Spawn `node` directly on the JS entrypoint instead of running the
+        // `node_modules/.bin/azurite-blob.cmd` wrapper on Windows. Launching a
+        // `.cmd` file spawns `cmd.exe /c azurite-blob.cmd` as the immediate
+        // child, which then spawns `node.exe` as a grandchild; `Child::start_kill()`
+        // on Windows only terminates `cmd.exe`, leaving `node.exe` alive with
+        // the `stdout`/`stderr` pipes held open.
+        let mut child = Command::new("node")
+            .arg(entrypoint_path)
             .arg("--blobPort")
             .arg("0")
             .arg("--blobHost")
@@ -74,7 +84,7 @@ impl AzuriteProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .err_tip(|| format!("Spawning azurite-blob from {}", binary_path.display()))?;
+            .err_tip(|| format!("Spawning azurite-blob from {}", entrypoint_path.display()))?;
 
         let stdout = child
             .stdout
@@ -92,12 +102,13 @@ impl AzuriteProcess {
         // gone once the process exits.
         let stderr_lines = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let stderr_lines_writer = stderr_lines.clone();
-        nativelink_util::background_spawn!("azurite_stderr_drain", async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                stderr_lines_writer.lock().await.push(line);
-            }
-        });
+        let stderr_drain_handle =
+            nativelink_util::background_spawn!("azurite_stderr_drain", async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    stderr_lines_writer.lock().await.push(line);
+                }
+            });
 
         // Drains stdout for the whole life of the process, not just until
         // the port's found. Azurite (via morgan) logs every request it
@@ -107,23 +118,24 @@ impl AzuriteProcess {
         // one request, discovered when the very first real request after
         // startup reliably killed the server.
         let (port_tx, port_rx) = tokio::sync::oneshot::channel();
-        nativelink_util::background_spawn!("azurite_stdout_drain", async move {
-            let mut lines = BufReader::new(stdout).lines();
-            let mut port_tx = Some(port_tx);
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(tx) = port_tx.take() {
-                    match parse_bound_port(&line) {
-                        Some(port) => {
-                            let _ = tx.send(port);
+        let stdout_drain_handle =
+            nativelink_util::background_spawn!("azurite_stdout_drain", async move {
+                let mut lines = BufReader::new(stdout).lines();
+                let mut port_tx = Some(port_tx);
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(tx) = port_tx.take() {
+                        match parse_bound_port(&line) {
+                            Some(port) => {
+                                let _ = tx.send(port);
+                            }
+                            // Not the banner line yet (e.g. the "is starting
+                            // on ..." line, which echoes our `0` input verbatim
+                            // rather than the real bound port) keep waiting.
+                            None => port_tx = Some(tx),
                         }
-                        // Not the banner line yet (e.g. the "is starting
-                        // on ..." line, which echoes our `0` input verbatim
-                        // rather than the real bound port) keep waiting.
-                        None => port_tx = Some(tx),
                     }
                 }
-            }
-        });
+            });
 
         let port = tokio::time::timeout(Duration::from_secs(10), port_rx)
             .await
@@ -146,6 +158,8 @@ impl AzuriteProcess {
             port,
             log_path,
             stderr_lines,
+            stdout_drain_handle,
+            stderr_drain_handle,
         })
     }
 
@@ -168,6 +182,8 @@ impl AzuriteProcess {
 
 impl Drop for AzuriteProcess {
     fn drop(&mut self) {
+        self.stdout_drain_handle.abort();
+        self.stderr_drain_handle.abort();
         // tokio::process::Child has no sync `wait`, and Drop can't be
         // async, so we fire-and-forget the kill signal rather than reap
         // the zombie, same reasoning as MongoProcess's Drop about never

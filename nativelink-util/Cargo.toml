@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.8.5"
+version = "1.9.0"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -21,9 +21,9 @@ futures = { version = "0.3.31", features = [
   "async-await",
 ], default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["std"] }
-humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false }
+jiff = { version = "1", default-features = false }
 libc = { version = "0.2.177", default-features = false }
 lru = { version = "0.18.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
@@ -88,7 +88,7 @@ tracing-subscriber = { version = "0.3.19", features = [
 tracing-test = { version = "0.2.5", default-features = false, features = [] }
 # FIXME: Replace with version once https://github.com/TrueLayer/ginepro/pull/77 is fixed
 ginepro = { git = "https://github.com/mstyura/ginepro", rev = "d08cdeff6300edfb46204b3b9fbde3f3355db35f", default-features = false }
-url = { version = "2.5.7", default-features = false }
+url = { version = "2.5.9", default-features = false }
 uuid = { version = "1.16.0", default-features = false, features = [
   "serde",
   "v4",

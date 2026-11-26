@@ -126,6 +126,14 @@ fn complete_frames_len(buf: &[u8]) -> usize {
     index
 }
 
+type FakeClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// Tokio's clock, as time since the fake was made.
+fn tokio_clock() -> FakeClock {
+    let start = tokio::time::Instant::now();
+    Arc::new(move || start.elapsed())
+}
+
 /// Commands that write, for faults aimed at writes only.
 pub const WRITE_COMMANDS: &[&str] = &["EVALSHA", "HMSET", "EXPIRE", "PUBLISH"];
 
@@ -133,15 +141,34 @@ pub trait SubscriptionManagerNotify {
     fn notify_for_test(&self, value: String);
 }
 
-#[derive(Clone)]
 pub struct FakeRedisBackend<S: SubscriptionManagerNotify> {
     /// Contains a list of all of the Redis keys -> fields.
     pub table: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
-    /// TTL (seconds) attached to each key via `EXPIRE`, so tests can
-    /// assert a key was given a bounded lifetime.
+    /// TTL (seconds) attached to each key via `EXPIRE` or the versioned
+    /// write, so tests can assert a key was given a bounded lifetime.
     pub expiries: Arc<Mutex<HashMap<String, i64>>>,
+    /// When each key with a TTL goes, on `clock`. Every command first
+    /// removes the keys past theirs, as Redis would have.
+    deadlines: Arc<Mutex<HashMap<String, Duration>>>,
+    /// The time keys expire by. Tokio's clock unless a test sets its own,
+    /// so a paused runtime (the simulator's) expires keys as it advances.
+    clock: Arc<Mutex<FakeClock>>,
     subscription_manager: Arc<Mutex<Option<Arc<S>>>>,
     faults: Arc<Mutex<FaultPolicy>>,
+}
+
+// By hand: every field is shared, so a clone needs no `S: Clone`.
+impl<S: SubscriptionManagerNotify> Clone for FakeRedisBackend<S> {
+    fn clone(&self) -> Self {
+        Self {
+            table: self.table.clone(),
+            expiries: self.expiries.clone(),
+            deadlines: self.deadlines.clone(),
+            clock: self.clock.clone(),
+            subscription_manager: self.subscription_manager.clone(),
+            faults: self.faults.clone(),
+        }
+    }
 }
 
 impl<S: SubscriptionManagerNotify + Send + 'static + Sync> Default for FakeRedisBackend<S> {
@@ -163,6 +190,8 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
         Self {
             table: Arc::new(Mutex::new(HashMap::new())),
             expiries: Arc::new(Mutex::new(HashMap::new())),
+            deadlines: Arc::new(Mutex::new(HashMap::new())),
+            clock: Arc::new(Mutex::new(tokio_clock())),
             subscription_manager: Arc::new(Mutex::new(None)),
             faults: Arc::new(Mutex::new(FaultPolicy::default())),
         }
@@ -187,6 +216,68 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             fault,
             remaining: times,
         });
+    }
+
+    /// Expires keys by `clock` (a time that only moves forward) instead of
+    /// tokio's, for a test that drives its own, such as `MockClock`.
+    pub fn set_clock(&self, clock: impl Fn() -> Duration + Send + Sync + 'static) {
+        *self.clock.lock().unwrap() = Arc::new(clock);
+    }
+
+    fn now(&self) -> Duration {
+        let clock = self.clock.lock().unwrap().clone();
+        clock()
+    }
+
+    /// How long `key` has left, or `None` when it has no TTL (or is gone).
+    pub fn time_to_live(&self, key: &str) -> Option<Duration> {
+        let deadline = *self.deadlines.lock().unwrap().get(key)?;
+        Some(deadline.saturating_sub(self.now()))
+    }
+
+    /// Gives `key` a TTL of `seconds`, or removes it now when that is not
+    /// positive, as `EXPIRE` does.
+    pub fn set_ttl(&self, key: &str, seconds: i64) {
+        if seconds <= 0 {
+            self.remove_key(key);
+            return;
+        }
+        self.expiries
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), seconds);
+        let deadline = self.now() + Duration::from_secs(seconds.unsigned_abs());
+        self.deadlines
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), deadline);
+    }
+
+    fn clear_ttl(&self, key: &str) {
+        self.expiries.lock().unwrap().remove(key);
+        self.deadlines.lock().unwrap().remove(key);
+    }
+
+    fn remove_key(&self, key: &str) {
+        self.table.lock().unwrap().remove(key);
+        self.clear_ttl(key);
+    }
+
+    /// Removes every key whose TTL has run out.
+    pub fn remove_expired(&self) {
+        let now = self.now();
+        let expired: Vec<String> = self
+            .deadlines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            debug!(%key, "Key expired");
+            self.remove_key(&key);
+        }
     }
 
     /// A failover as the client sees it: every connection closes once,
@@ -291,6 +382,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                     }
                 };
 
+                self.remove_expired();
                 let key = args
                     .first()
                     .and_then(|arg| arg.as_bytes())
@@ -575,6 +667,13 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         if let Some(r) = ret {
                             r
                         } else {
+                            // The script deletes the key before it writes, which
+                            // drops any TTL, then sets the one it was given.
+                            if expiry == 0 {
+                                self.clear_ttl(&key);
+                            } else {
+                                self.set_ttl(&key, expiry);
+                            }
                             Value::Array(vec![Value::Int(1), Value::Int(version)])
                         }
                     }
@@ -622,7 +721,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         .expect("EXPIRE seconds is not an integer");
                         let exists = self.table.lock().unwrap().contains_key(&key_name);
                         if exists {
-                            self.expiries.lock().unwrap().insert(key_name, seconds);
+                            self.set_ttl(&key_name, seconds);
                             Value::Int(1)
                         } else {
                             Value::Int(0)
@@ -678,6 +777,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             let Ok((mut stream, _)) = listener.accept().await else {
                 panic!("accept error");
             };
+            // As Redis does. Without it Linux holds small replies and
+            // pushes for the client's delayed ACK.
+            stream.set_nodelay(true).expect("set TCP_NODELAY");
             let generation = {
                 let faults = faults.lock().unwrap();
                 if faults.partitioned || faults.retired.contains(&port) {

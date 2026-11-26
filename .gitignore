@@ -8,7 +8,8 @@ nativelink-test/fuzz/target/
 .zed
 .cache
 .terraform*
-.config
+.config/*
+!.config/nextest.toml
 terraform.tfstate*
 .update_scheduler_ips.zip
 __pycache__

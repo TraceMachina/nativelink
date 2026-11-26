@@ -178,6 +178,10 @@ pub struct HintListing {
     pub memory_kb: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub disk_kb: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub gpu_count: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub gpu_memory_kb: u64,
     pub samples: u32,
     pub last_seen_s: u64,
     /// `measured`, or `seed` for a hint from the file no attempt has
@@ -250,6 +254,8 @@ pub fn hints_json(
                 cpu_count: row.shaped.cpu_count,
                 memory_kb: row.shaped.memory_kb,
                 disk_kb: row.shaped.disk_kb,
+                gpu_count: row.shaped.gpu_count,
+                gpu_memory_kb: row.shaped.gpu_memory_kb,
                 samples: row.samples,
                 last_seen_s: row.last_seen_s,
                 source: if row.seeded { "seed" } else { "measured" },
