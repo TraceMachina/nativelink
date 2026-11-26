@@ -66,11 +66,13 @@ pub struct WorkerKey {
     /// started with exactly this environment, the way a one-shot action is,
     /// so two actions that differ in it do not share a process.
     pub env: Vec<(String, String)>,
+    /// Name of instance group this action belongs to.
+    pub instance_name: String,
 }
 
 /// The key is logged on every spawn and completion and quoted in errors the
 /// client sees, so the environment shows as its variable names only: an
-/// action's environment can carry a token.
+/// action's environment can carry a token. The instance group name is also logged.
 impl fmt::Debug for WorkerKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WorkerKey")
@@ -81,6 +83,7 @@ impl fmt::Debug for WorkerKey {
                 "env",
                 &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
             )
+            .field("instance_name", &self.instance_name)
             .finish()
     }
 }
@@ -110,6 +113,7 @@ impl WorkerKey {
             startup_args,
             wire_format,
             env: Vec::new(),
+            instance_name: String::new(),
         })
     }
 
@@ -118,6 +122,13 @@ impl WorkerKey {
     pub fn with_env(mut self, mut env: Vec<(String, String)>) -> Self {
         env.sort();
         self.env = env;
+        self
+    }
+
+    /// The Action instance_name the worker process is started with, part of the key.
+    #[must_use]
+    pub fn with_instance_name(mut self, instance_name: String) -> Self {
+        self.instance_name = instance_name;
         self
     }
 }
@@ -142,6 +153,10 @@ pub struct PoolConfig {
     /// `/tmp`: the process outlives any one action, so neither can apply
     /// to it.
     pub namespaced: bool,
+    /// If false, the Action instance_name will not be included in WorkerKeys
+    /// and Actions having separate instance_names may share the same worker (legacy behavior).
+    /// If true, worker processes will be separated according to Action instance_name.
+    pub isolate_by_instance_name: bool,
 }
 
 impl Default for PoolConfig {
@@ -153,6 +168,7 @@ impl Default for PoolConfig {
             shutdown_grace: Duration::from_secs(5),
             acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
             namespaced: false,
+            isolate_by_instance_name: false,
         }
     }
 }
@@ -361,6 +377,11 @@ impl PersistentWorkerPool {
         executable_path: &Path,
         working_dir: &Path,
     ) -> Result<Lease, Error> {
+        let key: WorkerKey = if self.inner.config.isolate_by_instance_name {
+            key
+        } else {
+            key.with_instance_name(String::new())
+        };
         let deadline = tokio::time::Instant::now() + self.inner.config.acquire_timeout;
         loop {
             // Take an idle worker, or reserve a slot to spawn one, without
@@ -414,6 +435,7 @@ impl PersistentWorkerPool {
             key.wire_format,
             working_dir,
             &key.env,
+            &key.instance_name,
             self.inner.config.namespaced,
         );
         let worker = match spawn_result {
@@ -494,6 +516,8 @@ mod tests {
 
     use super::*;
 
+    const INSTANCE_NAME: &str = "instance_name";
+
     #[cfg(unix)]
     fn shell_script(working_dir: &Path, body: &str) -> PathBuf {
         let path = working_dir.join("worker.sh");
@@ -520,7 +544,25 @@ mod tests {
             startup_args: vec![script.display().to_string()],
             wire_format: WireFormat::Json,
             env: path_env(),
+            instance_name: INSTANCE_NAME.to_string(),
         }
+    }
+
+    #[test]
+    fn worker_key_distinguishes_different_instance_names() {
+        let instance_name_a: &str = "instance name a";
+        let instance_name_b: &str = "instance name b";
+        let a = WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto)
+            .unwrap()
+            .with_instance_name(instance_name_a.to_string());
+        let b = WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto)
+            .unwrap()
+            .with_instance_name(instance_name_b.to_string());
+        let c = WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto)
+            .unwrap()
+            .with_instance_name(instance_name_a.to_string()); // A copy of a
+        assert_ne!(a, b);
+        assert_eq!(a, c);
     }
 
     #[test]
@@ -677,6 +719,102 @@ mod tests {
         .unwrap()
         .unwrap();
         next_lease.release(false).await;
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
+    async fn pool_shares_workers_for_different_instance_names_when_isolation_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            isolate_by_instance_name: false,
+            max_workers_per_key: 1,
+            ..Default::default()
+        });
+        let mut lease_1 = pool
+            .acquire(
+                key.clone().with_instance_name("instance_a".to_string()),
+                Path::new("/bin/sh"),
+                dir.path(),
+            )
+            .await
+            .unwrap();
+        let pid_1 = &lease_1.worker().pid().expect("live worker has a PID");
+        lease_1.release(true).await;
+        assert_eq!(pool.live_workers(), 1);
+
+        // Different instance_name used but isolate_by_instance_name is false
+        // So the same worker should be reused
+        let mut lease_2 = pool
+            .acquire(
+                key.clone().with_instance_name("instance_b".to_string()),
+                Path::new("/bin/sh"),
+                dir.path(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pool.live_workers(),
+            1,
+            "Worker should have been reused across different instance_names but live_workers() != 1"
+        );
+        let pid_2 = &lease_2.worker().pid().expect("live worker has a PID");
+        lease_2.release(true).await;
+
+        assert_eq!(
+            pid_1, pid_2,
+            "Worker should have been reused across different instance_names but worker PIDs differ"
+        );
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
+    async fn pool_uses_different_workers_for_different_instance_names_when_isolation_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            isolate_by_instance_name: true,
+            max_workers_per_key: 1,
+            ..Default::default()
+        });
+
+        // Fresh worker added to the pool with a task
+        let mut lease_1 = pool
+            .acquire(
+                key.clone().with_instance_name("instance_a".to_string()),
+                Path::new("/bin/sh"),
+                dir.path(),
+            )
+            .await
+            .unwrap();
+        let pid_1 = &lease_1.worker().pid().expect("live worker has a PID");
+        lease_1.release(true).await;
+        assert_eq!(pool.live_workers(), 1);
+
+        // Different instance_name used and isolate_by_instance_name is true
+        // so a fresh worker should be used
+        let mut lease_2 = pool
+            .acquire(
+                key.clone().with_instance_name("instance_b".to_string()),
+                Path::new("/bin/sh"),
+                dir.path(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pool.live_workers(),
+            2,
+            "Separate workers should be used for different instance_names but live_workers() != 2"
+        );
+        let pid_2 = &lease_2.worker().pid().expect("live worker has a PID");
+        lease_2.release(true).await;
+
+        assert_ne!(
+            pid_1, pid_2,
+            "Separate workers should be used for different instance_names but worker PIDs are the same"
+        );
     }
 
     #[nativelink_test]

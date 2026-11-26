@@ -83,6 +83,7 @@ impl LiveWorker {
         wire_format: WireFormat,
         working_dir: &Path,
         env: &[(String, String)],
+        instance_name: &str,
         namespaced: bool,
     ) -> Result<Self, Error> {
         let mut cmd = Command::new(executable);
@@ -129,13 +130,15 @@ impl LiveWorker {
             ?executable,
             ?startup_args,
             ?wire_format,
+            ?instance_name,
             "Spawning persistent worker"
         );
 
         let mut child = cmd.spawn().err_tip(|| {
             format!(
-                "Spawning persistent worker {} with args {startup_args:?}",
-                executable.display()
+                "Spawning persistent worker {} with args {startup_args:?} and instance {}",
+                executable.display(),
+                instance_name,
             )
         })?;
         // Ours until shutdown waits on it, however long it idles; the
@@ -372,6 +375,8 @@ mod tests {
 
     use super::*;
 
+    const INSTANCE_NAME: &str = "instance_name";
+
     struct TestWorkerProgram {
         executable: PathBuf,
         startup_args: Vec<String>,
@@ -443,6 +448,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
+            INSTANCE_NAME,
             false,
         )
         .unwrap();
@@ -468,6 +474,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
+            INSTANCE_NAME,
             false,
         )
         .unwrap();
@@ -499,6 +506,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
+            INSTANCE_NAME,
             false,
         )
         .unwrap();
@@ -529,6 +537,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
+            INSTANCE_NAME,
             false,
         )
         .unwrap();
