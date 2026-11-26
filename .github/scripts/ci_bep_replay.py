@@ -266,6 +266,9 @@ def sanitize(protos, raw_events, origin, invocation_id, uri_hosts):
     low, high = origin.started - CLOCK_SKEW, origin.updated + CLOCK_SKEW
     report = collections.Counter()
     events, saw_metadata, started_at = [], False, None
+    default_build_user = os.environ.get("BUILD_USER")
+    if default_build_user is None:
+        default_build_user = "<from replay>"
     for index, raw in enumerate(raw_events):
         event = bes.BuildEvent()
         event.ParseFromString(raw)
@@ -290,6 +293,12 @@ def sanitize(protos, raw_events, origin, invocation_id, uri_hosts):
                     if item.key not in REPORTED_STATUS and not TAG_STATUS.match(item.key)]
             report['dropped status entries'] += len(items) - len(keep)
             del event.workspace_status.item[:]
+            has_build_user = len([item for item in keep if item.key == "BUILD_USER"]) > 0
+            if not has_build_user:
+                build_user = bes.WorkspaceStatus.Item()
+                build_user.key = "BUILD_USER"
+                build_user.value = default_build_user
+                keep.append(build_user)
             event.workspace_status.item.extend(keep)
         elif kind == 'finished':
             report['clamped times'] += clamp(event.finished.finish_time, low, high)

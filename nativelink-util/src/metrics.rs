@@ -35,7 +35,6 @@ pub const EXECUTION_WORKER_ID: &str = "execution.worker_id";
 pub const EXECUTION_OUTCOME: &str = "execution.outcome";
 pub const EXECUTION_ACTION_MNEMONIC: &str = "execution.action_mnemonic";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
-pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
 
 // Metric attribute keys for gRPC serving, following OTel rpc semconv.
 pub const RPC_SERVICE: &str = "rpc.service";

@@ -66,7 +66,7 @@ use crate::simple_scheduler_state_manager::{
 };
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
-use crate::worker_registry::WorkerRegistry;
+use crate::worker_registry::{SharedWorkerRegistry, WorkerRegistry};
 use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
 /// Default timeout for workers in seconds: four default keepalive intervals
@@ -431,6 +431,7 @@ impl SimpleScheduler {
         self.set_peer_schedulers_for_test(vec![PeerScheduler {
             scheduler_id: "peer".to_string(),
             workers: peer_fleet,
+            renews_worker_leases: true,
         }])
         .await;
     }
@@ -443,6 +444,10 @@ impl SimpleScheduler {
     }
 
     /// The id this scheduler publishes to its peers under.
+    pub fn worker_registry_for_test(&self) -> &SharedWorkerRegistry {
+        self.worker_scheduler.worker_registry()
+    }
+
     pub fn scheduler_id_for_test(&self) -> &str {
         self.worker_scheduler.scheduler_id()
     }
@@ -1554,6 +1559,11 @@ impl SimpleScheduler {
                                 info!("Exchanging fleet capabilities with peer schedulers again");
                             }
                             last_exchange_ok = true;
+                            // A missing lease means a dead worker only once
+                            // no older peer, which renews none, is running.
+                            worker_scheduler.worker_registry().set_peers_renew_leases(
+                                peer_fleet.iter().all(|peer| peer.renews_worker_leases),
+                            );
                             worker_scheduler
                                 .set_peer_fleet(Some(peer_fleet), exchange_now_fn())
                                 .await;
@@ -1569,6 +1579,9 @@ impl SimpleScheduler {
                                 );
                             }
                             last_exchange_ok = false;
+                            worker_scheduler
+                                .worker_registry()
+                                .set_peers_renew_leases(false);
                             worker_scheduler
                                 .set_peer_fleet(None, exchange_now_fn())
                                 .await;
