@@ -4,7 +4,8 @@
     "run-multiple-workers",
     "tls-and-auth",
     "upgrade-versions",
-    "migrate-an-existing-cache"
+    "migrate-an-existing-cache",
+    "debug-a-cache-miss"
   ],
   "title": "How-to guides"
 }
