@@ -7,15 +7,28 @@ set -euo pipefail
 endpoint=grpcs://ci.nativelink.com:443
 worker_image=docker.io/library/node:22-bookworm@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
 
+repo=${BUILDKITE_REPO#https://github.com/}
+repo=${repo%.git}
+
 flags=(
     --config=nl-toolchain
     --config=nl-quiet
     --lockfile_mode=error
     --verbose_failures
+    # The tags NativeLink's CI page groups and filters builds by.
     --build_metadata=ROLE=CI
-    --build_metadata=BUILDKITE_PIPELINE="$BUILDKITE_PIPELINE_SLUG"
-    --build_metadata=BUILDKITE_BUILD_URL="$BUILDKITE_BUILD_URL"
-    --build_metadata=COMMIT_SHA="$BUILDKITE_COMMIT"
+    --build_metadata=ci=buildkite
+    --build_metadata=pipeline="$BUILDKITE_PIPELINE_SLUG"
+    --build_metadata=job="$BUILDKITE_BUILD_NUMBER"
+    --build_metadata=stage="$BUILDKITE_STEP_KEY"
+    --build_metadata=ci_url="$BUILDKITE_BUILD_URL"
+    --build_metadata=branch="$BUILDKITE_BRANCH"
+    --build_metadata=commit="$BUILDKITE_COMMIT"
+    --build_metadata=pr="$BUILDKITE_PULL_REQUEST"
+    --build_metadata=repo="$repo"
+    --build_metadata=runner="$BUILDKITE_AGENT_NAME"
+    --build_metadata=author="$BUILDKITE_BUILD_CREATOR_EMAIL"
+    --build_metadata=job_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Part of every action's cache key: both lanes must pass the same ones,
     # or untrusted lookups never match what the trusted lane wrote.
     --extra_toolchains=@@rules_python++python+pythons_hub//:all
