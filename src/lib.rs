@@ -37,8 +37,8 @@ use hyper_util::rt::tokio::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{
-    CasConfig, CasStoreConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
-    ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
+    CasConfig, CasStoreConfig, ConfigProblem, HttpCompressionAlgorithm, ListenerConfig,
+    SchedulerConfig, ServerConfig, Severity, StoreConfig, WithInstanceName, WorkerConfig,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
@@ -220,13 +220,18 @@ pub async fn build_server(
     // with its config path, instead of surfacing one at a time from whichever
     // factory happens to resolve it first.
     cfg.validate_references()?;
-    for name in cfg.duplicate_scheduler_names() {
-        warn!(
-            scheduler = name,
-            "Scheduler name is declared more than once; later definitions replace earlier ones"
-        );
+    for problem in config_warnings(&cfg) {
+        warn!(%problem, "Configuration starts, but is probably wrong");
     }
     construct_server(cfg, shutdown_tx, scheduler_shutdown_tx).await
+}
+
+/// The warning-severity problems in `cfg`: things startup accepts but that
+/// are probably a mistake.
+fn config_warnings(cfg: &CasConfig) -> impl Iterator<Item = ConfigProblem> {
+    cfg.problems()
+        .into_iter()
+        .filter(|problem| problem.severity == Severity::Warning)
 }
 
 /// Formats `count` with `noun`, adding an `s` unless `count` is one.
@@ -262,11 +267,8 @@ pub fn check_config(
         .and_then(|cfg| cfg.validate_references().map(|()| cfg));
     match result {
         Ok(cfg) => {
-            for name in cfg.duplicate_scheduler_names() {
-                writeln!(
-                    stderr,
-                    "WARN: scheduler name '{name}' is declared more than once; later definitions replace earlier ones"
-                )?;
+            for problem in config_warnings(&cfg) {
+                writeln!(stderr, "WARN: {problem}")?;
             }
             writeln!(
                 stdout,
