@@ -223,7 +223,7 @@ async fn stop_action(
     why: &str,
 ) -> Fuse<BoxFuture<'static, ()>> {
     debug!(grace_ms = grace.as_millis(), why, "Stopping action");
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     if !grace.is_zero()
         && let Some(pgid) = child.id()
     {
@@ -4051,6 +4051,12 @@ impl RunningActionImpl {
                     );
                     background_spawn!("running_actions_manager_kill_child_process", async move {
                         drop(child_process.kill().await);
+                        // The leader is gone; take its group with it so
+                        // helpers it forked do not outlive the action.
+                        #[cfg(target_family = "unix")]
+                        if let Some(pgid) = action_pgid {
+                            signal_process_group(pgid, libc::SIGKILL);
+                        }
                     });
                 }
             }
