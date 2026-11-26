@@ -1,0 +1,29 @@
+---
+# Steps for both Buildkite pipelines. Each pipeline's cluster sends a step
+# to its own default queue, so no step names a queue.
+# - The trusted pipeline: branches and members' pull requests, on warm
+#   agents, with remote execution on ci.nativelink.com.
+# - The untrusted pipeline, whose slug ends in -forks: other forks' pull
+#   requests, each job in a fresh pod whose only credential is a key that
+#   reads the cache. It uploads this file from main, so a fork cannot change
+#   these steps.
+steps:
+  - label: ":bazel: Bazel test"
+    key: bazel
+    command: .buildkite/test-bazel.sh
+    timeout_in_minutes: 180
+    retry:
+      automatic:
+        # The agent was lost, for example when its node was replaced.
+        - exit_status: -1
+          limit: 2
+
+  - label: ":nix: Nix build"
+    key: nix
+    if: pipeline.slug !~ /-forks$/
+    command: .buildkite/nix-build.sh
+    timeout_in_minutes: 120
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
