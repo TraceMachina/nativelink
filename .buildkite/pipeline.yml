@@ -27,3 +27,58 @@ steps:
       automatic:
         - exit_status: -1
           limit: 2
+
+  # Checks that need no secrets, so both lanes run them. A step with
+  # if_changed runs only when the build changes a file it lists; buildkite-agent
+  # applies that on upload, and runs the step anyway if it cannot tell.
+  - label: ":pre-commit: Pre-commit"
+    key: pre-commit
+    command: .buildkite/pre-commit.sh
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+
+  # GitHub's Vale check reports errors without failing, so this does too.
+  - label: ":memo: Vale"
+    key: vale
+    if: build.pull_request.id != null
+    command: .buildkite/vale.sh
+    soft_fail: true
+    timeout_in_minutes: 10
+
+  - label: ":books: Docs lint"
+    key: docs-lint
+    command: .buildkite/docs-lint.sh
+    timeout_in_minutes: 30
+    if_changed:
+      - web/apps/docs/**
+      - .buildkite/docs-lint.sh
+
+  - label: ":globe_with_meridians: Web"
+    key: web
+    if: build.pull_request.id != null
+    command: .buildkite/web.sh
+    timeout_in_minutes: 45
+    if_changed:
+      - web/**
+      - "**.md"
+      - nativelink-config/**
+      - tools/**
+      - "**.lock"
+      - "**.nix"
+      - .buildkite/web.sh
+
+  - label: ":link: Release references"
+    key: release-refs
+    if: build.pull_request.id != null
+    command: >-
+      nix shell --no-write-lock-file --inputs-from . nixpkgs#nodejs_22 --command
+      node web/apps/docs/scripts/check-release-refs.mjs
+    timeout_in_minutes: 10
+    if_changed:
+      - README.md
+      - web/apps/docs/content/**
+      - web/apps/web/content/**
+      - web/apps/docs/scripts/check-release-refs.mjs
