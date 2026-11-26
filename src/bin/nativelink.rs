@@ -32,7 +32,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
-use nativelink_util::telemetry::init_tracing;
+use nativelink_util::telemetry::{init_stderr_tracing, init_tracing};
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -65,6 +65,10 @@ struct Args {
     /// Config file to use.
     #[clap(value_parser)]
     config_file: String,
+
+    /// Validate the configuration and exit without starting any services.
+    #[clap(long)]
+    check: bool,
 }
 
 async fn inner_main(
@@ -87,13 +91,25 @@ async fn inner_main(
     Ok(())
 }
 
-fn get_config() -> Result<CasConfig, Error> {
-    let args = Args::parse();
-    CasConfig::try_from_json5_file(&args.config_file)
-}
-
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     install_default_rustls_crypto_provider();
+
+    let args = Args::parse();
+
+    // `--check` runs before any runtime is built, so it validates fully
+    // offline and exits without starting a serving runtime, binding a
+    // socket, connecting to a backend, or creating any store directories.
+    if args.check {
+        // The parser logs deprecations through `tracing`; without a
+        // subscriber they would be dropped.
+        init_stderr_tracing();
+        let code = nativelink::check_config(
+            &args.config_file,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        )?;
+        std::process::exit(code);
+    }
 
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
@@ -116,7 +132,8 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
     runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
 
-    let mut cfg = get_config()?;
+    // Parse after tracing is up, so the parser's warnings are logged.
+    let mut cfg = CasConfig::try_from_json5_file(&args.config_file)?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
         if global_cfg.max_open_files == 0 {
