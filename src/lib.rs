@@ -215,6 +215,86 @@ pub async fn build_server(
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
     scheduler_shutdown_tx: Sender<()>,
 ) -> Result<Server, Error> {
+    // Same check as `nativelink --check`, run before any store is constructed
+    // so a dangling reference is reported as one error listing every problem
+    // with its config path, instead of surfacing one at a time from whichever
+    // factory happens to resolve it first.
+    cfg.validate_references()?;
+    for name in cfg.duplicate_scheduler_names() {
+        warn!(
+            scheduler = name,
+            "Scheduler name is declared more than once; later definitions replace earlier ones"
+        );
+    }
+    construct_server(cfg, shutdown_tx, scheduler_shutdown_tx).await
+}
+
+/// Formats `count` with `noun`, adding an `s` unless `count` is one.
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Runs `nativelink --check` on `config_file` and returns the process exit
+/// code: 0 when the config parses and every reference resolves, 1 otherwise.
+///
+/// A parse failure and a reference failure are reported the same way: a
+/// `FAIL:` line and one line per problem on `stderr`. A config that starts
+/// but is probably wrong gets `WARN:` lines on `stderr` and still exits 0.
+/// The success summary goes to `stdout`, so CI can keep it apart from the
+/// diagnostics.
+///
+/// The parser logs its own warnings through `tracing`, so the caller should
+/// install a subscriber first.
+///
+/// # Errors
+///
+/// Returns an error only if writing to `stdout` or `stderr` fails.
+pub fn check_config(
+    config_file: &str,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> std::io::Result<i32> {
+    let result = CasConfig::try_from_json5_file(config_file)
+        .and_then(|cfg| cfg.validate_references().map(|()| cfg));
+    match result {
+        Ok(cfg) => {
+            for name in cfg.duplicate_scheduler_names() {
+                writeln!(
+                    stderr,
+                    "WARN: scheduler name '{name}' is declared more than once; later definitions replace earlier ones"
+                )?;
+            }
+            writeln!(
+                stdout,
+                "OK: {config_file} — {}, {}, {}, all references resolve",
+                plural(cfg.stores.len(), "store"),
+                plural(cfg.schedulers.as_ref().map_or(0, Vec::len), "scheduler"),
+                plural(cfg.servers.len(), "server"),
+            )?;
+            Ok(0)
+        }
+        Err(err) => {
+            writeln!(stderr, "FAIL: {config_file}")?;
+            for message in &err.messages {
+                writeln!(stderr, "{message}")?;
+            }
+            Ok(1)
+        }
+    }
+}
+
+/// Builds the server without [`CasConfig::validate_references`]. Kept
+/// separate so the tests can show that construction rejects every config
+/// `validate_references` rejects.
+async fn construct_server(
+    cfg: CasConfig,
+    shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    scheduler_shutdown_tx: Sender<()>,
+) -> Result<Server, Error> {
     if cfg.shares_workers_with_writable_action_cache() {
         warn!(
             "Workers are shared across jobs and the action cache accepts client writes. \
@@ -1072,6 +1152,395 @@ mod tests {
             },
         });
 
+        Ok(())
+    }
+
+    /// A one-server config listening on `port` with the given `services`.
+    fn server_config(port: u16, top_level: &str, services: &str) -> String {
+        format!(
+            r#"{{
+                {top_level}
+                servers: [{{
+                    listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }},
+                    services: {{ {services} }},
+                }}],
+            }}"#
+        )
+    }
+
+    /// Broken configs, each with the reason startup rejects it. Every store
+    /// is a memory store so construction needs no network or disk.
+    fn broken_configs(port: u16) -> Vec<(&'static str, String)> {
+        // One local worker whose CAS store is `store`, with extra fields.
+        let local_worker = |store: &str, extra: &str| {
+            format!(
+                r#"{{ local: {{
+                    worker_api_endpoint: {{ uri: "grpc://127.0.0.1:1" }},
+                    cas_fast_slow_store: "{store}",
+                    work_directory: "/tmp/nativelink-validate-test",
+                    platform_properties: {{}},
+                    {extra}
+                }} }}"#
+            )
+        };
+        // A `workers` list holding one such worker.
+        let worker =
+            |store: &str, extra: &str| format!("workers: [{}],", local_worker(store, extra));
+        vec![
+            (
+                "service store missing with an empty store list",
+                server_config(port, "stores: [],", r#"cas: [{ cas_store: "MISSING" }]"#),
+            ),
+            (
+                "two workers with the same name",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], workers: [{}, {}], servers: [] }}"#,
+                    local_worker("CAS", r#"name: "w","#),
+                    local_worker("CAS", r#"name: "w","#),
+                ),
+            ),
+            (
+                "two servers on the same address",
+                format!(
+                    r#"{{ stores: [], servers: [
+                        {{ listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }}, services: {{ health: {{}} }} }},
+                        {{ listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }}, services: {{ health: {{}} }} }},
+                    ] }}"#
+                ),
+            ),
+            (
+                "listener address that does not parse",
+                server_config(port, "stores: [],", "health: {}")
+                    .replace(&format!("127.0.0.1:{port}"), "not-an-address"),
+            ),
+            (
+                "worker_api served from a grpc scheduler",
+                server_config(
+                    port,
+                    r#"stores: [], schedulers: [{ name: "REMOTE", grpc: {
+                        endpoint: { address: "grpc://127.0.0.1:1" },
+                    } }],"#,
+                    r#"worker_api: { scheduler: "REMOTE" }"#,
+                ),
+            ),
+            (
+                "worker_api scheduler missing with no schedulers",
+                server_config(
+                    port,
+                    "stores: [],",
+                    r#"worker_api: { scheduler: "MISSING" }"#,
+                ),
+            ),
+            (
+                "unused store with a ref_store to a missing store",
+                r#"{ stores: [{ name: "UNUSED", ref_store: { name: "MISSING" } }], servers: [] }"#
+                    .to_string(),
+            ),
+            (
+                "nested ref_store typo in a store a service uses",
+                server_config(
+                    port,
+                    r#"stores: [
+                        { name: "CAS", memory: {} },
+                        { name: "WRAPPED", fast_slow: {
+                            fast: { ref_store: { name: "CAS_TYPO" } },
+                            slow: { noop: {} },
+                        } },
+                    ],"#,
+                    r#"cas: [{ cas_store: "WRAPPED" }]"#,
+                ),
+            ),
+            (
+                "duplicate store name",
+                r#"{ stores: [{ name: "CAS", memory: {} }, { name: "CAS", memory: {} }], servers: [] }"#
+                    .to_string(),
+            ),
+            (
+                "ac store missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }],"#,
+                    r#"ac: [{ ac_store: "MISSING" }]"#,
+                ),
+            ),
+            (
+                "execution scheduler missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }], schedulers: [{ name: "SCHED", simple: {} }],"#,
+                    r#"execution: [{ cas_store: "CAS", scheduler: "SCHED_TYPO" }]"#,
+                ),
+            ),
+            (
+                "capabilities scheduler missing",
+                server_config(
+                    port,
+                    "stores: [],",
+                    r#"capabilities: [{ remote_execution: { scheduler: "MISSING" } }]"#,
+                ),
+            ),
+            (
+                "bytestream store missing",
+                server_config(port, "stores: [],", r#"bytestream: [{ cas_store: "MISSING" }]"#),
+            ),
+            (
+                "fetch store missing",
+                server_config(port, "stores: [],", r#"fetch: [{ fetch_store: "MISSING" }]"#),
+            ),
+            (
+                "push store missing",
+                server_config(port, "stores: [],", r#"push: [{ push_store: "MISSING" }]"#),
+            ),
+            (
+                "bep store missing",
+                server_config(port, "stores: [],", r#"experimental_bep: { store: "MISSING" }"#),
+            ),
+            (
+                "chunking index store missing",
+                server_config(
+                    port,
+                    r#"stores: [{ name: "CAS", memory: {} }],"#,
+                    r#"cas: [{ cas_store: "CAS", experimental_chunking: { index_store: "MISSING" } }]"#,
+                ),
+            ),
+            (
+                "scheduler redis store missing",
+                r#"{
+                    stores: [],
+                    schedulers: [{ name: "SCHED", simple: {
+                        experimental_backend: { redis: { redis_store: "MISSING" } },
+                    } }],
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "cache_lookup ac store missing inside property_modifier",
+                r#"{
+                    stores: [],
+                    schedulers: [{ name: "SCHED", property_modifier: {
+                        modifications: [],
+                        scheduler: { cache_lookup: { ac_store: "MISSING", scheduler: { simple: {} } } },
+                    } }],
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "origin events store missing",
+                r#"{
+                    stores: [],
+                    experimental_origin_events: { publisher: { store: "MISSING" } },
+                    servers: [],
+                }"#
+                .to_string(),
+            ),
+            (
+                "worker store missing",
+                format!("{{ stores: [], {} servers: [] }}", worker("MISSING", "")),
+            ),
+            (
+                "worker action cache store missing",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], {} servers: [] }}"#,
+                    worker("CAS", r#"upload_action_result: { ac_store: "MISSING" },"#)
+                ),
+            ),
+            (
+                "worker historical results store missing",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], {} servers: [] }}"#,
+                    worker(
+                        "CAS",
+                        r#"upload_action_result: { historical_results_store: "MISSING" },"#
+                    )
+                ),
+            ),
+            (
+                "server without services",
+                format!(
+                    r#"{{ stores: [], servers: [{{
+                        listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }},
+                    }}] }}"#
+                ),
+            ),
+        ]
+    }
+
+    /// `validate_references` and construction must agree: every config
+    /// `validate_references` rejects, construction rejects on its own too,
+    /// for the same name, so `--check` never rejects a config that would
+    /// have started.
+    #[nativelink_test]
+    async fn validate_rejects_only_what_construction_rejects() -> Result<(), Error> {
+        for (reason, json) in broken_configs(get_ephemeral_port()?) {
+            let config = CasConfig::try_from_json5_str(&json)
+                .unwrap_or_else(|e| panic!("{reason}: fixture does not parse: {e:?}"));
+            let Err(err) = config.validate_references() else {
+                panic!("{reason}: validate_references accepted it:\n{json}");
+            };
+            // The first problem, and the name it complains about, such as
+            // 'MISSING'. The last quoted name is the one that does not
+            // resolve; an earlier one can be the store that holds it.
+            let problems = err.messages.join("\n");
+            let problem = problems
+                .split("\n  - ")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{reason}: no problem listed in {problems}"));
+            let quoted = problem
+                .rsplit('\'')
+                .nth(1)
+                .unwrap_or_else(|| panic!("{reason}: no quoted name in {problem}"));
+
+            let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+            let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+            let err = match construct_server(config, shutdown_tx, scheduler_shutdown_tx).await {
+                Err(err) => err,
+                Ok(server) => panic!(
+                    "{reason}: construction accepted it, so validate_references is stricter than startup: {server:?}\n{json}"
+                ),
+            };
+            let constructed = err.messages.join(": ");
+            assert!(
+                constructed.contains(quoted),
+                "{reason}: construction failed for another reason: {constructed}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Writes `json` to a temporary file named after `test`, runs
+    /// `check_config` on it and removes the file. Returns the exit code,
+    /// stdout and stderr, with the file's path replaced by `<config>`.
+    fn run_check(test: &str, json: &str) -> (i32, String, String) {
+        let path = std::env::temp_dir().join(format!(
+            "nativelink-check-{test}-{}.json5",
+            std::process::id()
+        ));
+        std::fs::write(&path, json).expect("write the config fixture");
+        let (code, stdout, stderr) = run_check_path(path.to_str().expect("temp path is UTF-8"));
+        drop(std::fs::remove_file(&path));
+        (code, stdout, stderr)
+    }
+
+    /// Runs `check_config` on `path`, returning the exit code, stdout and
+    /// stderr, with `path` replaced by `<config>`.
+    fn run_check_path(path: &str) -> (i32, String, String) {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let code = check_config(path, &mut stdout, &mut stderr).expect("write to a Vec");
+        let output = |bytes: Vec<u8>| {
+            String::from_utf8(bytes)
+                .expect("check_config writes UTF-8")
+                .replace(path, "<config>")
+        };
+        (code, output(stdout), output(stderr))
+    }
+
+    #[test]
+    fn plural_adds_s_unless_one() {
+        assert_eq!(plural(0, "store"), "0 stores");
+        assert_eq!(plural(1, "store"), "1 store");
+        assert_eq!(plural(2, "store"), "2 stores");
+    }
+
+    #[test]
+    fn check_config_reports_ok_on_stdout() {
+        let (code, stdout, stderr) = run_check(
+            "ok",
+            r#"{ stores: [{ name: "CAS", memory: {} }], servers: [] }"#,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(
+            stdout,
+            "OK: <config> — 1 store, 0 schedulers, 0 servers, all references resolve\n"
+        );
+        assert_eq!(stderr, "");
+    }
+
+    #[test]
+    fn check_config_reports_every_problem_on_stderr() {
+        let (code, stdout, stderr) = run_check(
+            "problems",
+            &server_config(
+                1,
+                "stores: [],",
+                r#"cas: [{ cas_store: "BAD_CAS" }], ac: [{ ac_store: "BAD_AC" }]"#,
+            ),
+        );
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.starts_with("FAIL: <config>\n2 configuration problems:\n"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("'BAD_CAS'"), "{stderr}");
+        assert!(stderr.contains("'BAD_AC'"), "{stderr}");
+    }
+
+    #[test]
+    fn check_config_warns_on_duplicate_scheduler_and_passes() {
+        let (code, stdout, stderr) = run_check(
+            "duplicate-scheduler",
+            r#"{ stores: [], schedulers: [
+                { name: "MAIN", simple: {} },
+                { name: "MAIN", simple: {} },
+            ], servers: [] }"#,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.starts_with("OK: <config> — 0 stores, 2 schedulers"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stderr,
+            "WARN: scheduler name 'MAIN' is declared more than once; later definitions replace earlier ones\n"
+        );
+    }
+
+    #[test]
+    fn check_config_reports_parse_failure_like_a_problem() {
+        let (code, stdout, stderr) = run_check("unparsable", "{ stores: [");
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        let mut lines = stderr.lines();
+        assert_eq!(lines.next(), Some("FAIL: <config>"), "{stderr}");
+        assert!(
+            lines.next().is_some(),
+            "no parse error after FAIL: {stderr}"
+        );
+    }
+
+    #[test]
+    fn check_config_reports_missing_file_like_a_problem() {
+        let path = std::env::temp_dir().join("nativelink-check-does-not-exist.json5");
+        let (code, stdout, stderr) = run_check_path(path.to_str().expect("temp path is UTF-8"));
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        let mut lines = stderr.lines();
+        assert_eq!(lines.next(), Some("FAIL: <config>"), "{stderr}");
+        assert!(lines.next().is_some(), "no error after FAIL: {stderr}");
+    }
+
+    #[nativelink_test]
+    async fn build_server_reports_every_config_problem() -> Result<(), Error> {
+        let json = server_config(
+            get_ephemeral_port()?,
+            "stores: [],",
+            r#"cas: [{ cas_store: "BAD_CAS" }], ac: [{ ac_store: "BAD_AC" }]"#,
+        );
+        let config = CasConfig::try_from_json5_str(&json)?;
+        let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+        let err = match build_server(config, shutdown_tx, scheduler_shutdown_tx).await {
+            Err(err) => err,
+            Ok(server) => {
+                panic!("build_server accepted a config with two missing stores: {server:?}\n{json}")
+            }
+        };
+        assert_eq!(err.code, Code::InvalidArgument);
+        let message = err.messages.join("\n");
+        assert!(message.contains("BAD_CAS"), "{message}");
+        assert!(message.contains("BAD_AC"), "{message}");
         Ok(())
     }
 }

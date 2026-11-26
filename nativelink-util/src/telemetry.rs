@@ -15,6 +15,7 @@
 use core::default::Default;
 use std::collections::HashMap;
 use std::env;
+use std::io::IsTerminal;
 use std::sync::{Arc, OnceLock};
 
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -103,6 +104,27 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
             .with_filter(stdout_filter)
             .boxed(),
     }
+}
+
+/// Initialize plain logging to stderr for a one-shot command, such as
+/// `nativelink --check`, that runs without a Tokio runtime and must not reach
+/// an OTLP collector.
+///
+/// Only `WARN` and above are printed unless `RUST_LOG` says otherwise, so the
+/// warnings the config parser logs (deprecated syntax, ignored fields) reach
+/// the user. Does nothing if a global subscriber is already set.
+pub fn init_stderr_tracing() {
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .from_env_lossy();
+    let layer = fmt::layer()
+        .compact()
+        .without_time()
+        .with_target(false)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(std::io::stderr)
+        .with_filter(filter);
+    drop(registry().with(layer).try_init());
 }
 
 /// Initialize tracing with OpenTelemetry support.
