@@ -51,6 +51,10 @@ The check covers:
 - a `worker_api` service pointed at a `grpc` scheduler, which forwards actions
   to another server and cannot accept workers;
 - a server with no `services`;
+- a listener `socket_address` that does not parse, or one that two servers
+  share (port `0` excepted, since it asks for any free port);
+- two workers with the same `name`, counting the `worker_<index>` name an
+  unnamed worker gets;
 - duplicate store names, which startup also rejects.
 
 A scheduler name declared more than once is a warning, not a failure: startup
@@ -64,8 +68,12 @@ such as `servers[0].services.cas[main].cas_store` or `stores[WRAPPED]`.
 
 `--check` checks names, not values. A config that passes can still fail at
 startup if a Redis endpoint does not answer, a filesystem path is not
-writable, or a value is out of range, such as a scheduler setting that
-startup validates when it builds the scheduler.
+writable, a TLS certificate file is missing, or a value is out of range, such
+as a scheduler setting that startup validates when it builds the scheduler.
+
+Environment variables are expanded first, exactly as at startup, so run
+`--check` with the variables the deployment sets. An unset `${VAR}` fails
+with `environment variable not found`.
 
 ```sh
 $ nativelink --check nativelink-config/examples/basic_cas.json5

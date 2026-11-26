@@ -133,7 +133,7 @@ fn check_config(config_file: &str) -> i32 {
             0
         }
         Err(err) => {
-            eprintln!("FAIL: {config_file} — configuration is invalid");
+            eprintln!("FAIL: {config_file}");
             for message in &err.messages {
                 eprintln!("{message}");
             }

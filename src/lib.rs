@@ -1074,22 +1074,47 @@ mod tests {
     /// Broken configs, each with the reason startup rejects it. Every store
     /// is a memory store so construction needs no network or disk.
     fn broken_configs(port: u16) -> Vec<(&'static str, String)> {
-        // A worker whose CAS store is `store`, with extra `local` fields.
-        let worker = |store: &str, extra: &str| {
+        // One local worker whose CAS store is `store`, with extra fields.
+        let local_worker = |store: &str, extra: &str| {
             format!(
-                r#"workers: [{{ local: {{
+                r#"{{ local: {{
                     worker_api_endpoint: {{ uri: "grpc://127.0.0.1:1" }},
                     cas_fast_slow_store: "{store}",
                     work_directory: "/tmp/nativelink-validate-test",
                     platform_properties: {{}},
                     {extra}
-                }} }}],"#
+                }} }}"#
             )
         };
+        // A `workers` list holding one such worker.
+        let worker =
+            |store: &str, extra: &str| format!("workers: [{}],", local_worker(store, extra));
         vec![
             (
                 "service store missing with an empty store list",
                 server_config(port, "stores: [],", r#"cas: [{ cas_store: "MISSING" }]"#),
+            ),
+            (
+                "two workers with the same name",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], workers: [{}, {}], servers: [] }}"#,
+                    local_worker("CAS", r#"name: "w","#),
+                    local_worker("CAS", r#"name: "w","#),
+                ),
+            ),
+            (
+                "two servers on the same address",
+                format!(
+                    r#"{{ stores: [], servers: [
+                        {{ listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }}, services: {{ health: {{}} }} }},
+                        {{ listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }}, services: {{ health: {{}} }} }},
+                    ] }}"#
+                ),
+            ),
+            (
+                "listener address that does not parse",
+                server_config(port, "stores: [],", "health: {}")
+                    .replace(&format!("127.0.0.1:{port}"), "not-an-address"),
             ),
             (
                 "worker_api served from a grpc scheduler",

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::net::SocketAddr;
 use std::collections::{HashMap, HashSet};
 
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
@@ -2318,8 +2319,23 @@ impl CasConfig {
             problems,
         };
 
+        // Startup names an unnamed worker `worker_{index}` and refuses a name
+        // used twice.
+        let mut worker_names: HashMap<String, usize> = HashMap::new();
         for (worker_idx, worker) in self.workers.iter().flatten().enumerate() {
             let WorkerConfig::Local(local) = worker;
+            let worker_name = if local.name.is_empty() {
+                format!("worker_{worker_idx}")
+            } else {
+                local.name.clone()
+            };
+            if let Some(first_idx) = worker_names.get(&worker_name) {
+                checker.problems.push(format!(
+                    "workers[{worker_idx}] has the same name as workers[{first_idx}]: '{worker_name}'"
+                ));
+            } else {
+                worker_names.insert(worker_name, worker_idx);
+            }
             checker.store(
                 &format!("workers[{worker_idx}].local.cas_fast_slow_store"),
                 &local.cas_fast_slow_store,
@@ -2347,6 +2363,32 @@ impl CasConfig {
             );
         }
 
+        // Startup binds every listener; an address that does not parse, or one
+        // two servers share, fails there. Port 0 asks the OS for a free port,
+        // so it can repeat.
+        let mut addresses: HashMap<SocketAddr, usize> = HashMap::new();
+        for (server_idx, server) in self.servers.iter().enumerate() {
+            let ListenerConfig::Http(http) = &server.listener;
+            let address = &http.socket_address;
+            match address.parse::<SocketAddr>() {
+                Err(_) => checker.problems.push(format!(
+                    "servers[{server_idx}].listener.http.socket_address is not a valid \
+                     address: '{address}'"
+                )),
+                Ok(parsed) if parsed.port() != 0 => {
+                    if let Some(first_idx) = addresses.get(&parsed) {
+                        checker.problems.push(format!(
+                            "servers[{server_idx}] listens on the same address as \
+                             servers[{first_idx}]: '{address}'"
+                        ));
+                    } else {
+                        addresses.insert(parsed, server_idx);
+                    }
+                }
+                Ok(_) => {}
+            }
+        }
+
         for (server_idx, server) in self.servers.iter().enumerate() {
             let prefix = format!("servers[{server_idx}].services");
             let Some(services) = &server.services else {
@@ -2357,7 +2399,7 @@ impl CasConfig {
                 continue;
             };
             for entry in services.cas.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(&format!("{prefix}.cas[{name}].cas_store"), &entry.cas_store);
                 if let Some(index_store) = entry
                     .experimental_chunking
@@ -2371,11 +2413,11 @@ impl CasConfig {
                 }
             }
             for entry in services.ac.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(&format!("{prefix}.ac[{name}].ac_store"), &entry.ac_store);
             }
             for entry in services.execution.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(
                     &format!("{prefix}.execution[{name}].cas_store"),
                     &entry.cas_store,
@@ -2387,7 +2429,7 @@ impl CasConfig {
             }
             for entry in services.capabilities.iter().flatten() {
                 if let Some(remote_execution) = &entry.remote_execution {
-                    let name = &entry.instance_name;
+                    let name = instance_label(&entry.instance_name);
                     checker.scheduler(
                         &format!("{prefix}.capabilities[{name}].remote_execution.scheduler"),
                         &remote_execution.scheduler,
@@ -2395,14 +2437,14 @@ impl CasConfig {
                 }
             }
             for entry in services.bytestream.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(
                     &format!("{prefix}.bytestream[{name}].cas_store"),
                     &entry.cas_store,
                 );
             }
             for entry in services.fetch.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(
                     &format!("{prefix}.fetch[{name}].fetch_store"),
                     &entry.fetch_store,
@@ -2415,7 +2457,7 @@ impl CasConfig {
                 }
             }
             for entry in services.push.iter().flatten() {
-                let name = &entry.instance_name;
+                let name = instance_label(&entry.instance_name);
                 checker.store(
                     &format!("{prefix}.push[{name}].push_store"),
                     &entry.push_store,
@@ -2462,14 +2504,14 @@ impl CasConfig {
             checker.store_internal_refs(&store.name, &store.spec);
         }
 
-        if checker.problems.is_empty() {
-            Ok(())
-        } else {
-            Err(make_err!(
+        match checker.problems.len() {
+            0 => Ok(()),
+            count => Err(make_err!(
                 Code::InvalidArgument,
-                "configuration reference validation failed:\n  - {}",
+                "{count} configuration problem{}:\n  - {}",
+                if count == 1 { "" } else { "s" },
                 checker.problems.join("\n  - ")
-            ))
+            )),
         }
     }
 
@@ -2493,6 +2535,12 @@ impl CasConfig {
         }
         duplicates
     }
+}
+
+/// How an instance name appears in a problem path: as written, or `""` when it
+/// is empty, so `cas[""]` does not read as a missing index.
+const fn instance_label(name: &str) -> &str {
+    if name.is_empty() { "\"\"" } else { name }
 }
 
 /// Whether startup builds a worker scheduler for `spec`, which the worker API
@@ -3128,6 +3176,85 @@ mod tests {
     }
 
     #[test]
+    fn validate_references_flags_duplicate_worker_name() {
+        // `worker_1` collides with the name startup gives the unnamed worker
+        // at index 1, and `w` is used twice outright.
+        let worker = |name: &str| {
+            format!(
+                r#"{{ local: {{ name: "{name}",
+                    worker_api_endpoint: {{ uri: "grpc://127.0.0.1:1" }},
+                    cas_fast_slow_store: "CAS", work_directory: "/tmp/w",
+                    platform_properties: {{}} }} }}"#
+            )
+        };
+        let cfg = parse_cas_config(&format!(
+            r#"{{ stores: [{{ name: "CAS", memory: {{}} }}],
+                workers: [{}, {}, {}, {}], servers: [] }}"#,
+            worker("w"),
+            worker(""),
+            worker("worker_1"),
+            worker("w"),
+        ));
+        let message = cfg.validate_references().unwrap_err().messages.join("\n");
+        assert!(
+            message.contains("workers[2] has the same name as workers[1]: 'worker_1'")
+                && message.contains("workers[3] has the same name as workers[0]: 'w'"),
+            "error must name both collisions: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_checks_listener_addresses() {
+        let server = |address: &str| {
+            format!(
+                r#"{{ listener: {{ http: {{ socket_address: "{address}" }} }},
+                    services: {{ health: {{}} }} }}"#
+            )
+        };
+        let cfg = parse_cas_config(&format!(
+            "{{ stores: [], servers: [{}, {}, {}, {}, {}] }}",
+            server("127.0.0.1:50051"),
+            server("127.0.0.1:50051"),
+            server("not-an-address"),
+            server("127.0.0.1:0"),
+            server("127.0.0.1:0"),
+        ));
+        let message = cfg.validate_references().unwrap_err().messages.join("\n");
+        assert!(
+            message.contains(
+                "servers[1] listens on the same address as servers[0]: '127.0.0.1:50051'"
+            ),
+            "error must report the shared address: {message}"
+        );
+        assert!(
+            message.contains("servers[2].listener.http.socket_address is not a valid address"),
+            "error must report the bad address: {message}"
+        );
+        assert!(
+            !message.contains("servers[4]"),
+            "port 0 picks a free port, so it can repeat: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_references_labels_empty_instance_name() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50051" } },
+                    services: { cas: [{ cas_store: "MISSING" }] },
+                }],
+            }"#,
+        );
+        let message = cfg.validate_references().unwrap_err().messages.join("\n");
+        assert!(
+            message.contains(r#"servers[0].services.cas[""].cas_store"#),
+            "an empty instance name must render as \"\": {message}"
+        );
+    }
+
+    #[test]
     fn validate_references_flags_undefined_scheduler() {
         let cfg = parse_cas_config(
             r#"{
@@ -3427,15 +3554,16 @@ mod tests {
         );
         let err = cfg.validate_references().unwrap_err();
         assert_eq!(err.code, Code::InvalidArgument);
-        assert!(err.to_string().contains(
-            "servers[0].services.cas[].cas_store references undefined store 'CAS_MAIN_STORE'"
+        let message = err.messages.join("\n");
+        assert!(message.contains(
+            r#"servers[0].services.cas[""].cas_store references undefined store 'CAS_MAIN_STORE'"#
         ));
-        assert!(err.to_string().contains(
-            "servers[0].services.execution[].cas_store references undefined store 'WORKER_STORE'"
+        assert!(message.contains(
+            r#"servers[0].services.execution[""].cas_store references undefined store 'WORKER_STORE'"#
         ));
         // `schedulers` is absent entirely; that is an empty registry too.
-        assert!(err.to_string().contains(
-            "servers[0].services.execution[].scheduler references undefined scheduler 'MAIN_SCHEDULER'"
+        assert!(message.contains(
+            r#"servers[0].services.execution[""].scheduler references undefined scheduler 'MAIN_SCHEDULER'"#
         ));
     }
 
