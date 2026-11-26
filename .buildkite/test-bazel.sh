@@ -59,6 +59,10 @@ if [[ $BUILDKITE_PIPELINE_SLUG == *-forks ]]; then
     else
         echo "No read-only cache key in this cluster: building without a remote cache."
     fi
+    # Trusted builds run under nix develop, whose lre.bazelrc adds this to
+    # every action's environment and so to its cache key. Without it, fork
+    # builds miss the cache for every C++, Rust and test action.
+    flags+=(--action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1)
     exec ./tools/bazel-retry.sh test //... "${flags[@]}"
 fi
 
