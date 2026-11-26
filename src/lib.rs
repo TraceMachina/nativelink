@@ -23,6 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Weak;
 
 use async_lock::Mutex as AsyncMutex;
 use axum::Router;
@@ -40,6 +42,8 @@ use nativelink_config::cas_server::{
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+#[cfg(test)]
+use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bep_server::BepServer;
 use nativelink_service::bytestream_server::ByteStreamServer;
@@ -193,6 +197,8 @@ pub struct Server {
     pub root_futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>>,
     pub single_use_enabled: bool,
     pub single_use_complete_rx: oneshot::Receiver<()>,
+    #[cfg(test)]
+    action_schedulers: Vec<Weak<dyn KnownPlatformPropertyProvider>>,
 }
 
 impl std::fmt::Debug for Server {
@@ -929,7 +935,11 @@ pub async fn build_server(
         }
     }
 
-    // Set up a shutdown handler for the worker schedulers.
+    #[cfg(test)]
+    let action_scheduler_refs = action_schedulers.values().map(Arc::downgrade).collect();
+
+    // The action schedulers own the matching tasks. A Worker API-only listener
+    // holds only the worker scheduler, so keep the action schedulers alive here.
     let mut shutdown_rx = shutdown_tx.subscribe();
     root_futures.push(Box::pin(async move {
         if let Ok(shutdown_guard) = shutdown_rx.recv().await {
@@ -938,12 +948,15 @@ pub async fn build_server(
                 scheduler.shutdown(shutdown_guard.clone()).await;
             }
         }
+        drop(action_schedulers);
         Ok(())
     }));
     Ok(Server {
         root_futures,
         single_use_enabled,
         single_use_complete_rx,
+        #[cfg(test)]
+        action_schedulers: action_scheduler_refs,
     })
 }
 
@@ -995,6 +1008,32 @@ mod tests {
             .local_addr()
             .err_tip(|| "Getting ephemeral port for test server")?
             .port())
+    }
+
+    #[nativelink_test]
+    async fn worker_api_only_server_keeps_action_scheduler_alive() -> Result<(), Error> {
+        let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+        let config = CasConfig::try_from_json5_str(
+            r#"{
+                stores: [],
+                schedulers: [{ name: "worker_scheduler", simple: {} }],
+                servers: [{
+                    name: "worker_api",
+                    listener: { http: { socket_address: "127.0.0.1:0" } },
+                    services: { worker_api: { scheduler: "worker_scheduler" } },
+                }],
+            }"#,
+        )?;
+        let server = build_server(config, shutdown_tx, scheduler_shutdown_tx).await?;
+        let [action_scheduler] = server.action_schedulers.as_slice() else {
+            panic!("expected exactly one action scheduler");
+        };
+        assert!(action_scheduler.upgrade().is_some());
+        let action_scheduler = action_scheduler.clone();
+        drop(server);
+        assert!(action_scheduler.upgrade().is_none());
+        Ok(())
     }
 
     #[nativelink_test]
