@@ -420,6 +420,16 @@ where
                 .await
                 .err_tip(|| "In MatchingEngineActionStateResult::changed")?;
 
+            // The timer drops the wait above, and with it a change notice it
+            // had taken but not yet read: that notice is not sent again. An
+            // action found finished here is the answer the client waits for.
+            if awaited_action.state().stage.is_finished() {
+                return Ok((
+                    awaited_action.state().clone(),
+                    awaited_action.maybe_origin_metadata().cloned(),
+                ));
+            }
+
             if matches!(awaited_action.state().stage, ActionStage::Queued) {
                 // Actions in queued state do not get periodically updated,
                 // so we don't need to timeout them.
