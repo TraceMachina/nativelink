@@ -3105,6 +3105,12 @@ Execution metrics are emitted unconditionally. **Cache metrics are not**: a stor
 only reports hits, misses, and errors on its reads, writes, and deletes if you
 wrap it:
 
+### Check each config before it ships
+
+`nativelink --check` parses a config and checks every store, scheduler,
+worker and listener name it uses, then exits without starting anything. Run
+it in CI on every config you deploy, one file per run:
+
 ## What to watch
 
 Four signals cover most of what goes wrong. All four are recording rules in
@@ -4565,10 +4571,10 @@ with the sharp edges marked.
 
 ## The command line
 
-That is the whole thing. `config_file` is a required positional argument, the
-path to a JSON5 configuration file, and there are no other arguments. The
-binary is a [clap](https://docs.rs/clap) parser with `version`, `about` and
-`author` derived, so `--help` and `--version` work and nothing else does.
+That is nearly the whole thing. `config_file` is a required positional
+argument, the path to a JSON5 configuration file, and `--check` is the one
+flag. The binary is a [clap](https://docs.rs/clap) parser with `version`,
+`about` and `author` derived, so `--help` and `--version` work too.
 
 ## Telemetry variables
 
