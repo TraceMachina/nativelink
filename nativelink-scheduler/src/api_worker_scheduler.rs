@@ -2565,6 +2565,27 @@ impl ApiWorkerSchedulerImpl {
             %operation_id,
             "Killing operation the state manager no longer has executing on this worker"
         );
+        // Every update the worker sends for it from here is ignored, and its
+        // loss is not reported, so this is the attempt's end. Published once,
+        // as the decision stands even when the kill must be sent again.
+        let revoked = worker
+            .running_action_infos
+            .get_mut(&operation_id)
+            .filter(|pending| !pending.end_reported)
+            .map(|pending| {
+                pending.end_reported = true;
+                pending.action_info.clone()
+            });
+        if let Some(action_info) = revoked {
+            publish_attempt_ended(
+                self.attempt_events.as_ref(),
+                &action_info,
+                worker_id,
+                &operation_id,
+                AttemptEndReason::Revoked,
+                String::new(),
+            );
+        }
         if let Err(err) = worker
             .notify_update(WorkerUpdate::KillOperation(operation_id.clone()))
             .await
@@ -2803,11 +2824,17 @@ impl ApiWorkerScheduler {
         detail: String,
     ) {
         let mut inner = self.inner.lock().await;
+        // Still held: the revoked-operation sweep kills it next, and must
+        // not report this attempt's end a second time.
         let held = inner
             .workers
-            .peek(worker_id)
-            .and_then(|worker| worker.running_action_infos.get(operation_id))
-            .map(|pending| pending.action_info.clone());
+            .0
+            .peek_mut(worker_id)
+            .and_then(|worker| worker.running_action_infos.get_mut(operation_id))
+            .map(|pending| {
+                pending.end_reported = true;
+                pending.action_info.clone()
+            });
         let Some(action_info) = held.or_else(|| {
             inner
                 .lost_results
