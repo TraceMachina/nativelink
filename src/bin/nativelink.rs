@@ -91,57 +91,6 @@ async fn inner_main(
     Ok(())
 }
 
-/// Formats `count` with `noun`, adding an `s` unless `count` is one.
-fn plural(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
-    }
-}
-
-/// Runs `--check` on `config_file` and returns the process exit code.
-///
-/// A parse failure and a reference failure are both reported the same way:
-/// a `FAIL:` line and one line per problem on stderr, exit code 1. Warnings
-/// about configs that start but are probably wrong go to stderr and do not
-/// change the exit code: the parser's own warnings through a stderr logger,
-/// and the validator's as `WARN:` lines.
-#[expect(
-    clippy::print_stdout,
-    reason = "`--check` reports its success summary on stdout for CI"
-)]
-fn check_config(config_file: &str) -> i32 {
-    // The parser logs deprecations through `tracing`; without a subscriber
-    // they would be dropped.
-    init_stderr_tracing();
-    let result = CasConfig::try_from_json5_file(config_file)
-        .and_then(|cfg| cfg.validate_references().map(|()| cfg));
-    match result {
-        Ok(cfg) => {
-            for name in cfg.duplicate_scheduler_names() {
-                eprintln!(
-                    "WARN: scheduler name '{name}' is declared more than once; later definitions replace earlier ones"
-                );
-            }
-            println!(
-                "OK: {config_file} — {}, {}, {}, all references resolve",
-                plural(cfg.stores.len(), "store"),
-                plural(cfg.schedulers.as_ref().map_or(0, Vec::len), "scheduler"),
-                plural(cfg.servers.len(), "server"),
-            );
-            0
-        }
-        Err(err) => {
-            eprintln!("FAIL: {config_file}");
-            for message in &err.messages {
-                eprintln!("{message}");
-            }
-            1
-        }
-    }
-}
-
 fn main() -> Result<(), Box<dyn core::error::Error>> {
     install_default_rustls_crypto_provider();
 
@@ -151,7 +100,15 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // offline and exits without starting a serving runtime, binding a
     // socket, connecting to a backend, or creating any store directories.
     if args.check {
-        std::process::exit(check_config(&args.config_file));
+        // The parser logs deprecations through `tracing`; without a
+        // subscriber they would be dropped.
+        init_stderr_tracing();
+        let code = nativelink::check_config(
+            &args.config_file,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        )?;
+        std::process::exit(code);
     }
 
     // Set QoS to USER_INITIATED on the main thread *before* the tokio

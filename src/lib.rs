@@ -223,6 +223,64 @@ pub async fn build_server(
     construct_server(cfg, shutdown_tx, scheduler_shutdown_tx).await
 }
 
+/// Formats `count` with `noun`, adding an `s` unless `count` is one.
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Runs `nativelink --check` on `config_file` and returns the process exit
+/// code: 0 when the config parses and every reference resolves, 1 otherwise.
+///
+/// A parse failure and a reference failure are reported the same way: a
+/// `FAIL:` line and one line per problem on `stderr`. A config that starts
+/// but is probably wrong gets `WARN:` lines on `stderr` and still exits 0.
+/// The success summary goes to `stdout`, so CI can keep it apart from the
+/// diagnostics.
+///
+/// The parser logs its own warnings through `tracing`, so the caller should
+/// install a subscriber first.
+///
+/// # Errors
+///
+/// Returns an error only if writing to `stdout` or `stderr` fails.
+pub fn check_config(
+    config_file: &str,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> std::io::Result<i32> {
+    let result = CasConfig::try_from_json5_file(config_file)
+        .and_then(|cfg| cfg.validate_references().map(|()| cfg));
+    match result {
+        Ok(cfg) => {
+            for name in cfg.duplicate_scheduler_names() {
+                writeln!(
+                    stderr,
+                    "WARN: scheduler name '{name}' is declared more than once; later definitions replace earlier ones"
+                )?;
+            }
+            writeln!(
+                stdout,
+                "OK: {config_file} — {}, {}, {}, all references resolve",
+                plural(cfg.stores.len(), "store"),
+                plural(cfg.schedulers.as_ref().map_or(0, Vec::len), "scheduler"),
+                plural(cfg.servers.len(), "server"),
+            )?;
+            Ok(0)
+        }
+        Err(err) => {
+            writeln!(stderr, "FAIL: {config_file}")?;
+            for message in &err.messages {
+                writeln!(stderr, "{message}")?;
+            }
+            Ok(1)
+        }
+    }
+}
+
 /// Builds the server without [`CasConfig::validate_references`]. Kept
 /// separate so the tests can show that construction rejects every config
 /// `validate_references` rejects.
@@ -1280,7 +1338,7 @@ mod tests {
             let config = CasConfig::try_from_json5_str(&json)
                 .unwrap_or_else(|e| panic!("{reason}: fixture does not parse: {e:?}"));
             let Err(err) = config.validate_references() else {
-                panic!("{reason}: validate_references accepted it");
+                panic!("{reason}: validate_references accepted it:\n{json}");
             };
             // The first problem, and the name it complains about, such as
             // 'MISSING'. The last quoted name is the one that does not
@@ -1297,11 +1355,11 @@ mod tests {
 
             let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
             let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
-            let Err(err) = construct_server(config, shutdown_tx, scheduler_shutdown_tx).await
-            else {
-                panic!(
-                    "{reason}: construction accepted it, so validate_references is stricter than startup"
-                );
+            let err = match construct_server(config, shutdown_tx, scheduler_shutdown_tx).await {
+                Err(err) => err,
+                Ok(server) => panic!(
+                    "{reason}: construction accepted it, so validate_references is stricter than startup: {server:?}\n{json}"
+                ),
             };
             let constructed = err.messages.join(": ");
             assert!(
@@ -1312,17 +1370,133 @@ mod tests {
         Ok(())
     }
 
+    /// Writes `json` to a temporary file named after `test`, runs
+    /// `check_config` on it and removes the file. Returns the exit code,
+    /// stdout and stderr, with the file's path replaced by `<config>`.
+    fn run_check(test: &str, json: &str) -> (i32, String, String) {
+        let path = std::env::temp_dir().join(format!(
+            "nativelink-check-{test}-{}.json5",
+            std::process::id()
+        ));
+        std::fs::write(&path, json).expect("write the config fixture");
+        let (code, stdout, stderr) = run_check_path(path.to_str().expect("temp path is UTF-8"));
+        drop(std::fs::remove_file(&path));
+        (code, stdout, stderr)
+    }
+
+    /// Runs `check_config` on `path`, returning the exit code, stdout and
+    /// stderr, with `path` replaced by `<config>`.
+    fn run_check_path(path: &str) -> (i32, String, String) {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let code = check_config(path, &mut stdout, &mut stderr).expect("write to a Vec");
+        let output = |bytes: Vec<u8>| {
+            String::from_utf8(bytes)
+                .expect("check_config writes UTF-8")
+                .replace(path, "<config>")
+        };
+        (code, output(stdout), output(stderr))
+    }
+
+    #[test]
+    fn plural_adds_s_unless_one() {
+        assert_eq!(plural(0, "store"), "0 stores");
+        assert_eq!(plural(1, "store"), "1 store");
+        assert_eq!(plural(2, "store"), "2 stores");
+    }
+
+    #[test]
+    fn check_config_reports_ok_on_stdout() {
+        let (code, stdout, stderr) = run_check(
+            "ok",
+            r#"{ stores: [{ name: "CAS", memory: {} }], servers: [] }"#,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(
+            stdout,
+            "OK: <config> — 1 store, 0 schedulers, 0 servers, all references resolve\n"
+        );
+        assert_eq!(stderr, "");
+    }
+
+    #[test]
+    fn check_config_reports_every_problem_on_stderr() {
+        let (code, stdout, stderr) = run_check(
+            "problems",
+            &server_config(
+                1,
+                "stores: [],",
+                r#"cas: [{ cas_store: "BAD_CAS" }], ac: [{ ac_store: "BAD_AC" }]"#,
+            ),
+        );
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.starts_with("FAIL: <config>\n2 configuration problems:\n"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("'BAD_CAS'"), "{stderr}");
+        assert!(stderr.contains("'BAD_AC'"), "{stderr}");
+    }
+
+    #[test]
+    fn check_config_warns_on_duplicate_scheduler_and_passes() {
+        let (code, stdout, stderr) = run_check(
+            "duplicate-scheduler",
+            r#"{ stores: [], schedulers: [
+                { name: "MAIN", simple: {} },
+                { name: "MAIN", simple: {} },
+            ], servers: [] }"#,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.starts_with("OK: <config> — 0 stores, 2 schedulers"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stderr,
+            "WARN: scheduler name 'MAIN' is declared more than once; later definitions replace earlier ones\n"
+        );
+    }
+
+    #[test]
+    fn check_config_reports_parse_failure_like_a_problem() {
+        let (code, stdout, stderr) = run_check("unparsable", "{ stores: [");
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        let mut lines = stderr.lines();
+        assert_eq!(lines.next(), Some("FAIL: <config>"), "{stderr}");
+        assert!(
+            lines.next().is_some(),
+            "no parse error after FAIL: {stderr}"
+        );
+    }
+
+    #[test]
+    fn check_config_reports_missing_file_like_a_problem() {
+        let path = std::env::temp_dir().join("nativelink-check-does-not-exist.json5");
+        let (code, stdout, stderr) = run_check_path(path.to_str().expect("temp path is UTF-8"));
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        let mut lines = stderr.lines();
+        assert_eq!(lines.next(), Some("FAIL: <config>"), "{stderr}");
+        assert!(lines.next().is_some(), "no error after FAIL: {stderr}");
+    }
+
     #[nativelink_test]
     async fn build_server_reports_every_config_problem() -> Result<(), Error> {
-        let config = CasConfig::try_from_json5_str(&server_config(
+        let json = server_config(
             get_ephemeral_port()?,
             "stores: [],",
             r#"cas: [{ cas_store: "BAD_CAS" }], ac: [{ ac_store: "BAD_AC" }]"#,
-        ))?;
+        );
+        let config = CasConfig::try_from_json5_str(&json)?;
         let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
         let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
-        let Err(err) = build_server(config, shutdown_tx, scheduler_shutdown_tx).await else {
-            panic!("build_server accepted a config with two missing stores");
+        let err = match build_server(config, shutdown_tx, scheduler_shutdown_tx).await {
+            Err(err) => err,
+            Ok(server) => {
+                panic!("build_server accepted a config with two missing stores: {server:?}\n{json}")
+            }
         };
         assert_eq!(err.code, Code::InvalidArgument);
         let message = err.messages.join("\n");
