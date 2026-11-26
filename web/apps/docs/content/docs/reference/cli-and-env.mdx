@@ -33,7 +33,7 @@ flag. The binary is a [clap](https://docs.rs/clap) parser with `version`,
 | Argument | Required | Meaning |
 | --- | --- | --- |
 | `<config_file>` | Yes | Path to the JSON5 configuration file. Parsed with `serde_json5`; the config structs are `deny_unknown_fields`, so an unrecognised key is a startup failure, not a warning. |
-| `--check` | No | Parse the file, validate every store and scheduler reference, and exit. Exit status `0` with a one-line `OK:` summary on stdout, or `1` with a `FAIL:` line and one line per problem on stderr. A file that does not parse fails the same way. Nothing else is started: no runtime, no socket, no backend connection, no directory. |
+| `--check` | No | Parse the file, validate every store and scheduler reference, and exit. Exit status `0` with a one-line `OK:` summary on stdout, or `1` with a `FAIL:` line and one line per problem on stderr. A file that does not parse fails the same way. A usage error, such as a missing `<config_file>`, exits `2`. Nothing else is started: no runtime, no socket, no backend connection, no directory. |
 | `--help` | No | Print usage and exit. |
 | `--version` | No | Print the crate version and exit. |
 
@@ -50,15 +50,22 @@ The check covers:
   uses that store, because startup constructs all of them;
 - a `worker_api` service pointed at a `grpc` scheduler, which forwards actions
   to another server and cannot accept workers;
+- a server with no `services`;
 - duplicate store names, which startup also rejects.
 
 A scheduler name declared more than once is a warning, not a failure: startup
-accepts it and uses the last definition, so `--check` prints a `WARN:` line on
-stderr and still exits `0`. Startup logs the same warning.
+accepts it, and later definitions replace earlier ones, so `--check` prints a
+`WARN:` line on stderr and still exits `0`. Startup logs the same warning, and
+any warning the parser logs, such as for deprecated syntax, reaches stderr in
+both modes.
 
-All problems are reported together, each with the path of the field that
-holds the bad name. It does not check that a Redis endpoint answers or that a
-filesystem path is writable; those still fail at startup.
+All problems are reported together, each with where the bad name appears,
+such as `servers[0].services.cas[main].cas_store` or `stores[WRAPPED]`.
+
+`--check` checks names, not values. A config that passes can still fail at
+startup if a Redis endpoint does not answer, a filesystem path is not
+writable, or a value is out of range, such as a scheduler setting that
+startup validates when it builds the scheduler.
 
 ```sh
 $ nativelink --check nativelink-config/examples/basic_cas.json5

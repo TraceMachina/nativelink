@@ -217,7 +217,7 @@ pub async fn build_server(
     for name in cfg.duplicate_scheduler_names() {
         warn!(
             scheduler = name,
-            "Scheduler name is declared more than once; only the last definition is used"
+            "Scheduler name is declared more than once; later definitions replace earlier ones"
         );
     }
     construct_server(cfg, shutdown_tx, scheduler_shutdown_tx).await
@@ -1074,13 +1074,15 @@ mod tests {
     /// Broken configs, each with the reason startup rejects it. Every store
     /// is a memory store so construction needs no network or disk.
     fn broken_configs(port: u16) -> Vec<(&'static str, String)> {
-        let worker = |store: &str| {
+        // A worker whose CAS store is `store`, with extra `local` fields.
+        let worker = |store: &str, extra: &str| {
             format!(
                 r#"workers: [{{ local: {{
                     worker_api_endpoint: {{ uri: "grpc://127.0.0.1:1" }},
                     cas_fast_slow_store: "{store}",
                     work_directory: "/tmp/nativelink-validate-test",
                     platform_properties: {{}},
+                    {extra}
                 }} }}],"#
             )
         };
@@ -1213,7 +1215,32 @@ mod tests {
             ),
             (
                 "worker store missing",
-                format!("{{ stores: [], {} servers: [] }}", worker("MISSING")),
+                format!("{{ stores: [], {} servers: [] }}", worker("MISSING", "")),
+            ),
+            (
+                "worker action cache store missing",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], {} servers: [] }}"#,
+                    worker("CAS", r#"upload_action_result: { ac_store: "MISSING" },"#)
+                ),
+            ),
+            (
+                "worker historical results store missing",
+                format!(
+                    r#"{{ stores: [{{ name: "CAS", memory: {{}} }}], {} servers: [] }}"#,
+                    worker(
+                        "CAS",
+                        r#"upload_action_result: { historical_results_store: "MISSING" },"#
+                    )
+                ),
+            ),
+            (
+                "server without services",
+                format!(
+                    r#"{{ stores: [], servers: [{{
+                        listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }},
+                    }}] }}"#
+                ),
             ),
         ]
     }

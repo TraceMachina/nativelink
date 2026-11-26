@@ -2348,10 +2348,14 @@ impl CasConfig {
         }
 
         for (server_idx, server) in self.servers.iter().enumerate() {
+            let prefix = format!("servers[{server_idx}].services");
             let Some(services) = &server.services else {
+                // Startup refuses a server with nothing to serve.
+                checker
+                    .problems
+                    .push(format!("servers[{server_idx}] has no 'services'"));
                 continue;
             };
-            let prefix = format!("servers[{server_idx}].services");
             for entry in services.cas.iter().flatten() {
                 let name = &entry.instance_name;
                 checker.store(&format!("{prefix}.cas[{name}].cas_store"), &entry.cas_store);
@@ -2420,16 +2424,17 @@ impl CasConfig {
             if let Some(worker_api) = &services.worker_api {
                 let path = format!("{prefix}.worker_api.scheduler");
                 checker.scheduler(&path, &worker_api.scheduler);
-                // Startup resolves the last scheduler declared under a name.
-                let spec = self
+                // Startup records a worker scheduler only for declarations
+                // that have one, so if a name is declared twice, any
+                // declaration that accepts workers is enough.
+                let mut declared = self
                     .schedulers
                     .iter()
                     .flatten()
-                    .rev()
-                    .find(|scheduler| scheduler.name == worker_api.scheduler)
-                    .map(|scheduler| &scheduler.spec);
-                if let Some(spec) = spec
-                    && !accepts_workers(spec)
+                    .filter(|scheduler| scheduler.name == worker_api.scheduler)
+                    .peekable();
+                if declared.peek().is_some()
+                    && !declared.any(|scheduler| accepts_workers(&scheduler.spec))
                 {
                     checker.problems.push(format!(
                         "{path} references scheduler '{}', which forwards to a remote \
@@ -2471,9 +2476,11 @@ impl CasConfig {
     /// Returns each scheduler name that is declared more than once, in the
     /// order its second declaration appears.
     ///
-    /// Startup builds every declared scheduler, and the last one with a given
-    /// name is the one services resolve, so earlier definitions are silently
-    /// unused. This is a warning, not an error, because such a config starts.
+    /// Startup builds every declared scheduler and keeps them in maps keyed by
+    /// name, so a later definition replaces an earlier one for each role it
+    /// fills (action scheduler, worker scheduler). The earlier definition is
+    /// then partly or wholly unused. This is a warning, not an error, because
+    /// such a config starts.
     #[must_use]
     pub fn duplicate_scheduler_names(&self) -> Vec<&str> {
         let mut seen: HashSet<&str> = HashSet::new();
@@ -2622,7 +2629,7 @@ impl<'a> ReferenceChecker<'a> {
         let mut refs: Vec<&'a StoreRefName> = Vec::new();
         collect_ref_store_names(spec, &mut refs);
         for ref_name in refs {
-            self.store(&format!("store '{name}'"), ref_name.as_str());
+            self.store(&format!("stores[{name}]"), ref_name.as_str());
         }
     }
 }
@@ -2968,12 +2975,13 @@ mod tests {
     // ----------------------------------------------------------------------
 
     fn parse_cas_config(json5: &str) -> CasConfig {
-        serde_json5::from_str(json5).expect("valid CasConfig json5")
+        // The real load path, so the tests see the config startup would.
+        CasConfig::try_from_json5_str(json5).expect("valid CasConfig json5")
     }
 
     /// A fully-resolved config that exercises worker, service and nested
     /// `ref_store` reference sites. `WRAPPED` wraps a `ref_store` to `CAS`,
-    /// so the reachability walk must resolve it.
+    /// which the walk over every declared store must resolve.
     const VALID_CONFIG: &str = r#"{
         stores: [
             { name: "CAS", memory: {} },
@@ -3082,6 +3090,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_references_accepts_worker_api_when_any_declaration_has_workers() {
+        // Startup registers a worker scheduler only from declarations that
+        // build one, so `S` serves the worker API from its `simple` entry
+        // even though a later `grpc` entry reuses the name.
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [],
+                schedulers: [
+                    { name: "S", simple: {} },
+                    { name: "S", grpc: { endpoint: { address: "grpc://127.0.0.1:50052" } } },
+                ],
+                servers: [{
+                    listener: { http: { socket_address: "0.0.0.0:50061" } },
+                    services: { worker_api: { scheduler: "S" } },
+                }],
+            }"#,
+        );
+        cfg.validate_references()
+            .expect("a simple declaration under the name accepts workers");
+    }
+
+    #[test]
+    fn validate_references_flags_server_without_services() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [],
+                servers: [{ listener: { http: { socket_address: "0.0.0.0:50061" } } }],
+            }"#,
+        );
+        let err = cfg.validate_references().unwrap_err();
+        let message = err.messages.join("\n");
+        assert!(
+            message.contains("servers[0] has no 'services'"),
+            "error must name the server: {message}"
+        );
+    }
+
+    #[test]
     fn validate_references_flags_undefined_scheduler() {
         let cfg = parse_cas_config(
             r#"{
@@ -3107,7 +3153,7 @@ mod tests {
             "error must name the bad scheduler ref: {message}"
         );
         assert!(
-            message.contains("scheduler"),
+            message.contains("servers[0].services.execution[main].scheduler"),
             "error must name the reference site: {message}"
         );
     }
@@ -3139,8 +3185,8 @@ mod tests {
 
     #[test]
     fn validate_references_flags_nested_ref_store_typo() {
-        // `WRAPPED` is wired to a service, so its nested `ref_store` typo must
-        // be resolved and flagged via the reachability walk.
+        // The walk over every declared store must find the `ref_store` typo
+        // nested inside `WRAPPED`.
         let cfg = parse_cas_config(
             r#"{
                 stores: [
@@ -3159,7 +3205,7 @@ mod tests {
         let err = cfg.validate_references().unwrap_err();
         let message = err.messages.join("\n");
         assert!(
-            message.contains("CAS_TYPO") && message.contains("store 'WRAPPED'"),
+            message.contains("CAS_TYPO") && message.contains("stores[WRAPPED]"),
             "error must name the nested bad ref and its owning store: {message}"
         );
     }
@@ -3432,7 +3478,7 @@ mod tests {
         assert_eq!(err.code, Code::InvalidArgument);
         assert!(
             err.to_string()
-                .contains("store 'UNUSED' references undefined store 'MISSING'"),
+                .contains("stores[UNUSED] references undefined store 'MISSING'"),
             "{err}"
         );
     }
