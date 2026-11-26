@@ -32,7 +32,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::{
     DEFAULT_DIGEST_SIZE_HEALTH_CHECK_CFG, set_default_digest_size_health_check,
 };
-use nativelink_util::telemetry::init_tracing;
+use nativelink_util::telemetry::{init_stderr_tracing, init_tracing};
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -91,11 +91,6 @@ async fn inner_main(
     Ok(())
 }
 
-fn load_config(config_file: &str) -> Result<CasConfig, Error> {
-    CasConfig::try_from_json5_file(config_file)
-        .err_tip(|| format!("While loading config file {config_file}"))
-}
-
 /// Formats `count` with `noun`, adding an `s` unless `count` is one.
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
@@ -109,20 +104,24 @@ fn plural(count: usize, noun: &str) -> String {
 ///
 /// A parse failure and a reference failure are both reported the same way:
 /// a `FAIL:` line and one line per problem on stderr, exit code 1. Warnings
-/// about configs that start but are probably wrong go to stderr as `WARN:`
-/// lines and do not change the exit code.
-#[allow(
+/// about configs that start but are probably wrong go to stderr and do not
+/// change the exit code: the parser's own warnings through a stderr logger,
+/// and the validator's as `WARN:` lines.
+#[expect(
     clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "`--check` reports its result on stdout and stderr for CI"
+    reason = "`--check` reports its success summary on stdout for CI"
 )]
 fn check_config(config_file: &str) -> i32 {
-    let result = load_config(config_file).and_then(|cfg| cfg.validate_references().map(|()| cfg));
+    // The parser logs deprecations through `tracing`; without a subscriber
+    // they would be dropped.
+    init_stderr_tracing();
+    let result = CasConfig::try_from_json5_file(config_file)
+        .and_then(|cfg| cfg.validate_references().map(|()| cfg));
     match result {
         Ok(cfg) => {
             for name in cfg.duplicate_scheduler_names() {
                 eprintln!(
-                    "WARN: scheduler name '{name}' is declared more than once; only the last definition is used"
+                    "WARN: scheduler name '{name}' is declared more than once; later definitions replace earlier ones"
                 );
             }
             println!(
@@ -155,8 +154,6 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         std::process::exit(check_config(&args.config_file));
     }
 
-    let mut cfg = load_config(&args.config_file)?;
-
     // Set QoS to USER_INITIATED on the main thread *before* the tokio
     // runtime is built so the spawned worker threads inherit P-core
     // scheduling preference via pthread QoS inheritance on Apple
@@ -177,6 +174,9 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Do this first so all the other logging works
     #[expect(clippy::disallowed_methods, reason = "tracing init on main runtime")]
     runtime.block_on(async { tokio::spawn(async { init_tracing().await }).await? })?;
+
+    // Parse after tracing is up, so the parser's warnings are logged.
+    let mut cfg = CasConfig::try_from_json5_file(&args.config_file)?;
 
     let global_cfg = if let Some(global_cfg) = &mut cfg.global {
         if global_cfg.max_open_files == 0 {
