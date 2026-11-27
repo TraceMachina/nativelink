@@ -141,11 +141,12 @@
             scheduler: "SIMPLE",
           },
         ],
-        bytestream: {
-          cas_stores: {
-            "": "CAS",
+        bytestream: [
+          {
+            instance_name: "",
+            cas_store: "CAS",
           },
-        },
+        ],
         capabilities: [
           {
             remote_execution: {

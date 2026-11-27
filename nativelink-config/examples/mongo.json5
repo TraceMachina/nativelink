@@ -129,11 +129,12 @@
             },
           },
         ],
-        bytestream: {
-          cas_stores: {
-            main: "PRODUCTION_CAS",
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "PRODUCTION_CAS",
           },
-        },
+        ],
       },
     },
   ],

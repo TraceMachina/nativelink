@@ -1,5 +1,51 @@
+// The older service config shape: each service is a map keyed by instance
+// name, and bytestream lists its stores under `cas_stores`. NativeLink still
+// reads this shape and logs the current equivalent at startup. Use it to
+// check a migration; new configs should use the list form in basic_cas.json5.
 {
-  stores: [],
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      memory: {
+        eviction_policy: {
+          // 1gb.
+          max_bytes: 1000000000,
+        },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      memory: {
+        eviction_policy: {
+          // 100mb.
+          max_bytes: 100000000,
+        },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          ref_store: {
+            name: "CAS_MAIN_STORE",
+          },
+        },
+        slow: {
+          noop: {},
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+        },
+      },
+    },
+  ],
   servers: [
     {
       listener: {
