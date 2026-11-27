@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,8 +69,28 @@ pub enum ErrorContext {
     None,
     /// The error refers to a specific CAS blob that could not be
     /// located. `hash` and `size` together form the digest the client
-    /// should re-upload (`REv2` `blobs/{hash}/{size}`).
-    MissingDigest { hash: String, size: i64 },
+    /// should re-upload; see [`missing_blob_subject`] for the subject.
+    MissingDigest {
+        hash: String,
+        size: i64,
+        /// The lowercase digest function name the subject has to carry,
+        /// for example `blake3`. `None` when it is omitted, which `REv2`
+        /// requires for MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512 and VSO.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest_function: Option<String>,
+    },
+}
+
+/// The `REv2` subject of a `MISSING` `PreconditionFailure` violation:
+/// `blobs/{digest_function/}{hash}/{size}`, formatted like a
+/// `ByteStream.Read` resource name without the instance name. The digest
+/// function segment is present exactly when `digest_function` is `Some`.
+#[must_use]
+pub fn missing_blob_subject(digest_function: Option<&str>, hash: &str, size: i64) -> String {
+    match digest_function {
+        Some(digest_function) => format!("blobs/{digest_function}/{hash}/{size}"),
+        None => format!("blobs/{hash}/{size}"),
+    }
 }
 
 #[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
@@ -206,12 +226,48 @@ impl From<Error> for nativelink_proto::google::rpc::Status {
 
 impl From<nativelink_proto::google::rpc::Status> for Error {
     fn from(val: nativelink_proto::google::rpc::Status) -> Self {
+        let context = missing_digest_from_details(&val.details);
         Self {
             code: val.code.into(),
             messages: vec![val.message],
-            context: ErrorContext::None,
+            context,
         }
     }
+}
+
+/// The `REv2` missing-blob violation in a status's details, as the
+/// [`ErrorContext`] that produced it. A status that crosses a gRPC hop
+/// (a CAS forwarding `Execute` to a separate scheduler) would otherwise
+/// lose it, and with it the `PreconditionFailure` the client needs to
+/// upload the blob again and retry.
+fn missing_digest_from_details(details: &[prost_types::Any]) -> ErrorContext {
+    const PRECONDITION_FAILURE: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
+    details
+        .iter()
+        .filter(|any| any.type_url == PRECONDITION_FAILURE)
+        .filter_map(|any| {
+            <nativelink_proto::google::rpc::PreconditionFailure as prost::Message>::decode(
+                any.value.as_slice(),
+            )
+            .ok()
+        })
+        .flat_map(|failure| failure.violations)
+        .filter(|violation| violation.r#type == "MISSING")
+        .find_map(|violation| {
+            let rest = violation.subject.strip_prefix("blobs/")?;
+            // `{digest_function/}{hash}/{size}`: read from the right, since
+            // the digest function segment is optional.
+            let mut parts = rest.rsplitn(3, '/');
+            let size = parts.next()?.parse().ok()?;
+            let hash = parts.next()?.to_string();
+            let digest_function = parts.next().map(str::to_string);
+            Some(ErrorContext::MissingDigest {
+                hash,
+                size,
+                digest_function,
+            })
+        })
+        .unwrap_or_default()
 }
 
 impl core::fmt::Display for Error {
@@ -316,6 +372,13 @@ impl From<Utf8Error> for Error {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl From<caps::errors::CapsError> for Error {
+    fn from(err: caps::errors::CapsError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self {
@@ -329,21 +392,61 @@ impl From<std::io::Error> for Error {
 impl From<redis::RedisError> for Error {
     fn from(error: redis::RedisError) -> Self {
         use redis::ErrorKind::{
-            AuthenticationFailed, InvalidClientConfig, Io as IoError, Parse as ParseError,
+            AuthenticationFailed, ClusterConnectionNotFound, EmptySentinelList, Extension,
+            InvalidClientConfig, Io as IoError, MasterNameNotFoundBySentinel,
+            NoValidReplicasFoundBySentinel, Parse as ParseError, RESP3NotSupported, Server,
             UnexpectedReturnType,
+        };
+        use redis::ServerErrorKind::{
+            BusyLoading, ClusterDown, MasterDown, NoPerm, ReadOnly, TryAgain,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
+        //
+        // The distinction that matters most is retryable vs not. These statuses
+        // reach REAPI clients directly, and Bazel treats INVALID_ARGUMENT as
+        // permanent: it fails the build instantly rather than retrying. So
+        // anything caused by the state of the Redis deployment — a failover in
+        // progress, a dropped connection, a node still loading its dataset —
+        // must NOT land there, or a routine blip becomes a failed CI run.
         let code = match error.kind() {
-            AuthenticationFailed => Code::PermissionDenied,
-            ParseError | UnexpectedReturnType | InvalidClientConfig => Code::InvalidArgument,
+            AuthenticationFailed | Server(NoPerm) => Code::PermissionDenied,
+
+            // Topology in flux. Sentinel failover makes these normal and
+            // brief: the master moved and the client has not caught up yet.
+            // Surfacing MasterNameNotFoundBySentinel as INVALID_ARGUMENT is
+            // what turned a 1-2 minute sentinel failover into a dead build.
+            MasterNameNotFoundBySentinel
+            | NoValidReplicasFoundBySentinel
+            | ClusterConnectionNotFound
+            | Server(ClusterDown | MasterDown | TryAgain | BusyLoading | ReadOnly) => {
+                Code::Unavailable
+            }
+
+            // A timeout is worth distinguishing from a dead connection, but
+            // both are transient and both are retryable.
             IoError => {
                 if error.is_timeout() {
                     Code::DeadlineExceeded
                 } else {
-                    Code::Internal
+                    Code::Unavailable
                 }
             }
+
+            // Genuine misconfiguration by the operator — retrying cannot help.
+            InvalidClientConfig | EmptySentinelList | RESP3NotSupported => Code::InvalidArgument,
+
+            // Server-side or protocol faults. Not the caller's argument, so
+            // not InvalidArgument: a malformed reply is our problem or the
+            // server's, and it is at least worth a retry.
+            ParseError | UnexpectedReturnType => Code::Internal,
+
+            // A server at its maxmemory with noeviction refuses every write
+            // with OOM. The client knows no kind for it, so it arrives as an
+            // extension code; it is the server out of room, nothing wrong
+            // with the command.
+            Extension if error.code() == Some("OOM") => Code::ResourceExhausted,
+
             _ => Code::Unknown,
         };
 
@@ -354,8 +457,51 @@ impl From<redis::RedisError> for Error {
 
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
-        Self::new(status.code(), status.to_string())
+        // tonic codes a mid-stream transport/`hyper` failure (a connection reset
+        // or broken pipe during a large streaming write) as `Code::Unknown`
+        // with message "transport error". But a broken connection is transient
+        // and retryable — the gRPC status model reserves `UNKNOWN` for genuinely
+        // unmapped errors and codes transport failures `UNAVAILABLE`. Left as
+        // `Unknown`, such a blip falls outside both our own `Retrier`'s and most
+        // clients' retry sets, so a retryable failure becomes terminal and
+        // cacheable uploads are silently dropped. Remap transport-originated
+        // `Unknown` to `Unavailable`.
+        let code = if status.code() == Code::Unknown && is_transport_status(&status) {
+            Code::Unavailable
+        } else {
+            status.code()
+        };
+        Self::new(code, status.to_string())
     }
+}
+
+/// Whether a `tonic::Status` originates from a transport-layer failure (a
+/// reset/broken connection), which tonic surfaces as `Code::Unknown`.
+///
+/// tonic's own `Status::from_error` already maps the failures it recognizes
+/// (for example a connect refusal) to `Unavailable`; the `Unknown` shape
+/// arises for transport errors it does not, and for statuses that crossed a
+/// process boundary. Detection is downcast-first: precise when the concrete
+/// transport error is still reachable in the source chain; falls back to the
+/// message otherwise.
+fn is_transport_status(status: &tonic::Status) -> bool {
+    let mut source = std::error::Error::source(status);
+    while let Some(err) = source {
+        if err.is::<tonic::transport::Error>() {
+            return true;
+        }
+        source = err.source();
+    }
+    // Fallback for a `Status` reconstructed from the wire, where the concrete
+    // transport error is no longer in the source chain and only the message
+    // survives. `tonic::transport::Error` renders as exactly "transport
+    // error" (no detail suffix), and this crate's own `From<Error> for
+    // Status` re-encodes a proxied one as "transport error : <appended
+    // context>". Anchor to those two shapes — an unanchored `contains` would
+    // reclassify any app-level `Unknown` whose message merely mentions
+    // "transport error" as retryable `Unavailable`.
+    let msg = status.message();
+    msg == "transport error" || msg.starts_with("transport error : ")
 }
 
 impl From<Error> for tonic::Status {
@@ -414,6 +560,18 @@ impl From<zip::result::ZipError> for Error {
 
 impl From<std::ffi::NulError> for Error {
     fn from(err: std::ffi::NulError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<base64::DecodeError> for Error {
+    fn from(err: base64::DecodeError) -> Self {
+        Self::from_std_err(Code::Internal, &err)
+    }
+}
+
+impl From<jiff::Error> for Error {
+    fn from(err: jiff::Error) -> Self {
         Self::from_std_err(Code::Internal, &err)
     }
 }

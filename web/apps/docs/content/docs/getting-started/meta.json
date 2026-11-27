@@ -1,8 +1,10 @@
 {
+  "defaultOpen": true,
   "pages": [
-    "setup",
-    "on-prem",
-    "other-build-systems"
+    "quickstart",
+    "verify-your-cache",
+    "connect-your-build",
+    "shared-cache"
   ],
-  "title": "Getting Started"
+  "title": "Getting started"
 }

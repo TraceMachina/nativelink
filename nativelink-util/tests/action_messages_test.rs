@@ -1,3 +1,17 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::collections::HashMap;
 use std::time::SystemTime;
 
@@ -6,8 +20,8 @@ use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::rpc::PreconditionFailure;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionUniqueKey, ActionUniqueQualifier, ExecutionMetadata,
-    INTERNAL_ERROR_EXIT_CODE, TypeUrl, to_execute_response,
+    ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
+    ExecutionMetadata, INTERNAL_ERROR_EXIT_CODE, TypeUrl, to_execute_response,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -15,6 +29,7 @@ use prost::Message as _;
 
 fn make_key() -> ActionUniqueKey {
     ActionUniqueKey {
+        execution_scope: None,
         instance_name: String::from("main"),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new(
@@ -47,6 +62,29 @@ fn old_unique_qualifier_uncachable_works() {
     );
 }
 
+#[nativelink_test]
+fn execution_scope_survives_serialization_and_changes_the_scheduler_index() {
+    let unscoped = ActionUniqueQualifier::Cacheable(make_key());
+    let mut key = make_key();
+    key.execution_scope = Some("invocation-one".to_string());
+    let first = ActionUniqueQualifier::Cacheable(key.clone());
+    key.execution_scope = Some("invocation-two".to_string());
+    let second = ActionUniqueQualifier::Cacheable(key);
+    assert_ne!(first, second);
+    assert_ne!(first.to_string(), second.to_string());
+    assert_ne!(first.to_string(), unscoped.to_string());
+    assert_eq!(first.digest(), second.digest());
+    assert_eq!(
+        first,
+        serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap()
+    );
+    assert!(
+        !serde_json::to_string(&unscoped)
+            .unwrap()
+            .contains("execution_scope")
+    );
+}
+
 const MISSING_DIGEST_HEX: &str = "38fc5a8a97c1217160b0b658751979b9a1171286381489c8b98c993ec40b1546";
 const MISSING_DIGEST_SIZE: u64 = 210;
 
@@ -66,7 +104,8 @@ fn make_missing_blob_error(digest: &DigestInfo) -> Error {
     )
     .with_context(ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
-        size: digest.size_bytes() as i64,
+        size: digest.size_bytes().try_into().unwrap_or(i64::MAX),
+        digest_function: None,
     })
 }
 
@@ -179,6 +218,79 @@ fn to_execute_response_emits_default_status_when_no_error() {
     let resp = to_execute_response(action_result_with_error(None));
     let status = resp.status.expect("status must be set");
     assert_eq!(status.code, 0);
-    assert!(status.details.is_empty());
-    assert!(status.message.is_empty());
+    assert_eq!(status.details, vec![]);
+    assert_eq!(status.message, "");
+}
+
+/// A CAS that forwards `Execute` to a separate scheduler turns the
+/// scheduler's `ExecuteResponse` back into an action stage and sends the
+/// client a fresh response from it. The missing-blob violation must
+/// survive that hop: it is what tells the client to upload the blob again,
+/// and what lets the CAS stop its existence cache vouching for it.
+#[nativelink_test]
+fn missing_blob_survives_a_forwarding_hop() {
+    let digest = missing_digest();
+    let from_scheduler = to_execute_response(action_result_with_error(Some(
+        make_missing_blob_error(&digest),
+    )));
+    let ActionStage::Completed(result) =
+        ActionStage::try_from(from_scheduler).expect("a scheduler response converts")
+    else {
+        panic!("a finished response is a completed stage");
+    };
+    let error = result.error.clone().expect("the error survives");
+    assert_eq!(
+        error.context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: i64::try_from(digest.size_bytes()).unwrap(),
+            digest_function: None,
+        },
+        "the missing digest must be read back from the PreconditionFailure detail",
+    );
+    let to_client = to_execute_response(result);
+    assert_missing_blob_status(&to_client.status.expect("status must be set"), &digest);
+}
+
+/// `REv2` omits the digest function from a `MISSING` subject only for
+/// functions identifiable by hash length (SHA256 among them). BLAKE3 has a
+/// SHA256-length hash, so its subject must say `blobs/blake3/...`. The
+/// segment also has to survive the forwarding hop, or the client would be
+/// told to upload a SHA256 blob that never existed.
+#[nativelink_test]
+fn blake3_missing_blob_subject_names_the_digest_function() {
+    let digest = missing_digest();
+    let mut error = make_missing_blob_error(&digest);
+    error.context = ErrorContext::MissingDigest {
+        hash: digest.packed_hash().to_string(),
+        size: i64::try_from(digest.size_bytes()).unwrap(),
+        digest_function: Some("blake3".to_string()),
+    };
+    let from_scheduler = to_execute_response(action_result_with_error(Some(error)));
+    let status = from_scheduler.status.clone().expect("status must be set");
+    let failure = PreconditionFailure::decode(&*status.details[0].value)
+        .expect("the detail is a PreconditionFailure");
+    assert_eq!(
+        failure.violations[0].subject,
+        format!(
+            "blobs/blake3/{}/{}",
+            digest.packed_hash(),
+            digest.size_bytes()
+        ),
+    );
+
+    let ActionStage::Completed(result) =
+        ActionStage::try_from(from_scheduler).expect("a scheduler response converts")
+    else {
+        panic!("a finished response is a completed stage");
+    };
+    assert_eq!(
+        result.error.expect("the error survives").context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: i64::try_from(digest.size_bytes()).unwrap(),
+            digest_function: Some("blake3".to_string()),
+        },
+        "the digest function must be read back from the subject",
+    );
 }

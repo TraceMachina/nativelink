@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,11 +22,12 @@ use redis::Value;
 use redis_protocol::resp2::decode::decode;
 use redis_protocol::resp2::types::OwnedFrame;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot::{self, Sender};
 use tracing::info;
 
 use crate::fake_redis::{arg_as_string, fake_redis_internal};
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 #[derive(Clone, Debug)]
 pub struct ReadOnlyRedis {
@@ -47,13 +48,15 @@ impl ReadOnlyRedis {
         }
     }
 
-    async fn dynamic_fake_redis(self, listener: TcpListener) {
+    async fn dynamic_fake_redis(self, listener: TcpListener, listener_ready_tx: Sender<()>) {
         let readonly_err_str = "READONLY You can't write against a read only replica.";
         let readonly_err = format!("!{}\r\n{readonly_err_str}\r\n", readonly_err_str.len());
 
         let inner = move |buf: &[u8]| -> String {
             let mut output = String::new();
             let mut buf_index = 0;
+            // The replies queued since a MULTI, answered by its EXEC.
+            let mut queued: Option<Vec<Value>> = None;
             loop {
                 let frame = match decode(&buf[buf_index..]).unwrap() {
                     Some((frame, amt)) => {
@@ -109,7 +112,9 @@ impl ReadOnlyRedis {
                         }
                     }
                     "STRLEN" => Either::Left(Value::Int(5)),
-                    "RENAME" | "HMSET" => {
+                    "TTL" => Either::Left(Value::Int(60)),
+                    "PERSIST" => Either::Left(Value::Int(1)),
+                    "SET" | "RENAME" | "HMSET" => {
                         let value = self.readonly_triggered.load(Ordering::Relaxed);
                         if value {
                             Either::Left(Value::Okay)
@@ -119,8 +124,12 @@ impl ReadOnlyRedis {
                         }
                     }
                     "EVALSHA" => Either::Left(Value::Array(vec![Value::Int(1), Value::Int(0)])),
+                    "MULTI" => {
+                        queued = Some(Vec::new());
+                        Either::Left(Value::Okay)
+                    }
+                    "EXEC" => Either::Left(Value::Array(queued.take().unwrap_or_default())),
                     "EXPIRE" => {
-                        assert_eq!(args[1], OwnedFrame::BulkString(b"60".to_vec()));
                         let value = self.readonly_triggered.load(Ordering::Relaxed);
                         if value {
                             Either::Left(Value::Int(1))
@@ -134,6 +143,13 @@ impl ReadOnlyRedis {
                     }
                 };
 
+                let ret = match (ret, queued.as_mut(), cmd.as_str()) {
+                    (Either::Left(v), Some(queued), cmd) if cmd != "MULTI" && cmd != "EXEC" => {
+                        queued.push(v);
+                        Either::Left(Value::SimpleString("QUEUED".into()))
+                    }
+                    (ret, _, _) => ret,
+                };
                 match ret {
                     Either::Left(v) => {
                         arg_as_string(&mut output, v);
@@ -149,7 +165,7 @@ impl ReadOnlyRedis {
             }
             output
         };
-        fake_redis_internal(listener, vec![inner]).await;
+        fake_redis_internal(listener, listener_ready_tx, vec![inner]).await;
     }
 
     pub async fn run(self) -> u16 {
@@ -157,9 +173,15 @@ impl ReadOnlyRedis {
         let port = listener.local_addr().unwrap().port();
         info!("Using port {port}");
 
+        let (listener_ready_tx, listener_ready_rx) = oneshot::channel::<()>();
+
         background_spawn!("listener", async move {
-            self.dynamic_fake_redis(listener).await;
+            self.dynamic_fake_redis(listener, listener_ready_tx).await;
         });
+
+        listener_ready_rx
+            .await
+            .expect("Expected successful listener boot");
 
         port
     }

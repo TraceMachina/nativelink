@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -228,7 +228,7 @@ where
         Ok(objects)
     }
 
-    async fn parse_key_to_digest(&self, key: &str) -> Option<DigestInfo> {
+    fn parse_key_to_digest(&self, key: &str) -> Option<DigestInfo> {
         // Remove the prefix if it exists
         let relative_key = key
             .strip_prefix(self.key_prefix.as_deref().unwrap_or(""))
@@ -310,7 +310,7 @@ where
         // Process objects in chunks to avoid long processing times
         for chunk in objects.chunks(1000) {
             for obj_key in chunk {
-                if let Some(digest) = self.parse_key_to_digest(obj_key).await {
+                if let Some(digest) = self.parse_key_to_digest(obj_key) {
                     new_digests.insert(digest);
                 }
             }
@@ -415,7 +415,7 @@ where
 }
 
 async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Error> {
-    let http_client = TlsClient::new(&spec.common);
+    let http_client = TlsClient::new(&spec.common)?;
     let credentials_provider = DefaultCredentialsChain::builder()
         .configure(
             ProviderConfig::without_region()
@@ -527,6 +527,23 @@ where
         result
     }
 
+    /// Drops the digest from the local index, then forwards to the inner
+    /// store's `remove`, which deletes the S3 object.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let digest = key.borrow().into_digest();
+        self.digests.write().await.remove(&digest);
+        self.inner_store.as_store_driver_pin().remove(key).await
+    }
+
+    /// Forwards to the inner store's `remove_cached`; the local index entry is
+    /// kept because the durable S3 object is kept.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
+    }
+
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
         self
     }
@@ -539,10 +556,7 @@ where
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
 }

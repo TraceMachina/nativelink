@@ -20,7 +20,12 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
   );
 
   return (
-    <ul className={cn("divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface/40", className)}>
+    <ul
+      className={cn(
+        "divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface/40",
+        className,
+      )}
+    >
       {items.map((item, i) => {
         const isOpen = open === i;
         return (
@@ -35,10 +40,12 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
                 isOpen && "bg-brand-soft/30",
               )}
             >
-              <span className={cn(
-                "text-base font-medium md:text-lg",
-                isOpen ? "text-foreground" : "text-foreground/90",
-              )}>
+              <span
+                className={cn(
+                  "text-base font-medium md:text-lg",
+                  isOpen ? "text-foreground" : "text-foreground/90",
+                )}
+              >
                 {item.q}
               </span>
               <span
@@ -60,7 +67,7 @@ export function FAQ({ items, defaultOpenIndex, className }: FAQProps) {
               )}
             >
               <div className="min-h-0">
-                <div className="max-w-[68ch] px-6 text-[15px] leading-relaxed text-muted-foreground">
+                <div className="max-w-[68ch] px-6 pt-3 text-[15px] leading-relaxed text-muted-foreground">
                   {item.a}
                 </div>
               </div>

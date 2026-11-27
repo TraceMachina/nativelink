@@ -1,0 +1,181 @@
+---
+name: CI / Canary
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ci.bazelrc
+      - .github/actions/setup-nativelink-cloud/**
+      - .github/workflows/nativelink-cloud-canary.yaml
+
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  cache-canary:
+    name: Remote cache canary
+    runs-on: ubuntu-24.04
+    # Also the queue-forever tripwire once an RBE leg is added.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # No disk-cache: remote hits must be the only cache signal here.
+
+      - name: Setup NativeLink Cloud
+        id: nl
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          # The canary ignores vars.NATIVELINK_CI_MODE on purpose: it must
+          # prove the cloud path is healthy while regular lanes are still
+          # dark. With no secrets configured (or on fork PRs) it no-ops.
+          ci-mode: cache
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'pull_request'
+                && secrets.NATIVELINK_STAGING_API_KEY_RO
+                || secrets.NATIVELINK_STAGING_API_KEY_RW }}
+          mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
+
+      - name: Build (populate cache)
+        if: steps.nl.outputs.enabled == 'true'
+        run: |
+          bazel build //nativelink-config/... \
+            --lockfile_mode=error \
+            --verbose_failures \
+            --bes_upload_mode=wait_for_upload_complete
+
+      # The hit-rate assertion needs the populate step to have uploaded, so it
+      # only runs with the write key (schedule/dispatch/push — never PRs).
+      - name: Drop local build state
+        if: steps.nl.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          bazel clean
+          bazel shutdown
+
+      - name: Rebuild and assert remote cache hits
+        if: steps.nl.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          bazel build //nativelink-config/... \
+            --lockfile_mode=error \
+            --verbose_failures \
+            --bes_upload_mode=wait_for_upload_complete \
+            --build_event_json_file="$RUNNER_TEMP/bep.json"
+
+          hits=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
+            | select(.name == "remote cache hit") | .count] | add // 0' \
+            "$RUNNER_TEMP/bep.json")
+          # runnerCount includes an aggregate "total" entry alongside the
+          # per-runner entries; count only real runners or the rate is halved.
+          total=$(jq -s '[.[] | .buildMetrics.actionSummary.runnerCount[]?
+            | select(.name != "internal" and .name != "total") | .count] | add // 0' \
+            "$RUNNER_TEMP/bep.json")
+          invocation=$(jq -rs '[.[] | select(.id.started != null)
+            | .started.uuid][0] // empty' "$RUNNER_TEMP/bep.json")
+          action_events=$(jq -s '[.[]
+            | select(.id.actionCompleted != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          target_summaries=$(jq -s '[.[]
+            | select(.id.targetSummary != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          metadata_run_id=$(jq -rs '[.[]
+            | select(.id.buildMetadata != null)
+            | .buildMetadata.metadata.GITHUB_RUN_ID][0] // empty' \
+            "$RUNNER_TEMP/bep.json")
+
+          echo "Remote cache hits on rebuild: ${hits}/${total} (invocation ${invocation})"
+          {
+            echo "### NativeLink Cloud canary"
+            echo "- Remote cache hits on rebuild: **${hits}/${total}**"
+            echo "- Invocation: \`${invocation}\`"
+            echo "- Action events: **${action_events}**"
+            echo "- Target summaries: **${target_summaries}**"
+            echo "- Metadata run ID: \`${metadata_run_id}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$total" -eq 0 ]]; then
+            echo "FAIL: no actions were measured; the assertion is vacuous" >&2
+            exit 1
+          fi
+          if (( hits * 100 < total * 90 )); then
+            echo "FAIL: remote cache hit rate below 90% on an unchanged rebuild" >&2
+            exit 1
+          fi
+          if [[ "$action_events" -eq 0 ]]; then
+            echo "FAIL: BEP contains no ActionExecuted events" >&2
+            exit 1
+          fi
+          if [[ "$target_summaries" -eq 0 ]]; then
+            echo "FAIL: BEP contains no TargetSummary events" >&2
+            exit 1
+          fi
+          if [[ "$metadata_run_id" != "$GITHUB_RUN_ID" ]]; then
+            echo "FAIL: BEP is missing the expected GitHub run metadata" >&2
+            exit 1
+          fi
+
+  # Daily safety net for integration tests that must upload locally-built
+  # results to the cache (chunking_cache_test, simple_cache_test). The repo-wide
+  # --remote_upload_local_results=false keeps PR/developer lanes read-only, so
+  # these tests self-skip unless NL_LOCAL_UPLOADS=1 -- set here (and on merges to
+  # main in main.yaml). Never runs on PRs: no upload lane, keeps the canary's PR
+  # leg light.
+  upload-integration-tests:
+    name: Upload-dependent integration tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
+      - name: Set up Docker Buildx
+        uses: >- # v3.9.0
+          docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+
+      - name: Build image
+        uses: >- # v6.13.0
+          docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+        with:
+          context: .
+          file: ./deployment-examples/docker-compose/Dockerfile
+          build-args: |
+            OPT_LEVEL=fastbuild
+            ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+          load: true # Brings the image into `docker images` for docker-compose.
+          secret-files: |
+            ci-metadata=ci-metadata.bazelrc
+          tags: trace_machina/nativelink:latest
+
+      - name: Run upload-dependent integration tests
+        env:
+          NL_LOCAL_UPLOADS: "1"
+        run: ./run_integration_tests.sh chunking_cache_test.sh simple_cache_test.sh

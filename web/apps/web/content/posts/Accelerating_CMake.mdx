@@ -1,0 +1,256 @@
+---
+title: "Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake, Nativelink and BuildStream"
+tags: ["tutorial", "cmake", "build-acceleration", "blog-posts"]
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp
+slug: accelerating-cmake-with-nativelink
+pubDate: 2025-08-12
+readTime: 8 minutes
+---
+
+## Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake Acceleration with Nativelink and BuildStream
+
+Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and Buck2 to deal with this issue. But for many companies that investment in migrating to Bazel is too risky or too costly. What if you could accelerate your C/C++ projects using CMake? This tutorial will guide you through setting up a blazing-fast build environment using [Nativelink](https://github.com/TraceMachina/nativelink) and [Apache BuildStream](https://buildstream.build/) for remote caching and execution. We'll walk through a "hello, world" example to get you up and running in under 15 minutes.
+
+-----
+
+### What are Nativelink and Apache BuildStream?
+
+  * **BuildStream** is a flexible and extensible tool for building and integrating software stacks. It creates a sandbox environment for your builds, ensuring they're reproducible and isolated.
+  * **Nativelink** is a high-performance remote execution and caching service that's compatible with the Remote Execution API (REAPI). It acts as a server to store and retrieve build artifacts, and to execute build tasks on remote workers.
+
+By using them together, you can distribute your build jobs and cache their results, leading to significant speedups, especially in large projects.
+
+-----
+
+### Project Setup
+
+Let's start by setting up our project directory. We'll create a structure to hold our source code, Makefile, and BuildStream configuration.
+
+```bash
+mkdir -p first-project/elements/base first-project/files/src
+cd first-project
+```
+
+Your directory structure should look like this:
+
+```shell
+first-project/
+├── elements/
+│   └── base/
+│
+└── files/
+    └── src/
+```
+
+-----
+
+### The "Hello, World" Application
+
+Next, let's create our C application and the corresponding Makefile.
+
+#### `hello.c`
+
+Create a file named `hello.c` inside the `files/src` directory:
+
+```c
+/*
+ * hello.c - a hello world program
+ */
+#include <stdio.h>
+
+int main(int argc, char *argv[])
+{
+  printf("Hello World\n");
+  return 0;
+}
+```
+
+#### `Makefile`
+
+Now, create a `Makefile` in the same `files/src` directory:
+
+```makefile
+.PHONY: all
+
+all: hello
+hello: hello.c
+	$(CC) -Wall -o $@ $<
+```
+
+-----
+
+### Configuring BuildStream
+
+Now, let's configure BuildStream to build our project.
+
+#### `project.conf`
+
+First, create a `project.conf` file in the root of your `first-project` directory. This file defines the basic properties of your project.
+
+```shell
+# Unique project name
+name: first-project
+
+# Required BuildStream version
+min-version: 2.4
+
+# Subdirectory where elements are stored
+element-path: elements
+
+# Define an alias for our alpine tarball
+aliases:
+  alpine: https://bst-integration-test-images.ams3.cdn.digitaloceanspaces.com/
+```
+
+#### `elements/base/alpine.bst`
+
+Next, we need to define our base system. We'll use a pre-built, trimmed-down Alpine Linux image. Create `elements/base/alpine.bst`:
+
+```yaml
+kind: import
+description: |
+
+    Alpine Linux base runtime
+
+sources:
+- kind: tar
+  # This is a post doctored, trimmed down system image
+  # of the Alpine linux distribution.
+  #
+  url: alpine:integration-tests-base.v1.x86_64.tar.xz
+  ref: 3eb559250ba82b64a68d86d0636a6b127aa5f6d25d3601a79f79214dc9703639
+```
+
+#### `elements/base.bst`
+
+Now, create a `elements/base.bst` file to create a stack with the Alpine base:
+
+```yaml
+kind: stack
+description: Base stack
+
+depends:
+- base/alpine.bst
+```
+
+####`elements/hello.bst`
+
+Finally, create the element for our "hello, world" application in `elements/hello.bst`. This element specifies how to build our application.
+
+```yaml
+kind: manual
+description: |
+
+  Building manually
+
+# Depend on the base system
+depends:
+- base.bst
+
+# Stage the files/src directory for building
+sources:
+  - kind: local
+    path: files/src
+
+# Now configure the commands to run
+config:
+
+  build-commands:
+  - make hello
+```
+
+-----
+
+### Configuring Nativelink for Remote Caching & Execution
+
+With our project set up, it's time to bring in Nativelink to accelerate the build.
+
+#### `buildstream.conf`
+
+To tell BuildStream to use a remote execution service, create a `buildstream.conf` file in your project's root directory:
+
+```yaml
+cachedir: /tmp/buildstream
+
+artifacts:
+  servers:
+  - url: http://localhost:50051
+    push: true
+remote-execution:
+  execution-service:
+    url: http://localhost:50051
+  action-cache-service:
+    url: http://localhost:50051
+  storage-service:
+    url: http://localhost:50051
+```
+
+This configuration tells BuildStream to connect to a Nativelink instance running on `localhost:50051` for artifact caching and remote execution.
+
+-----
+
+### Running the Build
+
+We'll use a script to launch the Nativelink service and then run the BuildStream build. The example below uses Nix to manage the dependencies, but you can adapt it to your environment.
+
+#### Launch Script
+
+Here is an example script, similar to `buildstream-with-nativelink-test.nix`, that shows how to run the build.
+
+```nix
+{
+  nativelink,
+  buildstream,
+  buildbox,
+  writeShellScriptBin,
+}:
+writeShellScriptBin "buildstream-with-nativelink-test" ''
+  set -uo pipefail
+
+  cleanup() {
+    local pids=$(jobs -pr)
+    [ -n "$pids" ] && kill $pids
+  }
+  trap "cleanup" INT QUIT TERM EXIT
+
+  ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 | tee -i integration_tests/buildstream/nativelink.log &
+
+  # TODO(palfrey): PATH is workaround for https://github.com/NixOS/nixpkgs/issues/248000#issuecomment-2934704963
+  bst_output=$(cd integration_tests/buildstream && PATH=${buildbox}/bin:$PATH ${buildstream}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)
+
+  case $bst_output in
+    *"SUCCESS Build"* )
+      echo "Saw a successful buildstream build"
+    ;;
+    *)
+      echo 'Failed buildstream build:'
+      echo $bst_output
+      exit 1
+    ;;
+  esac
+
+  nativelink_output=$(cat integration_tests/buildstream/nativelink.log)
+
+  case $nativelink_output in
+    *"ERROR"* )
+      echo "Error in nativelink build"
+      exit 1
+    ;;
+    *)
+      echo 'Successful nativelink build'
+    ;;
+  esac
+''
+```
+
+To run the build, you would execute this script. It first starts the `nativelink` service in the background, then runs `bst build`.
+
+The first time you run the build, it will compile the code and store the result in the Nativelink cache. Subsequent builds will be significantly faster as the results will be fetched directly from the cache, skipping the compilation step entirely.
+
+-----
+
+### Conclusion
+
+You have now successfully set up a project with BuildStream and Nativelink for accelerated builds with code pulled directly from Nativelink's production [integration tests](https://github.com/TraceMachina/nativelink/tree/main/integration_tests/buildstream). By leveraging remote caching and execution, you can dramatically reduce build times, especially for larger and more complex projects. This allows you to iterate faster and stay in the creative flow. Finally, developers and managers alike can appreciate a developer productivity tool!
+
+If you have any questions or want to learn more, feel free to reach out to **contact@nativelink.com**. Happy building\! 🚀

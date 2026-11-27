@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,19 +17,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::stores::VerifySpec;
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::common::PackedHash;
-use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+use nativelink_util::digest_hasher::{
+    DigestHasher, DigestHasherFunc, digest_hasher_func_from_context,
+};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
-use opentelemetry::context::Context;
+use tracing::warn;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -60,10 +62,11 @@ impl VerifyStore {
 
     async fn inner_check_update<D: DigestHasher>(
         &self,
-        mut tx: DropCloserWriteHalf,
+        tx: &mut DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         maybe_expected_digest_size: Option<u64>,
         original_hash: &PackedHash,
+        digest_function: Option<DigestHasherFunc>,
         mut maybe_hasher: Option<&mut D>,
     ) -> Result<u64, Error> {
         let mut sum_size: u64 = 0;
@@ -120,8 +123,13 @@ impl VerifyStore {
                     let hash_result = digest.packed_hash();
                     if original_hash != hash_result {
                         self.hash_verification_failures.inc();
+                        let Some(digest_function) = digest_function else {
+                            return Err(make_input_err!(
+                                "Hash verification failed without a digest function"
+                            ));
+                        };
                         return Err(make_input_err!(
-                            "Hashes do not match, got: {original_hash} but digest hash was {hash_result}",
+                            "Hash verification using {digest_function} failed: client declared {digest_function}:{original_hash}, but the server computed {digest_function}:{hash_result}",
                         ));
                     }
                 }
@@ -141,6 +149,46 @@ impl VerifyStore {
                 .err_tip(|| "Failed to write chunk to inner store in verify store")?;
         }
         Ok(sum_size)
+    }
+}
+
+impl VerifyStore {
+    async fn inner_check_read(
+        &self,
+        mut rx: DropCloserReadHalf,
+        writer: &mut DropCloserWriteHalf,
+        expected: u64,
+        key: StoreKey<'_>,
+    ) -> Result<(), Error> {
+        let mut sum_size: u64 = 0;
+        loop {
+            let chunk = rx
+                .recv()
+                .await
+                .err_tip(|| "Failed to read chunk in check_read in verify store")?;
+            if chunk.is_empty() {
+                if sum_size != expected {
+                    self.size_verification_failures.inc();
+                    return Err(make_err!(
+                        Code::DataLoss,
+                        "Read {sum_size} bytes of the {expected} expected for {key:?} in verify store"
+                    ));
+                }
+                return writer.send_eof().err_tip(|| "In verify_store::check_read");
+            }
+            sum_size += chunk.len() as u64;
+            if sum_size > expected {
+                self.size_verification_failures.inc();
+                return Err(make_err!(
+                    Code::DataLoss,
+                    "Read {sum_size} bytes, more than the {expected} expected for {key:?} in verify store"
+                ));
+            }
+            writer
+                .send(chunk)
+                .await
+                .err_tip(|| "Failed to forward chunk in verify store")?;
+        }
     }
 }
 
@@ -183,16 +231,12 @@ impl StoreDriver for VerifyStore {
             ));
         }
 
-        let mut hasher = if self.verify_hash {
-            Some(
-                Context::current()
-                    .get::<DigestHasherFunc>()
-                    .map_or_else(default_digest_hasher_func, |v| *v)
-                    .hasher(),
-            )
+        let digest_function = if self.verify_hash {
+            Some(digest_hasher_func_from_context())
         } else {
             None
         };
+        let mut hasher = digest_function.map(|digest_function| digest_function.hasher());
 
         let maybe_digest_size = if self.verify_size {
             Some(digest_size)
@@ -202,18 +246,32 @@ impl StoreDriver for VerifyStore {
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.inner_store.update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(
-            tx,
-            reader,
-            maybe_digest_size,
-            digest.packed_hash(),
-            hasher.as_mut(),
-        );
+        let check_fut = async move {
+            let mut tx = tx;
+            let result = self
+                .inner_check_update(
+                    &mut tx,
+                    reader,
+                    maybe_digest_size,
+                    digest.packed_hash(),
+                    digest_function,
+                    hasher.as_mut(),
+                )
+                .await;
+            // Inspect the channel before dropping it. Keep it in this future so
+            // a validation failure also wakes the inner store's reader.
+            (result, tx.is_pipe_broken())
+        };
 
-        let (update_res, check_res) = tokio::join!(update_fut, check_fut);
+        let (update_res, (check_res, forwarding_failed)) = tokio::join!(update_fut, check_fut);
 
         match (update_res, check_res) {
-            // Prioritize the check future's error, as it's more specific.
+            // A failed send is a consequence of the inner store's failure, not
+            // a validation error. Preserve its code and both error messages.
+            (Err(update_err), Err(check_err)) if forwarding_failed => {
+                Err(update_err.merge(check_err))
+            }
+            // Size/hash or input-stream failures remain the checker's verdict.
             (_, Err(e)) | (Err(e), Ok(_)) => Err(e),
             (Ok(size), Ok(_)) => Ok(size),
         }
@@ -226,7 +284,98 @@ impl StoreDriver for VerifyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        self.inner_store.get_part(key, writer, offset, length).await
+        // A digest names its size, so a read that ends short of it is a
+        // truncated blob, whatever tier below lost the tail: handed on as
+        // EOF it would be cached as complete by every store above and fed
+        // to actions as an input. The hash is not recomputed on reads.
+        let expected = match &key {
+            StoreKey::Digest(digest) if self.verify_size => {
+                let to_end = digest.size_bytes().saturating_sub(offset);
+                Some(length.map_or(to_end, |length| length.min(to_end)))
+            }
+            _ => None,
+        };
+        let Some(expected) = expected else {
+            return self.inner_store.get_part(key, writer, offset, length).await;
+        };
+        let (mut tx, rx) = make_buf_channel_pair();
+        // The writer half lives inside the read future, so an inner read that
+        // fails after some data closes the channel as it returns; held out
+        // here it kept the forwarding loop waiting for bytes that never came.
+        let read_key = key.borrow().into_owned();
+        let read_fut = async move {
+            self.inner_store
+                .get_part(read_key, &mut tx, offset, length)
+                .await
+        };
+        let check_fut = self.inner_check_read(rx, writer, expected, key.borrow());
+        let (read_res, check_res) = tokio::join!(read_fut, check_fut);
+        // The checker's verdict first: on a read past the expected size it
+        // drops its receiver and the inner send then fails with Internal,
+        // which must not hide the DataLoss. Otherwise the inner error (a
+        // NotFound from below) comes before the checker's closed-channel
+        // Internal, as `update` orders the same pair.
+        let result = match (read_res, check_res) {
+            (_, Err(e)) if e.code == Code::DataLoss => Err(e),
+            (Err(e), _) | (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
+        };
+        if let Err(err) = &result
+            && err.code == Code::DataLoss
+        {
+            // Keep the durable copy unless it is the wrong size too: a bad
+            // cache copy must not cost the only good one. Read it back
+            // rather than trust `has`, which for a filesystem store is the
+            // size indexed at write time, not the file's.
+            let inner = self.inner_store.as_store_driver_pin();
+            let removed = async {
+                let cached = inner.remove_cached(key.borrow()).await?;
+                let durable_is_bad = match &key {
+                    StoreKey::Digest(digest) => {
+                        let (mut tx, mut rx) = make_buf_channel_pair();
+                        let read_key = key.borrow().into_owned();
+                        let read_fut = async move {
+                            self.inner_store.get_part(read_key, &mut tx, 0, None).await
+                        };
+                        let (read_res, drained) = tokio::join!(read_fut, rx.drain());
+                        match read_res.and(drained) {
+                            Ok(size) => size != digest.size_bytes(),
+                            // Other errors mean unchecked, not bad.
+                            Err(err) => err.code == Code::DataLoss,
+                        }
+                    }
+                    StoreKey::Str(_) => false,
+                };
+                if durable_is_bad {
+                    return Ok(inner.remove(key.borrow()).await? || cached);
+                }
+                Ok::<_, Error>(cached)
+            }
+            .await;
+            match removed {
+                Ok(removed) => warn!(
+                    ?key,
+                    removed, "Dropped a copy that failed size verification"
+                ),
+                Err(remove_err) => warn!(
+                    ?key,
+                    ?remove_err,
+                    "Could not drop a copy that failed size verification"
+                ),
+            }
+        }
+        result
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store.as_store_driver_pin().remove(key).await
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
@@ -241,10 +390,7 @@ impl StoreDriver for VerifyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
 }

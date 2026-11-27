@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -184,6 +184,14 @@ pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
         .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))
 }
 /// Acquire a permit from the open file semaphore and call a raw function.
+///
+/// `f` runs on the blocking pool, so it must be *purely* blocking `std::fs`
+/// work. It must never `block_on` an async operation: `tokio::fs` is itself
+/// implemented with `spawn_blocking`, so a nested `block_on` needs a second
+/// pool thread while already holding one. Enough concurrent callers then park
+/// every pool thread on inner tasks that can never be scheduled, freezing all
+/// `fs::` operations in the process. Use [`get_permit`] plus a direct `.await`
+/// for anything already async (see [`read_dir`], [`symlink`]).
 #[inline]
 pub async fn call_with_permit<F, T>(f: F) -> Result<T, Error>
 where
@@ -321,10 +329,69 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
+/// Hardlinks many files under a single permit and a single `spawn_blocking`
+/// dispatch, returning one result per input in the same order.
+///
+/// [`hard_link`] pays a semaphore acquire plus a `spawn_blocking` hop per call,
+/// and both dwarf the `hard_link(2)` syscall itself, which is a few microseconds
+/// on tmpfs. Staging an input tree of thousands of small files therefore spends
+/// most of its wall time in the tokio scheduler rather than in the kernel.
+/// Batching amortizes the acquire and the dispatch over the whole batch.
+///
+/// A single permit covers the batch because `hard_link(2)` is a metadata
+/// operation that never leaves a file descriptor open, so it does not consume
+/// the open-file budget [`OPEN_FILE_SEMAPHORE`] exists to protect.
+///
+/// This does change the backpressure profile; the permit no longer paces
+/// individual syscalls, only whole batches, and one blocking thread is held for
+/// the length of a batch rather than for one syscall. On Linux and tmpfs, where
+/// this was measured, that trades well because the per-call dispatch was the
+/// cost. A filesystem that serializes metadata operations internally, as APFS
+/// does on a per-volume lock, gets a different bargain: less parallel
+/// contention, but a long batch occupies its thread throughout. Size batches
+/// accordingly.
+pub async fn hard_link_many(
+    links: Vec<(PathBuf, PathBuf)>,
+) -> Result<Vec<Result<(), Error>>, Error> {
+    call_with_permit(move |_| {
+        Ok(links
+            .into_iter()
+            .map(|(src, dst)| std::fs::hard_link(src, dst).map_err(Into::<Error>::into))
+            .collect())
+    })
+    .await
+}
+
 pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
+}
+
+/// Creates many directories under a single permit and a single `spawn_blocking`
+/// dispatch, each parent before its children.
+///
+/// An existing directory is an error, exactly as [`create_dir`] reports it.
+///
+/// See [`hard_link_many`] for why batching matters here: the `mkdir(2)` syscall
+/// is dwarfed by the semaphore acquire and `spawn_blocking` hop, and an input
+/// tree contributes hundreds of directories.
+pub async fn create_dir_many(mut dirs: Vec<PathBuf>) -> Result<(), Error> {
+    // Sorting puts every parent ahead of its children, since a parent's path is
+    // a prefix of theirs. We do this instead of using `create_dir_all` below
+    // because we want to fail on existing directories: on case-insensitive
+    // filesystems, that will ensure that we don't silently merge two trees in
+    // the event of a different-in-case-only collision.
+    dirs.sort_unstable();
+    call_with_permit(move |_| {
+        for dir in dirs {
+            std::fs::create_dir(&dir).map_err(|e| {
+                Error::from(e).append(format!("Could not create directory {}", dir.display()))
+            })?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
@@ -376,15 +443,13 @@ impl AsMut<tokio::fs::ReadDir> for ReadDir {
 
 pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, inner) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            tokio::runtime::Handle::current()
-                .block_on(tokio::fs::read_dir(path))
-                .map_err(Into::<Error>::into)?,
-        ))
-    })
-    .await?;
+    // Deliberately NOT `call_with_permit`: `tokio::fs::read_dir` is already
+    // async, so it must be awaited directly rather than `block_on`ed from a
+    // blocking-pool thread. See `call_with_permit` for why.
+    let permit = get_permit().await?;
+    let inner = tokio::fs::read_dir(path)
+        .await
+        .map_err(Into::<Error>::into)?;
     Ok(ReadDir { permit, inner })
 }
 
@@ -416,6 +481,25 @@ pub async fn metadata(path: impl AsRef<Path>) -> Result<Metadata, Error> {
     call_with_permit(move |_| std::fs::metadata(path).map_err(Into::<Error>::into)).await
 }
 
+/// Tests many paths for existence under a single permit and a single
+/// `spawn_blocking` dispatch, returning one answer per input in the same order.
+///
+/// A `stat(2)` on a warm tmpfs costs far less than the permit acquisition and
+/// thread hop needed to dispatch it, so callers checking a whole input tree pay
+/// almost entirely dispatch overhead when they ask one path at a time.
+///
+/// Any error is reported as `false`, since every failure mode (absent,
+/// dangling, unreadable parent) answers "can I use this path" the same way.
+pub async fn exists_many(paths: Vec<PathBuf>) -> Result<Vec<bool>, Error> {
+    call_with_permit(move |_| {
+        Ok(paths
+            .into_iter()
+            .map(|path| std::fs::metadata(path).is_ok())
+            .collect())
+    })
+    .await
+}
+
 pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::read(path).map_err(Into::<Error>::into)).await
@@ -429,6 +513,13 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
 // We can't just use the stock remove_dir_all as it falls over if someone's set readonly
 // permissions. This version walks the directories and fixes the permissions where needed
 // before deleting everything.
+//
+// Only directories are touched. Unlinking a file needs write and search
+// permission on its directory, never on the file itself, and the files of
+// a worker's tree are hardlinks to CAS blobs and executable variants that
+// other actions share: a chmod on one of those changes the inode for every
+// tree it is linked into, and an executable variant would lose its execute
+// bit under the actions still running it.
 #[cfg(not(target_family = "windows"))]
 fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     // Because otherwise Windows builds complain about these things not being used
@@ -440,7 +531,7 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
 
     for entry in WalkDir::new(&path) {
         let Ok(entry) = &entry else {
-            debug!("Can't get into {entry:?}, assuming already deleted");
+            debug!(?entry, "Can't get entry, assuming already deleted");
             continue;
         };
         let metadata = entry.metadata()?;
@@ -454,9 +545,6 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
                 }
                 e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
             }
-        } else if metadata.is_file() {
-            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
-                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
         }
     }
 

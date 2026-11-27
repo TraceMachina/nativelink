@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatusIndicator};
 use nativelink_util::metrics::{CACHE_METRICS, CACHE_TYPE, CacheMetricAttrs};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
 };
 use opentelemetry::KeyValue;
 
@@ -39,15 +39,23 @@ use opentelemetry::KeyValue;
 pub struct CacheMetricsStore {
     backend: Store,
     cache_type: String,
+    allow_remove: bool,
     attrs: CacheMetricAttrs,
 }
 
 impl CacheMetricsStore {
     pub fn new(spec: &CacheMetricsSpec, backend: Store) -> Arc<Self> {
+        let base_attrs = [KeyValue::new(CACHE_TYPE, spec.cache_type.clone())];
+        // A store that tracks its own size reports it under the same cache
+        // type as the operation metrics. Other stores report no size.
+        backend
+            .inner_store(None::<StoreKey<'_>>)
+            .enable_cache_size_metrics(&base_attrs);
         Arc::new(Self {
             backend,
             cache_type: spec.cache_type.clone(),
-            attrs: CacheMetricAttrs::new(&[KeyValue::new(CACHE_TYPE, spec.cache_type.clone())]),
+            allow_remove: spec.allow_remove,
+            attrs: CacheMetricAttrs::new(&base_attrs),
         })
     }
 
@@ -104,6 +112,34 @@ impl StoreDriver for CacheMetricsStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         self.backend.clone().into_inner().post_init().await?;
         Ok(())
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let start = Instant::now();
+        // Backends such as memory and filesystem cannot infer whether their
+        // copy is disposable. Require an explicit opt-in on this tier.
+        let result = if self.allow_remove {
+            self.backend.as_store_driver_pin().remove(key).await
+        } else {
+            Ok(false)
+        };
+        let attrs = match &result {
+            Ok(true) => self.attrs.delete_success(),
+            Ok(false) => self.attrs.delete_miss(),
+            Err(_) => self.attrs.delete_error(),
+        };
+        CACHE_METRICS.cache_operations.add(1, attrs);
+        self.record_duration(start, attrs);
+        result
+    }
+
+    /// Not counted as a delete: this tier's own copy is never dropped.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        if self.allow_remove {
+            self.backend.as_store_driver_pin().remove_cached(key).await
+        } else {
+            Ok(false)
+        }
     }
 
     async fn has_with_results(
@@ -275,10 +311,7 @@ impl StoreDriver for CacheMetricsStore {
         self.backend.clone().register_health(registry);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.backend.register_remove_callback(callback)
     }
 }

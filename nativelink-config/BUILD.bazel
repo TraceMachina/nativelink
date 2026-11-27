@@ -21,7 +21,7 @@ _CONFIG_SRCS = [
 _CONFIG_DEPS = [
     "//nativelink-error",
     "@crates//:byte-unit",
-    "@crates//:humantime",
+    "@crates//:jiff",
     "@crates//:rand",
     "@crates//:serde",
     "@crates//:serde_json",
@@ -94,12 +94,12 @@ rust_test_suite(
         "//nativelink-config",
         "//nativelink-error",
         "@crates//:byte-unit",
-        "@crates//:humantime",
+        "@crates//:jiff",
         "@crates//:pretty_assertions",
         "@crates//:serde",
+        "@crates//:serde_assert",
         "@crates//:serde_json",
         "@crates//:serde_json5",
-        "@crates//:serde_test",
     ],
 )
 

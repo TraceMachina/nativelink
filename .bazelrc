@@ -1,4 +1,4 @@
-# Copyright 2022 The NativeLink Authors. All rights reserved.
+# Copyright 2022 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Use blake3 as digest function instead of the much slower default sha256.
-startup --digest_function=blake3
+# Keep Bazel aligned with NativeLink's default digest function.
+startup --digest_function=sha256
 common --enable_platform_specific_config
 
 # Don't use legacy toolchain resolution.
@@ -47,6 +47,17 @@ build --incompatible_strict_action_env
 build --@llvm//config:experimental_stub_libgcc_s=True
 build --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=False
 build --@rules_rust//cargo/settings:experimental_symlink_execroot
+
+# The hermetic LLVM toolchain correctly scopes `--unwindlib=none` to link
+# actions only, but the clang++ driver still prints "argument unused during
+# compilation: '--unwindlib=none'" on the exec-config ([for tool]) link steps
+# where it is a no-op (process_wrapper, cargo_build_script_runner, the proc-
+# macro crates, ...). It is doing its job everywhere it matters; silence the
+# spurious driver warning. Unconditional (not scoped to a --config) so it also
+# covers the sanitizer and Bazel-Native lanes, which activate the same @llvm
+# clang via `--extra_toolchains` rather than --config=nl-toolchain.
+build --linkopt=-Wno-unused-command-line-argument
+build --host_linkopt=-Wno-unused-command-line-argument
 
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules
@@ -87,7 +98,7 @@ build --@rules_rust//:extra_rustc_flag=-Dinvalid_nan_comparisons
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_reference_casting
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_value
 build --@rules_rust//:extra_rustc_flag=-Wkeyword_idents
-build --@rules_rust//:extra_rustc_flag=-Wlet_underscore
+build --@rules_rust//:extra_rustc_flag=-Dlet_underscore
 build --@rules_rust//:extra_rustc_flag=-Wmacro_use_extern_crate
 build --@rules_rust//:extra_rustc_flag=-Wmeta_variable_misuse
 build --@rules_rust//:extra_rustc_flag=-Wmissing_abi
@@ -96,13 +107,12 @@ build --@rules_rust//:extra_rustc_flag=-Wmissing_debug_implementations
 build --@rules_rust//:extra_rustc_flag=-Wnoop_method_call
 build --@rules_rust//:extra_rustc_flag=-Dopaque_hidden_inferred_bound
 build --@rules_rust//:extra_rustc_flag=-Doverlapping_range_endpoints
-build --@rules_rust//:extra_rustc_flag=-Wsingle_use_lifetimes
 build --@rules_rust//:extra_rustc_flag=-Dsuspicious_double_ref_op
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_casts
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
 build --@rules_rust//:extra_rustc_flag=-Dunconditional_recursion
 build --@rules_rust//:extra_rustc_flag=-Dunexpected_cfgs
-build --@rules_rust//:extra_rustc_flag=-Dunknown_lints
+build --@rules_rust//:extra_rustc_flag=-Aunknown_lints
 build --@rules_rust//:extra_rustc_flag=-Dunnameable_test_items
 build --@rules_rust//:extra_rustc_flag=-Wunreachable_pub
 build --@rules_rust//:extra_rustc_flag=-Dunsafe_op_in_unsafe_fn
@@ -110,19 +120,18 @@ build --@rules_rust//:extra_rustc_flag=-Dunstable_syntax_pre_expansion
 build --@rules_rust//:extra_rustc_flag=-Wunused_import_braces
 build --@rules_rust//:extra_rustc_flag=-Dunused_imports
 build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
+build --@rules_rust//:extra_rustc_flag=-Dunused_qualifications
 build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
 
-build --@rules_rust//:clippy_flag=-Wclippy::all
-build --@rules_rust//:clippy_flag=-Wclippy::nursery
-build --@rules_rust//:clippy_flag=-Wclippy::pedantic
+build --@rules_rust//:clippy_flag=-Dclippy::all
+build --@rules_rust//:clippy_flag=-Dclippy::nursery
+build --@rules_rust//:clippy_flag=-Dclippy::pedantic
 build --@rules_rust//:clippy_flag=-Dclippy::alloc_instead_of_core
 build --@rules_rust//:clippy_flag=-Dclippy::as_underscore
 build --@rules_rust//:clippy_flag=-Dclippy::await_holding_lock
 build --@rules_rust//:clippy_flag=-Dclippy::bind_instead_of_map
 build --@rules_rust//:clippy_flag=-Dclippy::collapsible_if
 build --@rules_rust//:clippy_flag=-Wclippy::dbg_macro
-build --@rules_rust//:clippy_flag=-Wclippy::decimal_literal_representation
 build --@rules_rust//:clippy_flag=-Dclippy::disallowed_methods
 build --@rules_rust//:clippy_flag=-Dclippy::doc_markdown
 build --@rules_rust//:clippy_flag=-Dclippy::elidable_lifetime_names
@@ -147,7 +156,7 @@ build --@rules_rust//:clippy_flag=-Dclippy::semicolon_if_nothing_returned
 build --@rules_rust//:clippy_flag=-Dclippy::similar_names
 build --@rules_rust//:clippy_flag=-Dclippy::single_char_pattern
 build --@rules_rust//:clippy_flag=-Dclippy::single_match_else
-build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
+build --@rules_rust//:clippy_flag=-Aclippy::std_instead_of_core
 build --@rules_rust//:clippy_flag=-Dclippy::string_lit_as_bytes
 build --@rules_rust//:clippy_flag=-Dclippy::todo
 build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph
@@ -160,7 +169,7 @@ build --@rules_rust//:clippy_flag=-Dclippy::use_debug
 build --@rules_rust//:clippy_flag=-Dclippy::used_underscore_binding
 build --@rules_rust//:clippy_flag=-Dclippy::useless_format
 build --@rules_rust//:clippy_flag=-Dclippy::cast_possible_truncation
-build --@rules_rust//:clippy_flag=-Aclippy::cast_possible_wrap
+build --@rules_rust//:clippy_flag=-Dclippy::cast_possible_wrap
 build --@rules_rust//:clippy_flag=-Aclippy::cast_precision_loss
 build --@rules_rust//:clippy_flag=-Aclippy::cast_sign_loss
 build --@rules_rust//:clippy_flag=-Aclippy::cognitive_complexity
@@ -177,6 +186,7 @@ build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
 build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
+build --@rules_rust//:clippy_flag=-Aclippy::unused_async_trait_impl
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 
 ## END CARGO LINTS ##
@@ -234,5 +244,11 @@ try-import %workspace%/nixos.bazelrc
 # Generated by the nativelink flake module.
 try-import %workspace%/nativelink.bazelrc
 
+# Opt-in NativeLink Cloud configs used by this repo's CI.
+try-import %workspace%/ci.bazelrc
+
 # Allow user-side customization.
 try-import %workspace%/user.bazelrc
+
+# Generated per-job metadata; absent for ordinary local builds.
+try-import %workspace%/ci-metadata.bazelrc

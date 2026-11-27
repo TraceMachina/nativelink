@@ -1,7 +1,0 @@
-{
-  "pages": [
-    "examples",
-    "nix-templates"
-  ],
-  "title": "Testing Remote Execution"
-}

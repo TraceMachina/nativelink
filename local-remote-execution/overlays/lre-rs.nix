@@ -7,7 +7,7 @@
   rust-toolchains ? [lre.stable-rust lre.nightly-rust],
 }: let
   copyright = ''
-    # Copyright 2024 The NativeLink Authors. All rights reserved.
+    # Copyright 2024 Trace Machina, Inc. All rights reserved.
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@
   systems = [
     "aarch64-darwin"
     "aarch64-linux"
-    "x86_64-darwin"
     "x86_64-linux"
   ];
   channels = [
@@ -55,9 +54,15 @@
       ${" "}       "@local-remote-execution//rust/triple:${target}": glob([
       ${" "}           "bin/*.so",
       ${" "}           "lib/*.so",
+      ${" "}           "lib/*.dylib",
       ${" "}           "lib/rustlib/${target}/codegen-backends/*.so",
+      ${" "}           "lib/rustlib/${target}/codegen-backends/*.dylib",
       ${" "}           "lib/rustlib/${target}/lib/*.so",
-      ${" "}       ] + ["lib/rustlib/${target}/bin/rust-lld"],
+      ${" "}           "lib/rustlib/${target}/lib/*.dylib",
+      ${" "}       ] + [
+      ${" "}           "lib/rustlib/${target}/bin/rust-lld",
+      ${" "}           "lib/rustlib/${target}/bin/rust-objcopy",
+      ${" "}       ],
       ${" "}       allow_empty = True),'';
 
     # Generate stdlib select entry for a target
@@ -67,6 +72,7 @@
         ${" "}           "lib/rustlib/${target}/lib/*.rlib",
         ${" "}           "lib/rustlib/${target}/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
         ${" "}           "lib/rustlib/${target}/lib/*.so",
+        ${" "}           "lib/rustlib/${target}/lib/*.dylib",
         ${" "}           "lib/rustlib/${target}/lib/*.a",''
       + (lib.optionalString (builtins.match ".*-musl" target != null)
         ''${"\n "}           "lib/rustlib/${target}/lib/self-contained/**",'')
@@ -177,15 +183,6 @@
     )
 
     platform(
-        name = "x86_64-apple-darwin",
-        exec_properties = {
-            # tag is from nix eval .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag
-            "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:$(nix eval --raw .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag)",
-        },
-        parents = ["@local-remote-execution//platforms:x86_64-darwin"],
-    )
-
-    platform(
         name = "x86_64-unknown-linux-gnu",
         constraint_values = ["@local-remote-execution//libc:glibc"],
         exec_properties = {
@@ -212,10 +209,6 @@
 
     cat > ''${SRC_ROOT}/rust/aarch64-linux.BUILD.bazel << EOF
     ${buildFile "aarch64-linux"}
-    EOF
-
-    cat > ''${SRC_ROOT}/rust/x86_64-darwin.BUILD.bazel << EOF
-    ${buildFile "x86_64-darwin"}
     EOF
 
     cat > ''${SRC_ROOT}/rust/x86_64-linux.BUILD.bazel << EOF

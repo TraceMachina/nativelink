@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,9 +29,7 @@ use nativelink_util::default_health_status_indicator;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::origin_event::get_id_for_event;
 use nativelink_util::origin_event_publisher::OriginEventPublisher;
-use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, UploadSizeInfo,
-};
+use nativelink_util::store_trait::{RemoveCallback, Store, StoreDriver, StoreKey, UploadSizeInfo};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tonic::async_trait;
@@ -100,10 +98,7 @@ impl StoreDriver for FlakyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
@@ -148,6 +143,62 @@ async fn origin_event_publisher_retries_store_upload() {
         "publisher must retry the upload past transient failures instead of dropping events",
     );
     task.abort();
+}
+
+fn test_event_with_id(event_id: &str) -> OriginEvent {
+    OriginEvent {
+        version: 0,
+        event_id: event_id.to_string(),
+        parent_event_id: String::new(),
+        bazel_request_metadata: None,
+        identity: String::new(),
+        event: None,
+    }
+}
+
+// A publisher whose senders are all gone, as on a CAS that forwards to a
+// separate scheduler, must stop and write nothing, not loop writing empty
+// batches.
+#[nativelink_test]
+async fn origin_event_publisher_stops_when_its_senders_are_gone() {
+    let store = Arc::new(FlakyStore {
+        fail_until: 0,
+        attempts: AtomicUsize::new(0),
+    });
+    let (tx, rx) = mpsc::channel::<OriginEvent>(16);
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+    let publisher = OriginEventPublisher::new(Store::new(store.clone()), rx, shutdown_tx);
+    drop(tx);
+    tokio::time::timeout(Duration::from_secs(5), publisher.run())
+        .await
+        .expect("the publisher stops once no sender is left");
+    assert_eq!(
+        store.attempts.load(Ordering::SeqCst),
+        0,
+        "no batch, empty or not, is written"
+    );
+}
+
+// Events sent before the last sender goes are still written.
+#[nativelink_test]
+async fn origin_event_publisher_writes_what_was_sent_before_stopping() {
+    let store = Arc::new(FlakyStore {
+        fail_until: 0,
+        attempts: AtomicUsize::new(0),
+    });
+    let (tx, rx) = mpsc::channel::<OriginEvent>(16);
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel(1);
+    let publisher = OriginEventPublisher::new(Store::new(store.clone()), rx, shutdown_tx);
+    tx.send(test_event_with_id("e1")).await.unwrap();
+    drop(tx);
+    tokio::time::timeout(Duration::from_secs(5), publisher.run())
+        .await
+        .expect("the publisher stops once it has written what it was sent");
+    assert_eq!(
+        store.attempts.load(Ordering::SeqCst),
+        1,
+        "one batch, written once"
+    );
 }
 
 macro_rules! event_assert {
@@ -247,6 +298,7 @@ fn get_id_for_event_test() {
                     Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
                     Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
                     Some(response_event::Event::ActionResourceUsage(_)) => [0x02, 0x0C],
+                    Some(response_event::Event::ActionAttemptEnded(_)) => [0x02, 0x0D],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -294,6 +346,7 @@ fn get_id_for_event_test() {
     test_event!(Response, QueryWriteStatusResponse);
     test_event!(Response, Empty);
     test_event!(Response, ActionResourceUsage);
+    test_event!(Response, ActionAttemptEnded);
 
     test_event!(Stream, None);
     test_event!(Stream, Error);

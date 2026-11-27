@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -255,12 +255,22 @@ pub struct Command {
     /// `INVALID_ARGUMENT`.
     #[prost(string, repeated, tag = "8")]
     pub output_node_properties: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The format that the worker should use to store the contents of
+    /// output directories.
+    ///
+    /// In case this field is set to a value that is not supported by the
+    /// worker, the worker SHOULD interpret this field as TREE_ONLY. The
+    /// worker MAY store output directories in formats that are a superset
+    /// of what was requested (e.g., interpreting DIRECTORY_ONLY as
+    /// TREE_AND_DIRECTORY).
+    #[prost(enumeration = "command::OutputDirectoryFormat", tag = "9")]
+    pub output_directory_format: i32,
 }
 /// Nested message and enum types in `Command`.
 pub mod command {
     /// An `EnvironmentVariable` is one variable to set in the running program's
     /// environment.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct EnvironmentVariable {
         /// The variable name.
         #[prost(string, tag = "1")]
@@ -268,6 +278,54 @@ pub mod command {
         /// The variable value.
         #[prost(string, tag = "2")]
         pub value: ::prost::alloc::string::String,
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum OutputDirectoryFormat {
+        /// The client is only interested in receiving output directories in
+        /// the form of a single Tree object, using the `tree_digest` field.
+        TreeOnly = 0,
+        /// The client is only interested in receiving output directories in
+        /// the form of a hierarchy of separately stored Directory objects,
+        /// using the `root_directory_digest` field.
+        DirectoryOnly = 1,
+        /// The client is interested in receiving output directories both in
+        /// the form of a single Tree object and a hierarchy of separately
+        /// stored Directory objects, using both the `tree_digest` and
+        /// `root_directory_digest` fields.
+        TreeAndDirectory = 2,
+    }
+    impl OutputDirectoryFormat {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::TreeOnly => "TREE_ONLY",
+                Self::DirectoryOnly => "DIRECTORY_ONLY",
+                Self::TreeAndDirectory => "TREE_AND_DIRECTORY",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "TREE_ONLY" => Some(Self::TreeOnly),
+                "DIRECTORY_ONLY" => Some(Self::DirectoryOnly),
+                "TREE_AND_DIRECTORY" => Some(Self::TreeAndDirectory),
+                _ => None,
+            }
+        }
     }
 }
 /// A `Platform` is a set of requirements, such as hardware, operating system, or
@@ -308,7 +366,7 @@ pub mod platform {
     /// is implicitly part of the action digest, so even tiny changes in the names
     /// or values (like changing case) may result in different action cache
     /// entries.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Property {
         /// The property name.
         #[prost(string, tag = "1")]
@@ -327,7 +385,7 @@ pub mod platform {
 /// well as possibly some metadata about the file or directory.
 ///
 /// In order to ensure that two equivalent directory trees hash to the same
-/// value, the following restrictions MUST be obeyed when constructing a
+/// value, the following restrictions MUST be obeyed when constructing
 /// a `Directory`:
 ///
 /// * Every child in the directory must have a path of exactly one segment.
@@ -413,7 +471,7 @@ pub struct Directory {
 /// [SymlinkNodes][build.bazel.remote.execution.v2.SymlinkNode]. The server is
 /// responsible for specifying the property `name`s that it accepts. If
 /// permitted by the server, the same `name` may occur multiple times.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NodeProperty {
     /// The property name.
     #[prost(string, tag = "1")]
@@ -458,7 +516,7 @@ pub struct FileNode {
 /// A `DirectoryNode` represents a child of a
 /// [Directory][build.bazel.remote.execution.v2.Directory] which is itself
 /// a `Directory` and its associated metadata.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DirectoryNode {
     /// The name of the directory.
     #[prost(string, tag = "1")]
@@ -521,10 +579,10 @@ pub struct SymlinkNode {
 /// Most protocol buffer implementations will always follow these rules when
 /// serializing, but care should be taken to avoid shortcuts. For instance,
 /// concatenating two messages to merge them may produce duplicate fields.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Digest {
-    /// The hash. In the case of SHA-256, it will always be a lowercase hex string
-    /// exactly 64 characters long.
+    /// The hash, represented as a lowercase hexadecimal string, padded with
+    /// leading zeroes up to the hash function length.
     #[prost(string, tag = "1")]
     pub hash: ::prost::alloc::string::String,
     /// The size of the blob, in bytes.
@@ -574,7 +632,7 @@ pub struct ExecutedActionMetadata {
     ///
     /// The method of timekeeping used to compute the virtual execution duration
     /// MUST be consistent with what is used to enforce the
-    /// [Action][\[build.bazel.remote.execution.v2.Action\]'s `timeout`. There is no
+    /// [Action][build.bazel.remote.execution.v2.Action]'s `timeout`. There is no
     /// relationship between the virtual execution duration and the values of
     /// `execution_start_timestamp` and `execution_completed_timestamp`.
     #[prost(message, optional, tag = "12")]
@@ -823,7 +881,7 @@ pub struct Tree {
 }
 /// An `OutputDirectory` is the output in an `ActionResult` corresponding to a
 /// directory's full contents rather than a single file.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OutputDirectory {
     /// The full path of the directory relative to the working directory. The path
     /// separator is a forward slash `/`. Since this is a relative path, it MUST
@@ -837,7 +895,7 @@ pub struct OutputDirectory {
     #[prost(message, optional, tag = "3")]
     pub tree_digest: ::core::option::Option<Digest>,
     /// If set, consumers MAY make the following assumptions about the
-    /// directories contained in the the Tree, so that it may be
+    /// directories contained in the Tree, so that it may be
     /// instantiated on a local file system by scanning through it
     /// sequentially:
     ///
@@ -873,6 +931,15 @@ pub struct OutputDirectory {
     /// redundant marshaling.
     #[prost(bool, tag = "4")]
     pub is_topologically_sorted: bool,
+    /// The digest of the encoded
+    /// [Directory][build.bazel.remote.execution.v2.Directory] proto
+    /// containing the contents of the directory's root.
+    ///
+    /// If both `tree_digest` and `root_directory_digest` are set, this
+    /// field MUST match the digest of the root directory contained in the
+    /// Tree message.
+    #[prost(message, optional, tag = "5")]
+    pub root_directory_digest: ::core::option::Option<Digest>,
 }
 /// An `OutputSymlink` is similar to a
 /// [Symlink][build.bazel.remote.execution.v2.SymlinkNode], but it is used as an
@@ -897,7 +964,7 @@ pub struct OutputSymlink {
     pub node_properties: ::core::option::Option<NodeProperties>,
 }
 /// An `ExecutionPolicy` can be used to control the scheduling of the action.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionPolicy {
     /// The priority (relative importance) of this action. Generally, a lower value
     /// means that the action should be run sooner than actions having a greater
@@ -913,7 +980,7 @@ pub struct ExecutionPolicy {
 }
 /// A `ResultsCachePolicy` is used for fine-grained control over how action
 /// outputs are stored in the CAS and Action Cache.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResultsCachePolicy {
     /// The priority (relative importance) of this content in the overall cache.
     /// Generally, a lower value means a longer retention time or other advantage,
@@ -928,7 +995,7 @@ pub struct ResultsCachePolicy {
 }
 /// A request message for
 /// [Execution.Execute][build.bazel.remote.execution.v2.Execution.Execute].
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -974,9 +1041,23 @@ pub struct ExecuteRequest {
     /// in the server's capabilities.
     #[prost(enumeration = "digest_function::Value", tag = "9")]
     pub digest_function: i32,
+    /// A hint to the server to request inlining stdout in the
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
+    #[prost(bool, tag = "10")]
+    pub inline_stdout: bool,
+    /// A hint to the server to request inlining stderr in the
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
+    #[prost(bool, tag = "11")]
+    pub inline_stderr: bool,
+    /// A hint to the server to inline the contents of the listed output files.
+    /// Each path needs to exactly match one file path in either `output_paths` or
+    /// `output_files` (DEPRECATED since v2.1) in the
+    /// [Command][build.bazel.remote.execution.v2.Command] message.
+    #[prost(string, repeated, tag = "12")]
+    pub inline_output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A `LogFile` is a log stored in the CAS.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogFile {
     /// The digest of the log contents.
     #[prost(message, optional, tag = "1")]
@@ -1045,7 +1126,7 @@ pub struct ExecuteResponse {
 /// has reached the COMPLETED stage, it MUST set the [done
 /// field][google.longrunning.Operation.done] of the
 /// [Operation][google.longrunning.Operation] and terminate the stream.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionStage {}
 /// Nested message and enum types in `ExecutionStage`.
 pub mod execution_stage {
@@ -1103,7 +1184,7 @@ pub mod execution_stage {
 /// Metadata about an ongoing
 /// [execution][build.bazel.remote.execution.v2.Execution.Execute], which
 /// will be contained in the [metadata
-/// field][google.longrunning.Operation.response] of the
+/// field][google.longrunning.Operation.metadata] of the
 /// [Operation][google.longrunning.Operation].
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteOperationMetadata {
@@ -1128,10 +1209,19 @@ pub struct ExecuteOperationMetadata {
     /// execution.
     #[prost(message, optional, tag = "5")]
     pub partial_execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
+    /// The digest function that was used to compute the action digest.
+    ///
+    /// If the digest function used is one of BLAKE3, MD5, MURMUR3, SHA1,
+    /// SHA256, SHA256TREE, SHA384, SHA512, or VSO, the server MAY leave
+    /// this field unset. In that case the client SHOULD infer the digest
+    /// function using the length of the action digest hash and the digest
+    /// functions announced in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "6")]
+    pub digest_function: i32,
 }
 /// A request message for
 /// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WaitExecutionRequest {
     /// The name of the [Operation][google.longrunning.Operation]
     /// returned by [Execute][build.bazel.remote.execution.v2.Execution.Execute].
@@ -1140,7 +1230,7 @@ pub struct WaitExecutionRequest {
 }
 /// A request message for
 /// [ActionCache.GetActionResult][build.bazel.remote.execution.v2.ActionCache.GetActionResult].
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetActionResultRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1275,7 +1365,7 @@ pub struct BatchUpdateBlobsRequest {
 /// Nested message and enum types in `BatchUpdateBlobsRequest`.
 pub mod batch_update_blobs_request {
     /// A request corresponding to a single blob that the client wants to upload.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Request {
         /// The digest of the blob. This MUST be the digest of `data`. All
         /// digests MUST use the same digest function.
@@ -1286,7 +1376,7 @@ pub mod batch_update_blobs_request {
         pub data: ::prost::bytes::Bytes,
         /// The format of `data`. Must be `IDENTITY`/unspecified, or one of the
         /// compressors advertised by the
-        /// [CacheCapabilities.supported_batch_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_batch_compressors]
+        /// [CacheCapabilities.supported_batch_update_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_batch_update_compressors]
         /// field.
         #[prost(enumeration = "super::compressor::Value", tag = "3")]
         pub compressor: i32,
@@ -1385,7 +1475,7 @@ pub mod batch_read_blobs_response {
 }
 /// A request message for
 /// [ContentAddressableStorage.GetTree][build.bazel.remote.execution.v2.ContentAddressableStorage.GetTree].
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTreeRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1438,8 +1528,106 @@ pub struct GetTreeResponse {
     pub next_page_token: ::prost::alloc::string::String,
 }
 /// A request message for
-/// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
+/// [ContentAddressableStorage.SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob].
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SplitBlobRequest {
+    /// The instance of the execution system to operate against. A server may
+    /// support multiple instances of the execution system (with their own workers,
+    /// storage, caches, etc.). The server MAY require use of this field to select
+    /// between them in an implementation-defined fashion, otherwise it can be
+    /// omitted.
+    #[prost(string, tag = "1")]
+    pub instance_name: ::prost::alloc::string::String,
+    /// The digest of the blob to be split.
+    #[prost(message, optional, tag = "2")]
+    pub blob_digest: ::core::option::Option<Digest>,
+    /// The digest function of the blob to be split.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256,
+    /// SHA384, SHA512, or VSO, the client MAY leave this field unset. In
+    /// that case the server SHOULD infer the digest function using the
+    /// length of the blob digest hashes and the digest functions announced
+    /// in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "3")]
+    pub digest_function: i32,
+    /// The chunking function that the client prefers to use.
+    ///
+    /// The server MAY use a different chunking function.
+    #[prost(enumeration = "chunking_function::Value", tag = "4")]
+    pub chunking_function: i32,
+}
+/// A response message for
+/// [ContentAddressableStorage.SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob].
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SplitBlobResponse {
+    /// The ordered list of digests of the chunks into which the blob was split.
+    /// The original blob is assembled by concatenating the chunk data according to
+    /// the order of the digests given by this list.
+    ///
+    /// The server MUST use the same digest function as the one explicitly or
+    /// implicitly (through hash length) specified in the split request.
+    #[prost(message, repeated, tag = "1")]
+    pub chunk_digests: ::prost::alloc::vec::Vec<Digest>,
+    /// The chunking function used to split the blob.
+    #[prost(enumeration = "chunking_function::Value", tag = "2")]
+    pub chunking_function: i32,
+}
+/// A request message for
+/// [ContentAddressableStorage.SpliceBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SpliceBlob].
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpliceBlobRequest {
+    /// The instance of the execution system to operate against. A server may
+    /// support multiple instances of the execution system (with their own workers,
+    /// storage, caches, etc.). The server MAY require use of this field to select
+    /// between them in an implementation-defined fashion, otherwise it can be
+    /// omitted.
+    #[prost(string, tag = "1")]
+    pub instance_name: ::prost::alloc::string::String,
+    /// Expected digest of the spliced blob. The client MUST set this field due
+    /// to the following reasons:
+    ///   1. It allows the server to perform an early existence check of the blob
+    ///      or existing chunks that assemble the blob before spending the splicing
+    ///      effort, as described in the [ContentAddressableStorage.SpliceBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SpliceBlob]
+    ///      documentation.
+    ///   2. It allows servers with different storage backends to dispatch the
+    ///      request to the correct storage backend based on the size and/or the
+    ///      hash of the blob.
+    ///   3. If chunking information already exists for the blob, it allows
+    ///      the server to keep the existing chunking information or replace it with
+    ///      new chunking information.
+    #[prost(message, optional, tag = "2")]
+    pub blob_digest: ::core::option::Option<Digest>,
+    /// The ordered list of digests of the chunks which need to be concatenated to
+    /// assemble the original blob.
+    #[prost(message, repeated, tag = "3")]
+    pub chunk_digests: ::prost::alloc::vec::Vec<Digest>,
+    /// The digest function of all chunks to be concatenated and of the blob to be
+    /// spliced. The server MUST use the same digest function for both cases.
+    ///
+    /// If the digest function used is one of MD5, MURMUR3, SHA1, SHA256, SHA384,
+    /// SHA512, or VSO, the client MAY leave this field unset. In that case the
+    /// server SHOULD infer the digest function using the length of the blob digest
+    /// hashes and the digest functions announced in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "4")]
+    pub digest_function: i32,
+    /// The chunking function that the client used to split the blob.
+    #[prost(enumeration = "chunking_function::Value", tag = "5")]
+    pub chunking_function: i32,
+}
+/// A response message for
+/// [ContentAddressableStorage.SpliceBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SpliceBlob].
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SpliceBlobResponse {
+    /// Computed digest of the spliced blob.
+    ///
+    /// The server MUST use the same digest function as the one explicitly or
+    /// implicitly (through hash length) specified in the splice request.
+    #[prost(message, optional, tag = "1")]
+    pub blob_digest: ::core::option::Option<Digest>,
+}
+/// A request message for
+/// [Capabilities.GetCapabilities][build.bazel.remote.execution.v2.Capabilities.GetCapabilities].
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetCapabilitiesRequest {
     /// The instance of the execution system to operate against. A server may
     /// support multiple instances of the execution system (with their own workers,
@@ -1473,7 +1661,7 @@ pub struct ServerCapabilities {
 }
 /// The digest function used for converting values into keys for CAS and Action
 /// Cache.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DigestFunction {}
 /// Nested message and enum types in `DigestFunction`.
 pub mod digest_function {
@@ -1539,13 +1727,11 @@ pub mod digest_function {
         ///    3. A single invocation is made to the SHA-256 block cipher with
         ///       the following parameters:
         ///
-        ///       ```text
-        ///       M = Hash(left) || Hash(right)
-        ///       H = {
-        ///           0xcbbb9d5d, 0x629a292a, 0x9159015a, 0x152fecd8,
-        ///           0x67332667, 0x8eb44a87, 0xdb0c2e0d, 0x47b5481d,
-        ///       }
-        ///       ```
+        ///           M = Hash(left) || Hash(right)
+        ///           H = {
+        ///               0xcbbb9d5d, 0x629a292a, 0x9159015a, 0x152fecd8,
+        ///               0x67332667, 0x8eb44a87, 0xdb0c2e0d, 0x47b5481d,
+        ///           }
         ///
         ///       The values of H are the leading fractional parts of the
         ///       square roots of the 9th to the 16th prime number (23 to 53).
@@ -1556,9 +1742,7 @@ pub mod digest_function {
         ///    4. The hash of the full blob can then be obtained by
         ///       concatenating the outputs of the block cipher:
         ///
-        ///       ```text
-        ///       Hash(blob) = a || b || c || d || e || f || g || h
-        ///       ```
+        ///           Hash(blob) = a || b || c || d || e || f || g || h
         ///
         ///       Addition of the original values of H, as normally done
         ///       through the use of the Davies-Meyer structure, is not
@@ -1571,6 +1755,12 @@ pub mod digest_function {
         /// The BLAKE3 hash function.
         /// See <https://github.com/BLAKE3-team/BLAKE3.>
         Blake3 = 9,
+        /// Identical to SHA1, except that "blob ${sizeBytes}\0" is prepended to
+        /// the blob's contents before hashing, where ${sizeBytes} corresponds to
+        /// the decimal size of the original blob. This allows hashes of files to
+        /// be converted from and to the ones used by the Git version control
+        /// system.
+        Gitsha1 = 10,
     }
     impl Value {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -1589,6 +1779,7 @@ pub mod digest_function {
                 Self::Murmur3 => "MURMUR3",
                 Self::Sha256tree => "SHA256TREE",
                 Self::Blake3 => "BLAKE3",
+                Self::Gitsha1 => "GITSHA1",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1604,20 +1795,83 @@ pub mod digest_function {
                 "MURMUR3" => Some(Self::Murmur3),
                 "SHA256TREE" => Some(Self::Sha256tree),
                 "BLAKE3" => Some(Self::Blake3),
+                "GITSHA1" => Some(Self::Gitsha1),
+                _ => None,
+            }
+        }
+    }
+}
+/// The chunking function is used to split a blob into chunks.
+///
+/// The server advertises support for a chunking function by setting the
+/// corresponding params field in
+/// [CacheCapabilities][build.bazel.remote.execution.v2.CacheCapabilities].
+/// For example, if fast_cdc_2020_params is set, the server supports FAST_CDC_2020.
+///
+/// For optimal deduplication, clients SHOULD use an advertised chunking function.
+/// When clients use UNKNOWN, the server chooses an algorithm for SplitBlob and
+/// simply verifies chunk concatenation for SpliceBlob.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChunkingFunction {}
+/// Nested message and enum types in `ChunkingFunction`.
+pub mod chunking_function {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum Value {
+        /// No specific algorithm. Servers MUST always accept this value.
+        /// For SplitBlob, the server chooses the algorithm. For SpliceBlob, the
+        /// server only verifies that chunks concatenate to form the expected blob.
+        Unknown = 0,
+        /// The FastCDC chunking algorithm as described in the 2020 paper by
+        /// Wen Xia, et al. See <https://ieeexplore.ieee.org/document/9055082>
+        /// for details.
+        FastCdc2020 = 1,
+        /// The RepMaxCDC chunking algorithm as implemented by buildbarn/go-cdc.
+        /// See <https://github.com/buildbarn/go-cdc> for details.
+        RepMaxCdc = 2,
+    }
+    impl Value {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unknown => "UNKNOWN",
+                Self::FastCdc2020 => "FAST_CDC_2020",
+                Self::RepMaxCdc => "REP_MAX_CDC",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "UNKNOWN" => Some(Self::Unknown),
+                "FAST_CDC_2020" => Some(Self::FastCdc2020),
+                "REP_MAX_CDC" => Some(Self::RepMaxCdc),
                 _ => None,
             }
         }
     }
 }
 /// Describes the server/instance capabilities for updating the action cache.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActionCacheUpdateCapabilities {
     #[prost(bool, tag = "1")]
     pub update_enabled: bool,
 }
 /// Allowed values for priority in
-/// [ResultsCachePolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy] and
-/// [ExecutionPolicy][build.bazel.remoteexecution.v2.ResultsCachePolicy]
+/// [ResultsCachePolicy][build.bazel.remote.execution.v2.ResultsCachePolicy] and
+/// [ExecutionPolicy][build.bazel.remote.execution.v2.ExecutionPolicy]
 /// Used for querying both cache and execution valid priority ranges.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityCapabilities {
@@ -1627,7 +1881,7 @@ pub struct PriorityCapabilities {
 /// Nested message and enum types in `PriorityCapabilities`.
 pub mod priority_capabilities {
     /// Supported range of priorities, including boundaries.
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct PriorityRange {
         /// The minimum numeric value for this priority range, which represents the
         /// most urgent task or longest retained item.
@@ -1640,7 +1894,7 @@ pub mod priority_capabilities {
     }
 }
 /// Describes how the server treats absolute symlink targets.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SymlinkAbsolutePathStrategy {}
 /// Nested message and enum types in `SymlinkAbsolutePathStrategy`.
 pub mod symlink_absolute_path_strategy {
@@ -1692,7 +1946,7 @@ pub mod symlink_absolute_path_strategy {
     }
 }
 /// Compression formats which may be supported.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Compressor {}
 /// Nested message and enum types in `Compressor`.
 pub mod compressor {
@@ -1786,6 +2040,118 @@ pub struct CacheCapabilities {
     /// requests.
     #[prost(enumeration = "compressor::Value", repeated, tag = "7")]
     pub supported_batch_update_compressors: ::prost::alloc::vec::Vec<i32>,
+    /// The maximum blob size that the server will accept for CAS blob uploads.
+    /// - If it is 0, it means there is no limit set. A client may assume
+    ///    arbitrarily large blobs may be uploaded to and downloaded from the cache.
+    /// - If it is larger than 0, implementations SHOULD NOT attempt to upload
+    ///    blobs with size larger than the limit. Servers SHOULD reject blob
+    ///    uploads over the `max_cas_blob_size_bytes` limit with response code
+    ///    `INVALID_ARGUMENT`
+    /// - If the cache implementation returns a given limit, it MAY still serve
+    ///    blobs larger than this limit.
+    #[prost(int64, tag = "8")]
+    pub max_cas_blob_size_bytes: i64,
+    /// Whether blob splitting is supported for the particular server/instance. If
+    /// yes, the server/instance implements the specified behavior for blob
+    /// splitting and a meaningful result can be expected from the
+    /// [ContentAddressableStorage.SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+    /// operation.
+    #[prost(bool, tag = "9")]
+    pub split_blob_support: bool,
+    /// Whether blob splicing is supported for the particular server/instance. If
+    /// yes, the server/instance implements the specified behavior for blob
+    /// splicing and a meaningful result can be expected from the
+    /// [ContentAddressableStorage.SpliceBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SpliceBlob]
+    /// operation.
+    #[prost(bool, tag = "10")]
+    pub splice_blob_support: bool,
+    /// The parameters for the FastCDC 2020 chunking algorithm.
+    /// If set, the server supports the FastCDC chunking algorithm.
+    #[prost(message, optional, tag = "11")]
+    pub fast_cdc_2020_params: ::core::option::Option<FastCdc2020Params>,
+    /// The parameters for the RepMaxCDC chunking algorithm.
+    /// If set, the server supports the RepMaxCDC chunking algorithm.
+    #[prost(message, optional, tag = "12")]
+    pub rep_max_cdc_params: ::core::option::Option<RepMaxCdcParams>,
+}
+/// Parameters for the FastCDC content-defined chunking algorithm.
+///
+/// Implementations MUST follow the FastCDC 2020 paper by Wen Xia, et al.:
+/// <https://ieeexplore.ieee.org/document/9055082>
+///
+/// Supported implementations:
+///    - Rust: <https://docs.rs/fastcdc/3.2.1/fastcdc/v2020/index.html>
+///    - Go: <https://github.com/buildbuddy-io/fastcdc2020>
+///
+/// Test vectors can be found in the accompanying fastcdc2020_test_vectors.txt file.
+///
+/// Implementations MUST use normalization level 2, which has been found
+/// successful for build artifacts with an average chunk size of 512 KiB.
+///
+/// Key algorithm components from the paper:
+///
+/// GEAR table: 256 64-bit integers for the rolling hash, computed as:
+///    GEAR\[i\] = high_64_bits(MD5(byte(i))) for i in 0..255
+///
+/// MASKS table: Bit patterns for chunk boundary detection, derived from
+/// the C reference implementation. The mask selection based on average
+/// chunk size SHOULD match the paper.
+///
+/// The minimum and maximum chunk sizes MUST be derived from the average:
+///    - min_chunk_size = avg_chunk_size_bytes / 4
+///    - max_chunk_size = avg_chunk_size_bytes * 4
+///
+/// Blobs smaller than max_chunk_size (avg_chunk_size_bytes * 4) SHOULD be
+/// uploaded without chunking.
+///
+/// If any of the advertised parameters are not within the expected range,
+/// the client SHOULD ignore FastCDC chunking function support.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FastCdc2020Params {
+    /// The average (expected) chunk size for the FastCDC chunking algorithm.
+    /// The value MUST be between 1 KiB and 1 MiB. The recommended value is
+    /// 524288 (512 KiB).
+    #[prost(uint64, tag = "1")]
+    pub avg_chunk_size_bytes: u64,
+    /// The seed for the FastCDC mask generation.
+    /// The recommended value is 0.
+    ///
+    /// All clients sharing a cache SHOULD use the same seed to maximize
+    /// chunk reuse.
+    #[prost(uint32, tag = "2")]
+    pub seed: u32,
+}
+/// Parameters for the RepMaxCDC content-defined chunking algorithm.
+///
+/// Supported implementations:
+///    - Go: <https://github.com/buildbarn/go-cdc>
+///
+/// Key algorithm components:
+///
+/// GEAR table: 256 64-bit integers for the rolling hash, computed as:
+///    GEAR\[i\] = high_64_bits(MD5(byte(i))) for i in 0..255
+///
+/// The algorithm repeatedly applies chunking until all chunks are in the
+/// range [min_chunk_size_bytes, 2*min_chunk_size_bytes). Cutting points are
+/// selected where the Gear rolling hash is maximized within a lookahead
+/// window of horizon_size_bytes.
+///
+/// If any of the advertised parameters are not within the expected range,
+/// the client SHOULD ignore RepMaxCDC chunking function support.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RepMaxCdcParams {
+    /// The minimum chunk size for the RepMaxCDC chunking algorithm.
+    /// The value MUST be at least 64 bytes (the Gear hash window size).
+    /// All chunks will be in the range [min_chunk_size_bytes, 2*min_chunk_size_bytes).
+    /// The recommended value is 262144 (256 KiB).
+    #[prost(uint64, tag = "1")]
+    pub min_chunk_size_bytes: u64,
+    /// The lookahead window for finding optimal cutting points.
+    /// Larger values improve deduplication quality with diminishing returns.
+    /// Setting to 0 produces uniform chunks of min_chunk_size_bytes.
+    /// The recommended value is 8 * min_chunk_size_bytes.
+    #[prost(uint64, tag = "2")]
+    pub horizon_size_bytes: u64,
 }
 /// Capabilities of the remote execution system.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1823,7 +2189,7 @@ pub struct ExecutionCapabilities {
     pub digest_functions: ::prost::alloc::vec::Vec<i32>,
 }
 /// Details for the tool used to call the API.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ToolDetails {
     /// Name of the tool, e.g. bazel.
     #[prost(string, tag = "1")]
@@ -1839,13 +2205,12 @@ pub struct ToolDetails {
 ///
 /// * name: `build.bazel.remote.execution.v2.requestmetadata-bin`
 /// * contents: the base64 encoded binary `RequestMetadata` message.
-///
 /// Note: the gRPC library serializes binary headers encoded in base64 by
 /// default (<https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md#requests>).
 /// Therefore, if the gRPC library is used to pass/retrieve this
 /// metadata, the user may ignore the base64 encoding and assume it is simply
 /// serialized as a binary message.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RequestMetadata {
     /// The details for the tool invoking the requests.
     #[prost(message, optional, tag = "1")]
@@ -2058,7 +2423,7 @@ pub mod execution_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/Execute",
             );
@@ -2079,7 +2444,7 @@ pub mod execution_client {
         /// server MAY choose to stream additional updates as execution progresses,
         /// such as to provide an update as to the state of the execution.
         ///
-        /// In addition to the cases describe for Execute, the WaitExecution method
+        /// In addition to the cases described for Execute, the WaitExecution method
         /// may fail as follows:
         ///
         /// * `NOT_FOUND`: The operation no longer exists due to any of a transient
@@ -2105,7 +2470,7 @@ pub mod execution_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/build.bazel.remote.execution.v2.Execution/WaitExecution",
             );
@@ -2118,732 +2483,6 @@ pub mod execution_client {
                     ),
                 );
             self.inner.server_streaming(req, path, codec).await
-        }
-    }
-}
-/// Generated client implementations.
-pub mod action_cache_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// The action cache API is used to query whether a given action has already been
-    /// performed and, if so, retrieve its result. Unlike the
-    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage],
-    /// which addresses blobs by their own content, the action cache addresses the
-    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] by a
-    /// digest of the encoded [Action][build.bazel.remote.execution.v2.Action]
-    /// which produced them.
-    ///
-    /// The lifetime of entries in the action cache is implementation-specific, but
-    /// the server SHOULD assume that more recently used entries are more likely to
-    /// be used again.
-    ///
-    /// As with other services in the Remote Execution API, any call may return an
-    /// error with a [RetryInfo][google.rpc.RetryInfo] error detail providing
-    /// information about when the client should retry the request; clients SHOULD
-    /// respect the information provided.
-    #[derive(Debug, Clone)]
-    pub struct ActionCacheClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl<T> ActionCacheClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> ActionCacheClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            ActionCacheClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Retrieve a cached execution result.
-        ///
-        /// Implementations SHOULD ensure that any blobs referenced from the
-        /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
-        /// are available at the time of returning the
-        /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] and will be
-        /// for some period of time afterwards. The lifetimes of the referenced blobs SHOULD be increased
-        /// if necessary and applicable.
-        ///
-        /// Errors:
-        ///
-        /// * `NOT_FOUND`: The requested `ActionResult` is not in the cache.
-        pub async fn get_action_result(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ActionCache/GetActionResult",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ActionCache",
-                        "GetActionResult",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Upload a new execution result.
-        ///
-        /// In order to allow the server to perform access control based on the type of
-        /// action, and to assist with client debugging, the client MUST first upload
-        /// the [Action][build.bazel.remote.execution.v2.Execution] that produced the
-        /// result, along with its
-        /// [Command][build.bazel.remote.execution.v2.Command], into the
-        /// `ContentAddressableStorage`.
-        ///
-        /// Server implementations MAY modify the
-        /// `UpdateActionResultRequest.action_result` and return an equivalent value.
-        ///
-        /// Errors:
-        ///
-        /// * `INVALID_ARGUMENT`: One or more arguments are invalid.
-        /// * `FAILED_PRECONDITION`: One or more errors occurred in updating the
-        ///   action result, such as a missing command or action.
-        /// * `RESOURCE_EXHAUSTED`: There is insufficient storage space to add the
-        ///   entry to the cache.
-        pub async fn update_action_result(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdateActionResultRequest>,
-        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ActionCache/UpdateActionResult",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ActionCache",
-                        "UpdateActionResult",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated client implementations.
-pub mod content_addressable_storage_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// The CAS (content-addressable storage) is used to store the inputs to and
-    /// outputs from the execution service. Each piece of content is addressed by the
-    /// digest of its binary data.
-    ///
-    /// Most of the binary data stored in the CAS is opaque to the execution engine,
-    /// and is only used as a communication medium. In order to build an
-    /// [Action][build.bazel.remote.execution.v2.Action],
-    /// however, the client will need to also upload the
-    /// [Command][build.bazel.remote.execution.v2.Command] and input root
-    /// [Directory][build.bazel.remote.execution.v2.Directory] for the Action.
-    /// The Command and Directory messages must be marshalled to wire format and then
-    /// uploaded under the hash as with any other piece of content. In practice, the
-    /// input root directory is likely to refer to other Directories in its
-    /// hierarchy, which must also each be uploaded on their own.
-    ///
-    /// For small file uploads the client should group them together and call
-    /// [BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
-    ///
-    /// For large uploads, the client must use the
-    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API.
-    ///
-    /// For uncompressed data, The `WriteRequest.resource_name` is of the following form:
-    /// `{instance_name}/uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`
-    ///
-    /// Where:
-    /// * `instance_name` is an identifier used to distinguish between the various
-    ///   instances on the server. Syntax and semantics of this field are defined
-    ///   by the server; Clients must not make any assumptions about it (e.g.,
-    ///   whether it spans multiple path segments or not). If it is the empty path,
-    ///   the leading slash is omitted, so that  the `resource_name` becomes
-    ///   `uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`.
-    ///   To simplify parsing, a path segment cannot equal any of the following
-    ///   keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations`,
-    ///   `capabilities` or `compressed-blobs`.
-    /// * `uuid` is a version 4 UUID generated by the client, used to avoid
-    ///   collisions between concurrent uploads of the same data. Clients MAY
-    ///   reuse the same `uuid` for uploading different blobs.
-    /// * `digest_function` is a lowercase string form of a `DigestFunction.Value`
-    ///   enum, indicating which digest function was used to compute `hash`. If the
-    ///   digest function used is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512,
-    ///   or VSO, this component MUST be omitted. In that case the server SHOULD
-    ///   infer the digest function using the length of the `hash` and the digest
-    ///   functions announced in the server's capabilities.
-    /// * `hash` and `size` refer to the [Digest][build.bazel.remote.execution.v2.Digest]
-    ///   of the data being uploaded.
-    /// * `optional_metadata` is implementation specific data, which clients MAY omit.
-    ///   Servers MAY ignore this metadata.
-    ///
-    /// Data can alternatively be uploaded in compressed form, with the following
-    /// `WriteRequest.resource_name` form:
-    /// `{instance_name}/uploads/{uuid}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}{/optional_metadata}`
-    ///
-    /// Where:
-    /// * `instance_name`, `uuid`, `digest_function` and `optional_metadata` are
-    ///   defined as above.
-    /// * `compressor` is a lowercase string form of a `Compressor.Value` enum
-    ///   other than `identity`, which is supported by the server and advertised in
-    ///   [CacheCapabilities.supported_compressor][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressor].
-    /// * `uncompressed_hash` and `uncompressed_size` refer to the
-    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
-    ///   uploaded, once uncompressed. Servers MUST verify that these match
-    ///   the uploaded data once uncompressed, and MUST return an
-    ///   `INVALID_ARGUMENT` error in the case of mismatch.
-    ///
-    /// Note that when writing compressed blobs, the `WriteRequest.write_offset` in
-    /// the initial request in a stream refers to the offset in the uncompressed form
-    /// of the blob. In subsequent requests, `WriteRequest.write_offset` MUST be the
-    /// sum of the first request's 'WriteRequest.write_offset' and the total size of
-    /// all the compressed data bundles in the previous requests.
-    /// Note that this mixes an uncompressed offset with a compressed byte length,
-    /// which is nonsensical, but it is done to fit the semantics of the existing
-    /// ByteStream protocol.
-    ///
-    /// Uploads of the same data MAY occur concurrently in any form, compressed or
-    /// uncompressed.
-    ///
-    /// Clients SHOULD NOT use gRPC-level compression for ByteStream API `Write`
-    /// calls of compressed blobs, since this would compress already-compressed data.
-    ///
-    /// When attempting an upload, if another client has already completed the upload
-    /// (which may occur in the middle of a single upload if another client uploads
-    /// the same blob concurrently), the request will terminate immediately without
-    /// error, and with a response whose `committed_size` is the value `-1` if this
-    /// is a compressed upload, or with the full size of the uploaded file if this is
-    /// an uncompressed upload (regardless of how much data was transmitted by the
-    /// client). If the client completes the upload but the
-    /// [Digest][build.bazel.remote.execution.v2.Digest] does not match, an
-    /// `INVALID_ARGUMENT` error will be returned. In either case, the client should
-    /// not attempt to retry the upload.
-    ///
-    /// Small downloads can be grouped and requested in a batch via
-    /// [BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
-    ///
-    /// For large downloads, the client must use the
-    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API.
-    ///
-    /// For uncompressed data, The `ReadRequest.resource_name` is of the following form:
-    /// `{instance_name}/blobs/{digest_function/}{hash}/{size}`
-    /// Where `instance_name`, `digest_function`, `hash` and `size` are defined as
-    /// for uploads.
-    ///
-    /// Data can alternatively be downloaded in compressed form, with the following
-    /// `ReadRequest.resource_name` form:
-    /// `{instance_name}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}`
-    ///
-    /// Where:
-    /// * `instance_name`, `compressor` and `digest_function` are defined as for
-    ///   uploads.
-    /// * `uncompressed_hash` and `uncompressed_size` refer to the
-    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
-    ///   downloaded, once uncompressed. Clients MUST verify that these match
-    ///   the downloaded data once uncompressed, and take appropriate steps in
-    ///   the case of failure such as retrying a limited number of times or
-    ///   surfacing an error to the user.
-    ///
-    /// When downloading compressed blobs:
-    /// * `ReadRequest.read_offset` refers to the offset in the uncompressed form
-    ///   of the blob.
-    /// * Servers MUST return `INVALID_ARGUMENT` if `ReadRequest.read_limit` is
-    ///   non-zero.
-    /// * Servers MAY use any compression level they choose, including different
-    ///   levels for different blobs (e.g. choosing a level designed for maximum
-    ///   speed for data known to be incompressible).
-    /// * Clients SHOULD NOT use gRPC-level compression, since this would compress
-    ///   already-compressed data.
-    ///
-    /// Servers MUST be able to provide data for all recently advertised blobs in
-    /// each of the compression formats that the server supports, as well as in
-    /// uncompressed form.
-    ///
-    /// The lifetime of entries in the CAS is implementation specific, but it SHOULD
-    /// be long enough to allow for newly-added and recently looked-up entries to be
-    /// used in subsequent calls (e.g. to
-    /// [Execute][build.bazel.remote.execution.v2.Execution.Execute]).
-    ///
-    /// Servers MUST behave as though empty blobs are always available, even if they
-    /// have not been uploaded. Clients MAY optimize away the uploading or
-    /// downloading of empty blobs.
-    ///
-    /// As with other services in the Remote Execution API, any call may return an
-    /// error with a [RetryInfo][google.rpc.RetryInfo] error detail providing
-    /// information about when the client should retry the request; clients SHOULD
-    /// respect the information provided.
-    #[derive(Debug, Clone)]
-    pub struct ContentAddressableStorageClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl<T> ContentAddressableStorageClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> ContentAddressableStorageClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            ContentAddressableStorageClient::new(
-                InterceptedService::new(inner, interceptor),
-            )
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// Determine if blobs are present in the CAS.
-        ///
-        /// Clients can use this API before uploading blobs to determine which ones are
-        /// already present in the CAS and do not need to be uploaded again.
-        ///
-        /// Servers SHOULD increase the lifetimes of the referenced blobs if necessary and
-        /// applicable.
-        ///
-        /// There are no method-specific errors.
-        pub async fn find_missing_blobs(
-            &mut self,
-            request: impl tonic::IntoRequest<super::FindMissingBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::FindMissingBlobsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "FindMissingBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Upload many blobs at once.
-        ///
-        /// The server may enforce a limit of the combined total size of blobs
-        /// to be uploaded using this API. This limit may be obtained using the
-        /// [Capabilities][build.bazel.remote.execution.v2.Capabilities] API.
-        /// Requests exceeding the limit should either be split into smaller
-        /// chunks or uploaded using the
-        /// [ByteStream API][google.bytestream.ByteStream], as appropriate.
-        ///
-        /// This request is equivalent to calling a Bytestream `Write` request
-        /// on each individual blob, in parallel. The requests may succeed or fail
-        /// independently.
-        ///
-        /// Errors:
-        ///
-        /// * `INVALID_ARGUMENT`: The client attempted to upload more than the
-        ///   server supported limit.
-        ///
-        /// Individual requests may return the following errors, additionally:
-        ///
-        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
-        /// * `INVALID_ARGUMENT`: The [Digest][build.bazel.remote.execution.v2.Digest]
-        ///   does not match the provided data.
-        pub async fn batch_update_blobs(
-            &mut self,
-            request: impl tonic::IntoRequest<super::BatchUpdateBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchUpdateBlobsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "BatchUpdateBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Download many blobs at once.
-        ///
-        /// The server may enforce a limit of the combined total size of blobs
-        /// to be downloaded using this API. This limit may be obtained using the
-        /// [Capabilities][build.bazel.remote.execution.v2.Capabilities] API.
-        /// Requests exceeding the limit should either be split into smaller
-        /// chunks or downloaded using the
-        /// [ByteStream API][google.bytestream.ByteStream], as appropriate.
-        ///
-        /// This request is equivalent to calling a Bytestream `Read` request
-        /// on each individual blob, in parallel. The requests may succeed or fail
-        /// independently.
-        ///
-        /// Errors:
-        ///
-        /// * `INVALID_ARGUMENT`: The client attempted to read more than the
-        ///   server supported limit.
-        ///
-        /// Every error on individual read will be returned in the corresponding digest
-        /// status.
-        pub async fn batch_read_blobs(
-            &mut self,
-            request: impl tonic::IntoRequest<super::BatchReadBlobsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BatchReadBlobsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchReadBlobs",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "BatchReadBlobs",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Fetch the entire directory tree rooted at a node.
-        ///
-        /// This request must be targeted at a
-        /// [Directory][build.bazel.remote.execution.v2.Directory] stored in the
-        /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
-        /// (CAS). The server will enumerate the `Directory` tree recursively and
-        /// return every node descended from the root.
-        ///
-        /// The GetTreeRequest.page_token parameter can be used to skip ahead in
-        /// the stream (e.g. when retrying a partially completed and aborted request),
-        /// by setting it to a value taken from GetTreeResponse.next_page_token of the
-        /// last successfully processed GetTreeResponse).
-        ///
-        /// The exact traversal order is unspecified and, unless retrieving subsequent
-        /// pages from an earlier request, is not guaranteed to be stable across
-        /// multiple invocations of `GetTree`.
-        ///
-        /// If part of the tree is missing from the CAS, the server will return the
-        /// portion present and omit the rest.
-        ///
-        /// Errors:
-        ///
-        /// * `NOT_FOUND`: The requested tree root is not present in the CAS.
-        pub async fn get_tree(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetTreeRequest>,
-        ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::GetTreeResponse>>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
-                        "GetTree",
-                    ),
-                );
-            self.inner.server_streaming(req, path, codec).await
-        }
-    }
-}
-/// Generated client implementations.
-pub mod capabilities_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// The Capabilities service may be used by remote execution clients to query
-    /// various server properties, in order to self-configure or return meaningful
-    /// error messages.
-    ///
-    /// The query may include a particular `instance_name`, in which case the values
-    /// returned will pertain to that instance.
-    #[derive(Debug, Clone)]
-    pub struct CapabilitiesClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl<T> CapabilitiesClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> CapabilitiesClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            CapabilitiesClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// GetCapabilities returns the server capabilities configuration of the
-        /// remote endpoint.
-        /// Only the capabilities of the services supported by the endpoint will
-        /// be returned:
-        /// * Execution + CAS + Action Cache endpoints should return both
-        ///   CacheCapabilities and ExecutionCapabilities.
-        /// * Execution only endpoints should return ExecutionCapabilities.
-        /// * CAS + Action Cache only endpoints should return CacheCapabilities.
-        ///
-        /// There are no method-specific errors.
-        pub async fn get_capabilities(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetCapabilitiesRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::ServerCapabilities>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "build.bazel.remote.execution.v2.Capabilities",
-                        "GetCapabilities",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
         }
     }
 }
@@ -2962,7 +2601,7 @@ pub mod execution_server {
         /// server MAY choose to stream additional updates as execution progresses,
         /// such as to provide an update as to the state of the execution.
         ///
-        /// In addition to the cases describe for Execute, the WaitExecution method
+        /// In addition to the cases described for Execute, the WaitExecution method
         /// may fail as follows:
         ///
         /// * `NOT_FOUND`: The operation no longer exists due to any of a transient
@@ -3092,7 +2731,7 @@ pub mod execution_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExecuteSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3138,7 +2777,7 @@ pub mod execution_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = WaitExecutionSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3193,6 +2832,187 @@ pub mod execution_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// Generated client implementations.
+pub mod action_cache_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The action cache API is used to query whether a given action has already been
+    /// performed and, if so, retrieve its result. Unlike the
+    /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage],
+    /// which addresses blobs by their own content, the action cache addresses the
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] by a
+    /// digest of the encoded [Action][build.bazel.remote.execution.v2.Action]
+    /// which produced them.
+    ///
+    /// The lifetime of entries in the action cache is implementation-specific, but
+    /// the server SHOULD assume that more recently used entries are more likely to
+    /// be used again.
+    ///
+    /// As with other services in the Remote Execution API, any call may return an
+    /// error with a [RetryInfo][google.rpc.RetryInfo] error detail providing
+    /// information about when the client should retry the request; clients SHOULD
+    /// respect the information provided.
+    #[derive(Debug, Clone)]
+    pub struct ActionCacheClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl<T> ActionCacheClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ActionCacheClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ActionCacheClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Retrieve a cached execution result.
+        ///
+        /// Implementations SHOULD ensure that any blobs referenced from the
+        /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
+        /// are available at the time of returning the
+        /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] and will be
+        /// for some period of time afterwards. The lifetimes of the referenced blobs SHOULD be increased
+        /// if necessary and applicable.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: The requested `ActionResult` is not in the cache.
+        pub async fn get_action_result(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetActionResultRequest>,
+        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ActionCache/GetActionResult",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ActionCache",
+                        "GetActionResult",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Upload a new execution result.
+        ///
+        /// In order to allow the server to perform access control based on the type of
+        /// action, and to assist with client debugging, the client MUST first upload
+        /// the [Action][build.bazel.remote.execution.v2.Action] that produced the
+        /// result, along with its
+        /// [Command][build.bazel.remote.execution.v2.Command], into the
+        /// `ContentAddressableStorage`.
+        ///
+        /// Server implementations MAY modify the
+        /// `UpdateActionResultRequest.action_result` and return an equivalent value.
+        ///
+        /// Errors:
+        ///
+        /// * `INVALID_ARGUMENT`: One or more arguments are invalid.
+        /// * `FAILED_PRECONDITION`: One or more errors occurred in updating the
+        ///   action result, such as a missing command or action.
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient storage space to add the
+        ///   entry to the cache.
+        pub async fn update_action_result(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateActionResultRequest>,
+        ) -> std::result::Result<tonic::Response<super::ActionResult>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ActionCache/UpdateActionResult",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ActionCache",
+                        "UpdateActionResult",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
 /// Generated server implementations.
 pub mod action_cache_server {
     #![allow(
@@ -3226,7 +3046,7 @@ pub mod action_cache_server {
         ///
         /// In order to allow the server to perform access control based on the type of
         /// action, and to assist with client debugging, the client MUST first upload
-        /// the [Action][build.bazel.remote.execution.v2.Execution] that produced the
+        /// the [Action][build.bazel.remote.execution.v2.Action] that produced the
         /// result, along with its
         /// [Command][build.bazel.remote.execution.v2.Command], into the
         /// `ContentAddressableStorage`.
@@ -3368,7 +3188,7 @@ pub mod action_cache_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetActionResultSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3414,7 +3234,7 @@ pub mod action_cache_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UpdateActionResultSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3469,6 +3289,603 @@ pub mod action_cache_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// Generated client implementations.
+pub mod content_addressable_storage_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The CAS (content-addressable storage) is used to store the inputs to and
+    /// outputs from the execution service. Each piece of content is addressed by the
+    /// digest of its binary data.
+    ///
+    /// Most of the binary data stored in the CAS is opaque to the execution engine,
+    /// and is only used as a communication medium. In order to build an
+    /// [Action][build.bazel.remote.execution.v2.Action],
+    /// however, the client will need to also upload the
+    /// [Command][build.bazel.remote.execution.v2.Command] and input root
+    /// [Directory][build.bazel.remote.execution.v2.Directory] for the Action.
+    /// The Command and Directory messages must be marshalled to wire format and then
+    /// uploaded under the hash as with any other piece of content. In practice, the
+    /// input root directory is likely to refer to other Directories in its
+    /// hierarchy, which must also each be uploaded on their own.
+    ///
+    /// For small file uploads the client should group them together and call
+    /// [BatchUpdateBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchUpdateBlobs].
+    ///
+    /// For large uploads, the client must use the
+    /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API.
+    ///
+    /// For uncompressed data, the `WriteRequest.resource_name` is of the following form:
+    /// `{instance_name}/uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name` is an identifier used to distinguish between the various
+    ///   instances on the server. Syntax and semantics of this field are defined
+    ///   by the server; Clients must not make any assumptions about it (e.g.,
+    ///   whether it spans multiple path segments or not). If it is the empty path,
+    ///   the leading slash is omitted, so that the `resource_name` becomes
+    ///   `uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`.
+    ///   To simplify parsing, a path segment cannot equal any of the following
+    ///   keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations`,
+    ///   `capabilities` or `compressed-blobs`.
+    /// * `uuid` is a version 4 UUID generated by the client, used to avoid
+    ///   collisions between concurrent uploads of the same data. Clients MAY
+    ///   reuse the same `uuid` for uploading different blobs.
+    /// * `digest_function` is a lowercase string form of a `DigestFunction.Value`
+    ///   enum, indicating which digest function was used to compute `hash`. If the
+    ///   digest function used is one of MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512,
+    ///   or VSO, this component MUST be omitted. In that case the server SHOULD
+    ///   infer the digest function using the length of the `hash` and the digest
+    ///   functions announced in the server's capabilities.
+    /// * `hash` and `size` refer to the [Digest][build.bazel.remote.execution.v2.Digest]
+    ///   of the data being uploaded.
+    /// * `optional_metadata` is implementation specific data, which clients MAY omit.
+    ///   Servers MAY ignore this metadata.
+    ///
+    /// Data can alternatively be uploaded in compressed form, with the following
+    /// `WriteRequest.resource_name` form:
+    /// `{instance_name}/uploads/{uuid}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}{/optional_metadata}`
+    ///
+    /// Where:
+    /// * `instance_name`, `uuid`, `digest_function` and `optional_metadata` are
+    ///   defined as above.
+    /// * `compressor` is a lowercase string form of a `Compressor.Value` enum
+    ///   other than `identity`, which is supported by the server and advertised in
+    ///   [CacheCapabilities.supported_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressors].
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   uploaded, once uncompressed. Servers MUST verify that these match
+    ///   the uploaded data once uncompressed, and MUST return an
+    ///   `INVALID_ARGUMENT` error in the case of mismatch.
+    ///
+    /// Note that when writing compressed blobs, the `WriteRequest.write_offset` in
+    /// the initial request in a stream refers to the offset in the uncompressed form
+    /// of the blob. In subsequent requests, `WriteRequest.write_offset` MUST be the
+    /// sum of the first request's 'WriteRequest.write_offset' and the total size of
+    /// all the compressed data bundles in the previous requests.
+    /// Note that this mixes an uncompressed offset with a compressed byte length,
+    /// which is nonsensical, but it is done to fit the semantics of the existing
+    /// ByteStream protocol.
+    ///
+    /// Uploads of the same data MAY occur concurrently in any form, compressed or
+    /// uncompressed.
+    ///
+    /// Clients SHOULD NOT use gRPC-level compression for ByteStream API `Write`
+    /// calls of compressed blobs, since this would compress already-compressed data.
+    ///
+    /// When attempting an upload, if another client has already completed the upload
+    /// (which may occur in the middle of a single upload if another client uploads
+    /// the same blob concurrently), the request will terminate immediately without
+    /// error, and with a response whose `committed_size` is the value `-1` if this
+    /// is a compressed upload, or with the full size of the uploaded file if this is
+    /// an uncompressed upload (regardless of how much data was transmitted by the
+    /// client). If the client completes the upload but the
+    /// [Digest][build.bazel.remote.execution.v2.Digest] does not match, an
+    /// `INVALID_ARGUMENT` error will be returned. In either case, the client should
+    /// not attempt to retry the upload.
+    ///
+    /// Small downloads can be grouped and requested in a batch via
+    /// [BatchReadBlobs][build.bazel.remote.execution.v2.ContentAddressableStorage.BatchReadBlobs].
+    ///
+    /// For large downloads, the client must use the
+    /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API.
+    ///
+    /// For uncompressed data, the `ReadRequest.resource_name` is of the following form:
+    /// `{instance_name}/blobs/{digest_function/}{hash}/{size}`
+    /// Where `instance_name`, `digest_function`, `hash` and `size` are defined as
+    /// for uploads.
+    ///
+    /// Data can alternatively be downloaded in compressed form, with the following
+    /// `ReadRequest.resource_name` form:
+    /// `{instance_name}/compressed-blobs/{compressor}/{digest_function/}{uncompressed_hash}/{uncompressed_size}`
+    ///
+    /// Where:
+    /// * `instance_name`, `compressor` and `digest_function` are defined as for
+    ///   uploads.
+    /// * `uncompressed_hash` and `uncompressed_size` refer to the
+    ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
+    ///   downloaded, once uncompressed. Clients MUST verify that these match
+    ///   the downloaded data once uncompressed, and take appropriate steps in
+    ///   the case of failure such as retrying a limited number of times or
+    ///   surfacing an error to the user.
+    ///
+    /// When downloading compressed blobs:
+    /// * `ReadRequest.read_offset` refers to the offset in the uncompressed form
+    ///   of the blob.
+    /// * Servers MUST return `INVALID_ARGUMENT` if `ReadRequest.read_limit` is
+    ///   non-zero.
+    /// * Servers MAY use any compression level they choose, including different
+    ///   levels for different blobs (e.g. choosing a level designed for maximum
+    ///   speed for data known to be incompressible).
+    /// * Clients SHOULD NOT use gRPC-level compression, since this would compress
+    ///   already-compressed data.
+    ///
+    /// Servers MUST be able to provide data for all recently advertised blobs in
+    /// each of the compression formats that the server supports, as well as in
+    /// uncompressed form.
+    ///
+    /// Additionally, ByteStream requests MAY come with an additional plain text header
+    /// that indicates the `resource_name` of the blob being sent.  The header, if
+    /// present, MUST follow the following convention:
+    /// * name: `build.bazel.remote.execution.v2.resource-name`.
+    /// * contents: the plain text resource_name of the request message.
+    /// If set, the contents of the header MUST match the `resource_name` of the request
+    /// message.  Servers MAY use this header to assist in routing requests to the
+    /// appropriate backend.
+    ///
+    /// The lifetime of entries in the CAS is implementation specific, but it SHOULD
+    /// be long enough to allow for newly-added and recently looked-up entries to be
+    /// used in subsequent calls (e.g. to
+    /// [Execute][build.bazel.remote.execution.v2.Execution.Execute]).
+    ///
+    /// Servers MUST behave as though empty blobs are always available, even if they
+    /// have not been uploaded. Clients MAY optimize away the uploading or
+    /// downloading of empty blobs.
+    ///
+    /// As with other services in the Remote Execution API, any call may return an
+    /// error with a [RetryInfo][google.rpc.RetryInfo] error detail providing
+    /// information about when the client should retry the request; clients SHOULD
+    /// respect the information provided.
+    #[derive(Debug, Clone)]
+    pub struct ContentAddressableStorageClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl<T> ContentAddressableStorageClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ContentAddressableStorageClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ContentAddressableStorageClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Determine if blobs are present in the CAS.
+        ///
+        /// Clients can use this API before uploading blobs to determine which ones are
+        /// already present in the CAS and do not need to be uploaded again.
+        ///
+        /// Servers SHOULD increase the lifetimes of the referenced blobs if necessary and
+        /// applicable.
+        ///
+        /// There are no method-specific errors.
+        pub async fn find_missing_blobs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FindMissingBlobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::FindMissingBlobsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "FindMissingBlobs",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Upload many blobs at once.
+        ///
+        /// The server may enforce a limit of the combined total size of blobs
+        /// to be uploaded using this API. This limit may be obtained using the
+        /// [Capabilities][build.bazel.remote.execution.v2.Capabilities] API.
+        /// Requests exceeding the limit should either be split into smaller
+        /// chunks or uploaded using the
+        /// [ByteStream API][google.bytestream.ByteStream], as appropriate.
+        ///
+        /// This request is equivalent to calling a Bytestream `Write` request
+        /// on each individual blob, in parallel. The requests may succeed or fail
+        /// independently.
+        ///
+        /// Errors:
+        ///
+        /// * `INVALID_ARGUMENT`: The client attempted to upload more than the
+        ///   server supported limit.
+        ///
+        /// Individual requests may return the following errors, additionally:
+        ///
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
+        /// * `INVALID_ARGUMENT`: The
+        /// [Digest][build.bazel.remote.execution.v2.Digest] does not match the
+        /// provided data.
+        pub async fn batch_update_blobs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchUpdateBlobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchUpdateBlobsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "BatchUpdateBlobs",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Download many blobs at once.
+        ///
+        /// The server may enforce a limit of the combined total size of blobs
+        /// to be downloaded using this API. This limit may be obtained using the
+        /// [Capabilities][build.bazel.remote.execution.v2.Capabilities] API.
+        /// Requests exceeding the limit should either be split into smaller
+        /// chunks or downloaded using the
+        /// [ByteStream API][google.bytestream.ByteStream], as appropriate.
+        ///
+        /// This request is equivalent to calling a Bytestream `Read` request
+        /// on each individual blob, in parallel. The requests may succeed or fail
+        /// independently.
+        ///
+        /// Errors:
+        ///
+        /// * `INVALID_ARGUMENT`: The client attempted to read more than the
+        ///   server supported limit.
+        ///
+        /// Every error on individual read will be returned in the corresponding digest
+        /// status.
+        pub async fn batch_read_blobs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchReadBlobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchReadBlobsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchReadBlobs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "BatchReadBlobs",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Fetch the entire directory tree rooted at a node.
+        ///
+        /// This request must be targeted at a
+        /// [Directory][build.bazel.remote.execution.v2.Directory] stored in the
+        /// [ContentAddressableStorage][build.bazel.remote.execution.v2.ContentAddressableStorage]
+        /// (CAS). The server will enumerate the `Directory` tree recursively and
+        /// return every node descended from the root.
+        ///
+        /// The GetTreeRequest.page_token parameter can be used to skip ahead in
+        /// the stream (e.g. when retrying a partially completed and aborted request),
+        /// by setting it to a value taken from GetTreeResponse.next_page_token of the
+        /// last successfully processed GetTreeResponse).
+        ///
+        /// The exact traversal order is unspecified and, unless retrieving subsequent
+        /// pages from an earlier request, is not guaranteed to be stable across
+        /// multiple invocations of `GetTree`.
+        ///
+        /// If part of the tree is missing from the CAS, the server will return the
+        /// portion present and omit the rest.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: The requested tree root is not present in the CAS.
+        pub async fn get_tree(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetTreeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::GetTreeResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "GetTree",
+                    ),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
+        /// SplitBlob retrieves information about how a blob is split into chunks.
+        ///
+        /// This call returns information about how a blob is split into chunks, and
+        /// returns a list of the chunk digests. Using the returned list of chunk digests,
+        /// a client can check which chunks are locally available and only fetch the
+        /// missing ones. The desired blob can be assembled by concatenating the fetched
+        /// chunks in the order of the digests in the list. The chunks SHOULD all be
+        /// available in the CAS.
+        ///
+        /// This API can be used to reduce the required data to download a large blob
+        /// from CAS if some chunks from similar blobs are locally available. For this
+        /// procedure to work properly, blobs SHOULD be split in a content-defined way,
+        /// rather than with fixed-sized chunking.
+        ///
+        /// If a split request is answered successfully, a client can expect the
+        /// following guarantees from the server:
+        ///  1. The blob chunks are stored in CAS.
+        ///  2. Concatenating the blob chunks in the order of the digest list returned
+        ///     by the server results in the original blob.
+        ///
+        /// Servers which implement this functionality MUST declare that they support
+        /// it by setting the
+        /// [CacheCapabilities.split_blob_support][build.bazel.remote.execution.v2.CacheCapabilities.split_blob_support]
+        /// field accordingly.
+        ///
+        /// Clients MUST check that the server supports this capability, before using
+        /// it.
+        ///
+        /// Clients SHOULD verify that the digest of the blob assembled by the fetched
+        /// chunks is equal to the requested blob digest.
+        ///
+        /// The lifetimes of the generated chunk blobs MAY be independent of the
+        /// lifetime of the original blob. In particular:
+        ///  * A blob and any chunk derived from it MAY be evicted from the CAS at
+        ///    different times.
+        ///  * A call to [SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        ///    extends the lifetime of the original blob, and sets the lifetimes of
+        ///    the resulting chunks (or extends the lifetimes of already-existing
+        ///    chunks).
+        ///  * Touching a chunk extends its lifetime, but the server MAY choose not
+        ///    to extend the lifetime of the original blob.
+        ///  * Touching the original blob extends its lifetime, but the server MAY
+        ///    choose not to extend the lifetimes of chunks derived from it.
+        ///
+        /// When blob splitting and splicing is used at the same time, the clients and
+        /// the server SHOULD agree out-of-band upon a chunking algorithm used by both
+        /// parties to benefit from each other's chunk data and avoid unnecessary data
+        /// duplication.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: The requested blob is not present in the CAS, OR there is no
+        ///   split information available for the blob, OR at least one chunk needed to
+        ///   reconstruct the blob is missing from the CAS.
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob
+        ///   chunks.
+        pub async fn split_blob(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SplitBlobRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SplitBlobResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/SplitBlob",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "SplitBlob",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// SpliceBlob tells the CAS how chunks can compose a blob.
+        ///
+        /// This is the complementary operation to the
+        /// [ContentAddressableStorage.SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        /// function to handle the chunked upload of large blobs to save upload
+        /// traffic.
+        ///
+        /// When uploading a large blob using chunked upload, clients MUST first upload
+        /// all chunks to the CAS, then call this RPC to tell the server how those chunks
+        /// compose the original blob. The chunks referenced in the SpliceBlob call SHOULD be
+        /// available in the CAS before calling this RPC.
+        ///
+        /// If a client needs to upload a large blob and is able to split a blob into
+        /// chunks in such a way that reusable chunks are obtained, e.g., by means of
+        /// content-defined chunking, it can first determine which parts of the blob
+        /// are already available in the remote CAS and upload the missing chunks, and
+        /// then use this API to store information on how the chunks compose the
+        /// original blob.
+        ///
+        /// Servers which implement this functionality MUST declare that they support
+        /// it by setting the
+        /// [CacheCapabilities.splice_blob_support][build.bazel.remote.execution.v2.CacheCapabilities.splice_blob_support]
+        /// field accordingly.
+        ///
+        /// Clients MUST check that the server supports this capability, before using
+        /// it.
+        ///
+        /// In order to ensure data consistency of the CAS, the server MUST only add
+        /// blobs to the CAS after verifying their digests. In particular, servers MUST NOT
+        /// trust digests provided by the client. The server MAY accept a request as no-op
+        /// if the client-specified blob is already in CAS or if information on how to
+        /// construct the blob from chunks is available. If the client-specified blob is
+        /// not already in the CAS, the server MUST verify that the digest of the newly
+        /// created blob assembled from chunks matches the digest specified by the
+        /// client, and reject the request if they differ. Servers MAY choose to allow
+        /// overwriting existing chunk mappings or to store multiple chunk mappings for
+        /// the same blob.
+        ///
+        /// When blob splitting and splicing is used at the same time, the clients and
+        /// the server SHOULD agree out-of-band upon a chunking algorithm used by both
+        /// parties to benefit from each other's chunk data and avoid unnecessary data
+        /// duplication.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: At least one of the blob chunks is not present in the CAS.
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the
+        ///   spliced blob.
+        /// * `INVALID_ARGUMENT`: The digest of the spliced blob is different from the
+        ///   provided expected digest.
+        /// * `ALREADY_EXISTS`: The blob already exists in CAS and the server did not
+        ///   extend the lifetime of the chunks specified in the request, e.g. because
+        ///   it prefers a different chunking and extended those instead. Clients can
+        ///   call [SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        ///   to check what chunk mapping the server is using.
+        pub async fn splice_blob(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SpliceBlobRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SpliceBlobResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/SpliceBlob",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.ContentAddressableStorage",
+                        "SpliceBlob",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
 /// Generated server implementations.
 pub mod content_addressable_storage_server {
     #![allow(
@@ -3519,8 +3936,9 @@ pub mod content_addressable_storage_server {
         /// Individual requests may return the following errors, additionally:
         ///
         /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob.
-        /// * `INVALID_ARGUMENT`: The [Digest][build.bazel.remote.execution.v2.Digest]
-        ///   does not match the provided data.
+        /// * `INVALID_ARGUMENT`: The
+        /// [Digest][build.bazel.remote.execution.v2.Digest] does not match the
+        /// provided data.
         async fn batch_update_blobs(
             &self,
             request: tonic::Request<super::BatchUpdateBlobsRequest>,
@@ -3588,6 +4006,131 @@ pub mod content_addressable_storage_server {
             &self,
             request: tonic::Request<super::GetTreeRequest>,
         ) -> std::result::Result<tonic::Response<Self::GetTreeStream>, tonic::Status>;
+        /// SplitBlob retrieves information about how a blob is split into chunks.
+        ///
+        /// This call returns information about how a blob is split into chunks, and
+        /// returns a list of the chunk digests. Using the returned list of chunk digests,
+        /// a client can check which chunks are locally available and only fetch the
+        /// missing ones. The desired blob can be assembled by concatenating the fetched
+        /// chunks in the order of the digests in the list. The chunks SHOULD all be
+        /// available in the CAS.
+        ///
+        /// This API can be used to reduce the required data to download a large blob
+        /// from CAS if some chunks from similar blobs are locally available. For this
+        /// procedure to work properly, blobs SHOULD be split in a content-defined way,
+        /// rather than with fixed-sized chunking.
+        ///
+        /// If a split request is answered successfully, a client can expect the
+        /// following guarantees from the server:
+        ///  1. The blob chunks are stored in CAS.
+        ///  2. Concatenating the blob chunks in the order of the digest list returned
+        ///     by the server results in the original blob.
+        ///
+        /// Servers which implement this functionality MUST declare that they support
+        /// it by setting the
+        /// [CacheCapabilities.split_blob_support][build.bazel.remote.execution.v2.CacheCapabilities.split_blob_support]
+        /// field accordingly.
+        ///
+        /// Clients MUST check that the server supports this capability, before using
+        /// it.
+        ///
+        /// Clients SHOULD verify that the digest of the blob assembled by the fetched
+        /// chunks is equal to the requested blob digest.
+        ///
+        /// The lifetimes of the generated chunk blobs MAY be independent of the
+        /// lifetime of the original blob. In particular:
+        ///  * A blob and any chunk derived from it MAY be evicted from the CAS at
+        ///    different times.
+        ///  * A call to [SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        ///    extends the lifetime of the original blob, and sets the lifetimes of
+        ///    the resulting chunks (or extends the lifetimes of already-existing
+        ///    chunks).
+        ///  * Touching a chunk extends its lifetime, but the server MAY choose not
+        ///    to extend the lifetime of the original blob.
+        ///  * Touching the original blob extends its lifetime, but the server MAY
+        ///    choose not to extend the lifetimes of chunks derived from it.
+        ///
+        /// When blob splitting and splicing is used at the same time, the clients and
+        /// the server SHOULD agree out-of-band upon a chunking algorithm used by both
+        /// parties to benefit from each other's chunk data and avoid unnecessary data
+        /// duplication.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: The requested blob is not present in the CAS, OR there is no
+        ///   split information available for the blob, OR at least one chunk needed to
+        ///   reconstruct the blob is missing from the CAS.
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the blob
+        ///   chunks.
+        async fn split_blob(
+            &self,
+            request: tonic::Request<super::SplitBlobRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SplitBlobResponse>,
+            tonic::Status,
+        >;
+        /// SpliceBlob tells the CAS how chunks can compose a blob.
+        ///
+        /// This is the complementary operation to the
+        /// [ContentAddressableStorage.SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        /// function to handle the chunked upload of large blobs to save upload
+        /// traffic.
+        ///
+        /// When uploading a large blob using chunked upload, clients MUST first upload
+        /// all chunks to the CAS, then call this RPC to tell the server how those chunks
+        /// compose the original blob. The chunks referenced in the SpliceBlob call SHOULD be
+        /// available in the CAS before calling this RPC.
+        ///
+        /// If a client needs to upload a large blob and is able to split a blob into
+        /// chunks in such a way that reusable chunks are obtained, e.g., by means of
+        /// content-defined chunking, it can first determine which parts of the blob
+        /// are already available in the remote CAS and upload the missing chunks, and
+        /// then use this API to store information on how the chunks compose the
+        /// original blob.
+        ///
+        /// Servers which implement this functionality MUST declare that they support
+        /// it by setting the
+        /// [CacheCapabilities.splice_blob_support][build.bazel.remote.execution.v2.CacheCapabilities.splice_blob_support]
+        /// field accordingly.
+        ///
+        /// Clients MUST check that the server supports this capability, before using
+        /// it.
+        ///
+        /// In order to ensure data consistency of the CAS, the server MUST only add
+        /// blobs to the CAS after verifying their digests. In particular, servers MUST NOT
+        /// trust digests provided by the client. The server MAY accept a request as no-op
+        /// if the client-specified blob is already in CAS or if information on how to
+        /// construct the blob from chunks is available. If the client-specified blob is
+        /// not already in the CAS, the server MUST verify that the digest of the newly
+        /// created blob assembled from chunks matches the digest specified by the
+        /// client, and reject the request if they differ. Servers MAY choose to allow
+        /// overwriting existing chunk mappings or to store multiple chunk mappings for
+        /// the same blob.
+        ///
+        /// When blob splitting and splicing is used at the same time, the clients and
+        /// the server SHOULD agree out-of-band upon a chunking algorithm used by both
+        /// parties to benefit from each other's chunk data and avoid unnecessary data
+        /// duplication.
+        ///
+        /// Errors:
+        ///
+        /// * `NOT_FOUND`: At least one of the blob chunks is not present in the CAS.
+        /// * `RESOURCE_EXHAUSTED`: There is insufficient disk quota to store the
+        ///   spliced blob.
+        /// * `INVALID_ARGUMENT`: The digest of the spliced blob is different from the
+        ///   provided expected digest.
+        /// * `ALREADY_EXISTS`: The blob already exists in CAS and the server did not
+        ///   extend the lifetime of the chunks specified in the request, e.g. because
+        ///   it prefers a different chunking and extended those instead. Clients can
+        ///   call [SplitBlob][build.bazel.remote.execution.v2.ContentAddressableStorage.SplitBlob]
+        ///   to check what chunk mapping the server is using.
+        async fn splice_blob(
+            &self,
+            request: tonic::Request<super::SpliceBlobRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SpliceBlobResponse>,
+            tonic::Status,
+        >;
     }
     /// The CAS (content-addressable storage) is used to store the inputs to and
     /// outputs from the execution service. Each piece of content is addressed by the
@@ -3610,7 +4153,7 @@ pub mod content_addressable_storage_server {
     /// For large uploads, the client must use the
     /// [Write method][google.bytestream.ByteStream.Write] of the ByteStream API.
     ///
-    /// For uncompressed data, The `WriteRequest.resource_name` is of the following form:
+    /// For uncompressed data, the `WriteRequest.resource_name` is of the following form:
     /// `{instance_name}/uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`
     ///
     /// Where:
@@ -3618,7 +4161,7 @@ pub mod content_addressable_storage_server {
     ///   instances on the server. Syntax and semantics of this field are defined
     ///   by the server; Clients must not make any assumptions about it (e.g.,
     ///   whether it spans multiple path segments or not). If it is the empty path,
-    ///   the leading slash is omitted, so that  the `resource_name` becomes
+    ///   the leading slash is omitted, so that the `resource_name` becomes
     ///   `uploads/{uuid}/blobs/{digest_function/}{hash}/{size}{/optional_metadata}`.
     ///   To simplify parsing, a path segment cannot equal any of the following
     ///   keywords: `blobs`, `uploads`, `actions`, `actionResults`, `operations`,
@@ -3646,7 +4189,7 @@ pub mod content_addressable_storage_server {
     ///   defined as above.
     /// * `compressor` is a lowercase string form of a `Compressor.Value` enum
     ///   other than `identity`, which is supported by the server and advertised in
-    ///   [CacheCapabilities.supported_compressor][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressor].
+    ///   [CacheCapabilities.supported_compressors][build.bazel.remote.execution.v2.CacheCapabilities.supported_compressors].
     /// * `uncompressed_hash` and `uncompressed_size` refer to the
     ///   [Digest][build.bazel.remote.execution.v2.Digest] of the data being
     ///   uploaded, once uncompressed. Servers MUST verify that these match
@@ -3685,7 +4228,7 @@ pub mod content_addressable_storage_server {
     /// For large downloads, the client must use the
     /// [Read method][google.bytestream.ByteStream.Read] of the ByteStream API.
     ///
-    /// For uncompressed data, The `ReadRequest.resource_name` is of the following form:
+    /// For uncompressed data, the `ReadRequest.resource_name` is of the following form:
     /// `{instance_name}/blobs/{digest_function/}{hash}/{size}`
     /// Where `instance_name`, `digest_function`, `hash` and `size` are defined as
     /// for uploads.
@@ -3718,6 +4261,15 @@ pub mod content_addressable_storage_server {
     /// Servers MUST be able to provide data for all recently advertised blobs in
     /// each of the compression formats that the server supports, as well as in
     /// uncompressed form.
+    ///
+    /// Additionally, ByteStream requests MAY come with an additional plain text header
+    /// that indicates the `resource_name` of the blob being sent.  The header, if
+    /// present, MUST follow the following convention:
+    /// * name: `build.bazel.remote.execution.v2.resource-name`.
+    /// * contents: the plain text resource_name of the request message.
+    /// If set, the contents of the header MUST match the `resource_name` of the request
+    /// message.  Servers MAY use this header to assist in routing requests to the
+    /// appropriate backend.
     ///
     /// The lifetime of entries in the CAS is implementation specific, but it SHOULD
     /// be long enough to allow for newly-added and recently looked-up entries to be
@@ -3843,7 +4395,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = FindMissingBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3892,7 +4444,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BatchUpdateBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3941,7 +4493,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BatchReadBlobsSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3988,7 +4540,7 @@ pub mod content_addressable_storage_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetTreeSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -3999,6 +4551,104 @@ pub mod content_addressable_storage_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/SplitBlob" => {
+                    #[allow(non_camel_case_types)]
+                    struct SplitBlobSvc<T: ContentAddressableStorage>(pub Arc<T>);
+                    impl<
+                        T: ContentAddressableStorage,
+                    > tonic::server::UnaryService<super::SplitBlobRequest>
+                    for SplitBlobSvc<T> {
+                        type Response = super::SplitBlobResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SplitBlobRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ContentAddressableStorage>::split_blob(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SplitBlobSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/build.bazel.remote.execution.v2.ContentAddressableStorage/SpliceBlob" => {
+                    #[allow(non_camel_case_types)]
+                    struct SpliceBlobSvc<T: ContentAddressableStorage>(pub Arc<T>);
+                    impl<
+                        T: ContentAddressableStorage,
+                    > tonic::server::UnaryService<super::SpliceBlobRequest>
+                    for SpliceBlobSvc<T> {
+                        type Response = super::SpliceBlobResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SpliceBlobRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ContentAddressableStorage>::splice_blob(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SpliceBlobSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
@@ -4041,6 +4691,133 @@ pub mod content_addressable_storage_server {
     pub const SERVICE_NAME: &str = "build.bazel.remote.execution.v2.ContentAddressableStorage";
     impl<T> tonic::server::NamedService for ContentAddressableStorageServer<T> {
         const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Generated client implementations.
+pub mod capabilities_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The Capabilities service may be used by remote execution clients to query
+    /// various server properties, in order to self-configure or return meaningful
+    /// error messages.
+    ///
+    /// The query may include a particular `instance_name`, in which case the values
+    /// returned will pertain to that instance.
+    #[derive(Debug, Clone)]
+    pub struct CapabilitiesClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl<T> CapabilitiesClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> CapabilitiesClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            CapabilitiesClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// GetCapabilities returns the server capabilities configuration of the
+        /// remote endpoint.
+        /// Only the capabilities of the services supported by the endpoint will
+        /// be returned:
+        /// * Execution + CAS + Action Cache endpoints should return both
+        ///   CacheCapabilities and ExecutionCapabilities.
+        /// * Execution only endpoints should return ExecutionCapabilities.
+        /// * CAS + Action Cache only endpoints should return CacheCapabilities.
+        ///
+        /// There are no method-specific errors.
+        pub async fn get_capabilities(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetCapabilitiesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ServerCapabilities>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "build.bazel.remote.execution.v2.Capabilities",
+                        "GetCapabilities",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -4186,7 +4963,7 @@ pub mod capabilities_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetCapabilitiesSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,

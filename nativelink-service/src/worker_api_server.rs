@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ use core::convert::Into;
 use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,9 +29,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    execute_declined, execute_result, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
-use nativelink_scheduler::worker::Worker;
+use nativelink_scheduler::worker::{Worker, WorkerIdChosenBy};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::background_spawn;
 use nativelink_util::action_messages::{OperationId, WorkerId};
@@ -48,10 +49,22 @@ pub type ConnectWorkerStream =
 
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
+/// Makes the unique part of a new worker's id.
+pub type WorkerIdFn = Box<dyn Fn() -> String + Send + Sync>;
+
+/// How often workers are told to kill operations the scheduler no longer
+/// has executing on them, unless overridden by
+/// `kill_revoked_operations_interval_s` in the worker API config.
+const DEFAULT_KILL_REVOKED_OPERATIONS_INTERVAL_S: u64 = 5;
+
 pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     node_id: [u8; 6],
+    worker_id_fn: Option<WorkerIdFn>,
+    /// Stamps each connection, so the end of a worker's earlier connection
+    /// can be told from its current one when it keeps its id.
+    next_connection: AtomicU64,
 }
 
 impl core::fmt::Debug for WorkerApiServer {
@@ -72,44 +85,75 @@ impl WorkerApiServer {
             rand::rng().fill_bytes(&mut out);
             out
         };
+        let now_fn: Arc<NowFn> = Arc::new(Box::new(move || {
+            SystemTime::now().duration_since(UNIX_EPOCH).map_err(|err| {
+                Error::from_std_err(Code::Internal, &err)
+                    .append("System time is now behind unix epoch")
+            })
+        }));
+        Self::spawn_timers(config, schedulers, &now_fn);
+        Self::with_shared_now_fn(config, schedulers, now_fn, node_id)
+    }
+
+    /// Starts the worker timeout and revoked-operation timers for every
+    /// scheduler, reading the time from `now_fn`. `new()` calls it; a server
+    /// built with `new_with_now_fn()` has no timers until this is called.
+    pub fn spawn_timers(
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        now_fn: &Arc<NowFn>,
+    ) {
+        let kill_revoked_enabled = !config.disable_kill_revoked_operations;
+        let kill_revoked_interval_s = if config.kill_revoked_operations_interval_s == 0 {
+            DEFAULT_KILL_REVOKED_OPERATIONS_INTERVAL_S
+        } else {
+            config.kill_revoked_operations_interval_s
+        };
         for scheduler in schedulers.values() {
             // This will protect us from holding a reference to the scheduler forever in the
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
             // eventually see the Arc went away and return.
             let weak_scheduler = Arc::downgrade(scheduler);
+            let now_fn = now_fn.clone();
             background_spawn!("worker_api_server", async move {
-                let mut ticker = interval(Duration::from_secs(1));
+                let mut timeout_ticker = interval(Duration::from_secs(1));
+                let mut kill_ticker = interval(Duration::from_secs(kill_revoked_interval_s));
                 loop {
-                    ticker.tick().await;
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Error: system time is now behind unix epoch");
-                    match weak_scheduler.upgrade() {
-                        Some(scheduler) => {
-                            if let Err(err) =
-                                scheduler.remove_timedout_workers(timestamp.as_secs()).await
-                            {
-                                error!(?err, "Failed to remove_timedout_workers",);
+                    tokio::select! {
+                        _ = timeout_ticker.tick() => {
+                            let timestamp = match now_fn() {
+                                Ok(timestamp) => timestamp,
+                                Err(err) => {
+                                    error!(?err, "Failed to read the time for remove_timedout_workers");
+                                    continue;
+                                }
+                            };
+                            match weak_scheduler.upgrade() {
+                                Some(scheduler) => {
+                                    if let Err(err) =
+                                        scheduler.remove_timedout_workers(timestamp.as_secs()).await
+                                    {
+                                        error!(?err, "Failed to remove_timedout_workers",);
+                                    }
+                                }
+                                // If we fail to upgrade, our service is probably destroyed, so return.
+                                None => return,
                             }
                         }
-                        // If we fail to upgrade, our service is probably destroyed, so return.
-                        None => return,
+                        _ = kill_ticker.tick(), if kill_revoked_enabled => {
+                            match weak_scheduler.upgrade() {
+                                Some(scheduler) => {
+                                    if let Err(err) = scheduler.kill_revoked_operations().await {
+                                        error!(?err, "Failed to kill_revoked_operations");
+                                    }
+                                }
+                                None => return,
+                            }
+                        }
                     }
                 }
             });
         }
-
-        Self::new_with_now_fn(
-            config,
-            schedulers,
-            Box::new(move || {
-                SystemTime::now().duration_since(UNIX_EPOCH).map_err(|err| {
-                    Error::from_std_err(Code::Internal, &err)
-                        .append("System time is now behind unix epoch")
-                })
-            }),
-            node_id,
-        )
     }
 
     /// Same as `new()`, but you can pass a custom `now_fn`, that returns a Duration since `UNIX_EPOCH`
@@ -118,6 +162,15 @@ impl WorkerApiServer {
         config: &WorkerApiConfig,
         schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
         now_fn: NowFn,
+        node_id: [u8; 6],
+    ) -> Result<Self, Error> {
+        Self::with_shared_now_fn(config, schedulers, Arc::new(now_fn), node_id)
+    }
+
+    fn with_shared_now_fn(
+        config: &WorkerApiConfig,
+        schedulers: &HashMap<String, Arc<dyn WorkerScheduler>>,
+        now_fn: Arc<NowFn>,
         node_id: [u8; 6],
     ) -> Result<Self, Error> {
         let scheduler = schedulers
@@ -131,9 +184,19 @@ impl WorkerApiServer {
             .clone();
         Ok(Self {
             scheduler,
-            now_fn: Arc::new(now_fn),
+            now_fn,
             node_id,
+            worker_id_fn: None,
+            next_connection: AtomicU64::new(1),
         })
+    }
+
+    /// Takes the unique part of each worker id from `worker_id_fn` instead
+    /// of a time-based UUID, for tests that need the same ids every run.
+    #[must_use]
+    pub fn with_worker_id_fn(mut self, worker_id_fn: WorkerIdFn) -> Self {
+        self.worker_id_fn = Some(worker_id_fn);
+        self
     }
 
     pub fn into_service(self) -> Server<Self> {
@@ -160,7 +223,9 @@ impl WorkerApiServer {
             ));
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(nativelink_scheduler::worker::channel_capacity(
+            connect_worker_request.max_inflight_tasks,
+        ));
 
         // First convert our proto platform properties into one our scheduler understands.
         let platform_properties = {
@@ -178,20 +243,38 @@ impl WorkerApiServer {
             platform_properties
         };
 
-        // Now register the worker with the scheduler.
+        // Now register the worker with the scheduler, under the id it chose
+        // when it chose one.
+        let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        let named = !connect_worker_request.worker_id.is_empty();
         let worker_id = {
-            let worker_id = WorkerId(format!(
-                "{}{}",
-                connect_worker_request.worker_id_prefix,
-                Uuid::now_v6(&self.node_id).hyphenated()
-            ));
-            let worker = Worker::new(
+            let worker_id = if named {
+                check_worker_id(&connect_worker_request.worker_id)?;
+                WorkerId(connect_worker_request.worker_id)
+            } else {
+                let unique = self.worker_id_fn.as_ref().map_or_else(
+                    || Uuid::now_v6(&self.node_id).hyphenated().to_string(),
+                    |worker_id_fn| worker_id_fn(),
+                );
+                WorkerId(format!(
+                    "{}{unique}",
+                    connect_worker_request.worker_id_prefix,
+                ))
+            };
+            let mut worker = Worker::new(
                 worker_id.clone(),
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),
                 connect_worker_request.max_inflight_tasks,
             );
+            worker.admits_when_idle = connect_worker_request.admits_when_idle;
+            worker.connection = connection;
+            worker.id_chosen_by = if named {
+                WorkerIdChosenBy::Worker
+            } else {
+                WorkerIdChosenBy::Scheduler
+            };
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -203,6 +286,7 @@ impl WorkerApiServer {
             self.scheduler.clone(),
             self.now_fn.clone(),
             worker_id.clone(),
+            connection,
             update_stream,
         );
 
@@ -256,10 +340,31 @@ impl WorkerApi for WorkerApiServer {
     }
 }
 
+/// The longest worker id a worker may choose.
+const MAX_WORKER_ID_LEN: usize = 256;
+
+/// A worker-chosen id goes into logs, metrics and store keys: it must be
+/// bounded and printable.
+fn check_worker_id(worker_id: &str) -> Result<(), Error> {
+    if worker_id.len() > MAX_WORKER_ID_LEN
+        || worker_id
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(make_err!(
+            Code::InvalidArgument,
+            "A worker id must be at most {MAX_WORKER_ID_LEN} bytes with no spaces or control characters"
+        ));
+    }
+    Ok(())
+}
+
 struct WorkerConnection {
     scheduler: Arc<dyn WorkerScheduler>,
     now_fn: Arc<NowFn>,
     worker_id: WorkerId,
+    /// The stamp the scheduler's entry for this connection carries.
+    connection: u64,
 }
 
 impl WorkerConnection {
@@ -267,28 +372,59 @@ impl WorkerConnection {
         scheduler: Arc<dyn WorkerScheduler>,
         now_fn: Arc<NowFn>,
         worker_id: WorkerId,
+        connection_stamp: u64,
         mut connection: impl Stream<Item = Result<UpdateForScheduler, Status>> + Unpin + Send + 'static,
     ) {
         let instance = Self {
             scheduler,
             now_fn,
             worker_id,
+            connection: connection_stamp,
         };
 
         background_spawn!("worker_api", async move {
-            let mut had_going_away = false;
-            while let Some(maybe_update) = connection.next().await {
-                let update = match maybe_update.map(|u| u.update) {
-                    Ok(Some(update)) => update,
-                    Ok(None) => {
-                        tracing::warn!(worker_id=?instance.worker_id, "Empty update");
-                        continue;
+            // The stream is read by a task of its own that only hands each
+            // message on; they are processed here, in order. Processing one
+            // inline in the reader (a result's store write, say) stopped the
+            // reads for its duration, and a worker that filled the stream's
+            // flow-control window in the meantime had nothing it was allowed
+            // to put on the wire: its keepalives waited behind the stall
+            // until this scheduler evicted it. The queue is unbounded on
+            // purpose: a worker's messages are bounded by its in-flight
+            // actions and its keepalive interval, and backpressure here is
+            // exactly the stall.
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let reader_worker_id = instance.worker_id.clone();
+            let reader_scheduler = instance.scheduler.clone();
+            let reader_now_fn = instance.now_fn.clone();
+            background_spawn!("worker_api_reader", async move {
+                while let Some(maybe_update) = connection.next().await {
+                    let update = match maybe_update.map(|u| u.update) {
+                        Ok(Some(update)) => update,
+                        Ok(None) => {
+                            tracing::warn!(worker_id=?reader_worker_id, "Empty update");
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(worker_id=?reader_worker_id, ?err, "Error from worker");
+                            break;
+                        }
+                    };
+                    // The worker is heard from now, whenever this message
+                    // gets processed: one queued behind a slow result must
+                    // not let the worker time out in the meantime.
+                    if let Ok(now) = reader_now_fn() {
+                        reader_scheduler
+                            .worker_message_received(&reader_worker_id, now.as_secs())
+                            .await;
                     }
-                    Err(err) => {
-                        tracing::warn!(worker_id=?instance.worker_id, ?err, "Error from worker");
+                    if tx.send(update).is_err() {
                         break;
                     }
-                };
+                }
+            });
+            let mut had_going_away = false;
+            while let Some(update) = rx.recv().await {
                 let result = match update {
                     Update::ConnectWorkerRequest(_connect_worker_request) => Err(make_err!(
                         Code::Internal,
@@ -299,7 +435,9 @@ impl WorkerConnection {
                         instance.inner_keep_alive(keep_alive_request).await
                     }
                     Update::GoingAwayRequest(going_away_request) => {
-                        had_going_away = true;
+                        // A drain keeps the worker until its stream closes,
+                        // so that close still has to remove it.
+                        had_going_away = !going_away_request.drain;
                         instance.inner_going_away(going_away_request).await
                     }
                     Update::ExecuteResult(execute_result) => {
@@ -308,6 +446,12 @@ impl WorkerConnection {
                     Update::ExecuteComplete(execute_complete) => {
                         instance.execution_complete(execute_complete).await
                     }
+                    Update::ExecuteAccepted(execute_accepted) => {
+                        instance.dispatch_accepted(execute_accepted).await
+                    }
+                    Update::ExecuteDeclined(execute_declined) => {
+                        instance.dispatch_declined(execute_declined).await
+                    }
                 };
                 if let Err(err) = result {
                     tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
@@ -315,20 +459,69 @@ impl WorkerConnection {
             }
             tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
             if !had_going_away {
-                drop(instance.scheduler.remove_worker(&instance.worker_id).await);
+                drop(
+                    instance
+                        .scheduler
+                        .worker_disconnected(&instance.worker_id, instance.connection)
+                        .await,
+                );
             }
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
+            .worker_keep_alive_received(
+                &self.worker_id,
+                (self.now_fn)()?.as_secs(),
+                keep_alive_request.load,
+            )
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
+        if let Some(running) = keep_alive_request.running_operations {
+            // The memory first: the running report can release an operation
+            // the worker left out, and a peak for it is then dropped anyway.
+            let peaks: Vec<(OperationId, u64)> = running
+                .memory
+                .into_iter()
+                .map(|memory| {
+                    (
+                        OperationId::from(memory.operation_id),
+                        memory.peak_memory_kb,
+                    )
+                })
+                .collect();
+            if !peaks.is_empty() {
+                self.scheduler
+                    .worker_operation_memory_reported(&self.worker_id, peaks)
+                    .await
+                    .err_tip(|| "Could not process the memory report in inner_keep_alive()")?;
+            }
+            self.scheduler
+                .worker_running_operations_reported(
+                    &self.worker_id,
+                    running
+                        .operation_ids
+                        .into_iter()
+                        .map(OperationId::from)
+                        .collect(),
+                )
+                .await
+                .err_tip(
+                    || "Could not process the running operations report in inner_keep_alive()",
+                )?;
+        }
         Ok(())
     }
 
-    async fn inner_going_away(&self, _going_away_request: GoingAwayRequest) -> Result<(), Error> {
+    async fn inner_going_away(&self, going_away_request: GoingAwayRequest) -> Result<(), Error> {
+        if going_away_request.drain {
+            self.scheduler
+                .set_drain_worker(&self.worker_id, true)
+                .await
+                .err_tip(|| "While draining worker in WorkerApiServer::inner_going_away")?;
+            return Ok(());
+        }
         self.scheduler
             .remove_worker(&self.worker_id)
             .await
@@ -336,7 +529,34 @@ impl WorkerConnection {
         Ok(())
     }
 
+    /// Any message from the worker proves it is alive, not only keepalives.
+    /// Only a keepalive carries a load report and lifts a pause; this
+    /// refreshes the timestamp alone, so a decline cannot undo the pause
+    /// it just took.
+    ///
+    /// The refresh is best-effort: it is a side effect of the message,
+    /// never the point of it. A result or completion the worker already
+    /// produced must reach `update_action` even if the refresh fails, or
+    /// the operation is stranded in `Executing` with nothing left to
+    /// finish it.
+    async fn touch_liveness_best_effort(&self) {
+        let result = async {
+            self.scheduler
+                .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
+                .await
+        }
+        .await;
+        if let Err(err) = result {
+            warn!(
+                worker_id = %self.worker_id,
+                ?err,
+                "Could not refresh worker liveness; continuing to process the message",
+            );
+        }
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
@@ -348,38 +568,74 @@ impl WorkerConnection {
                 })?;
         }
 
-        match execute_result
+        let update = match execute_result
             .result
             .err_tip(|| "Expected result to exist in ExecuteResult")?
         {
             execute_result::Result::ExecuteResponse(finished_result) => {
-                let action_stage = finished_result
-                    .try_into()
-                    .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?;
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithActionStage(action_stage),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithActionStage(
+                    finished_result
+                        .try_into()
+                        .err_tip(|| "Failed to convert ExecuteResponse into an ActionStage")?,
+                )
             }
             execute_result::Result::InternalError(e) => {
-                self.scheduler
-                    .update_action(
-                        &self.worker_id,
-                        &operation_id,
-                        UpdateOperationType::UpdateWithError(e.into()),
-                    )
-                    .await
-                    .err_tip(|| format!("Failed to operation {operation_id}"))?;
+                UpdateOperationType::UpdateWithError(e.into())
             }
+        };
+        match self
+            .scheduler
+            .update_action(&self.worker_id, &operation_id, update)
+            .await
+        {
+            Ok(()) => {}
+            // The worker no longer holds the operation: its result was
+            // applied before (this is a resend), or it moved on.
+            Err(err) if err.code == Code::FailedPrecondition => {}
+            // Not settled: a result the store refused is held and written
+            // later, and the worker keeps its copy until then.
+            Err(err) => return Err(err).err_tip(|| format!("Failed to operation {operation_id}")),
         }
+        self.scheduler
+            .worker_result_settled(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Acknowledging the result of {operation_id}"))
+    }
+
+    /// The answer is recorded before the liveness refresh: the refresh runs
+    /// the unacknowledged sweep, which would otherwise requeue an
+    /// acknowledgement that arrives right at the timeout.
+    async fn dispatch_accepted(&self, execute_accepted: ExecuteAccepted) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_accepted.operation_id);
+        self.scheduler
+            .worker_dispatch_accepted(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))?;
+        self.touch_liveness_best_effort().await;
+        Ok(())
+    }
+
+    async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_declined.operation_id);
+        let reason = execute_declined::Reason::try_from(execute_declined.reason)
+            .unwrap_or(execute_declined::Reason::Unspecified);
+        let needs_kb = (reason == execute_declined::Reason::Load && execute_declined.needed_kb > 0)
+            .then_some(execute_declined.needed_kb);
+        let mut why = reason.as_str_name().to_ascii_lowercase();
+        if !execute_declined.detail.is_empty() {
+            why.push_str(": ");
+            why.push_str(&execute_declined.detail);
+        }
+        self.scheduler
+            .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
+            .await
+            .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
+        self.touch_liveness_best_effort().await;
         Ok(())
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(

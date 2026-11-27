@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,13 +48,14 @@ use nativelink_util::common::encode_stream_proto;
 use nativelink_util::default_health_status_indicator;
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use prost::Message;
 use prost_types::Timestamp;
-use tonic::codec::{Codec, ProstCodec};
+use tonic::codec::Codec;
 use tonic::{Request, Streaming, async_trait};
+use tonic_prost::ProstCodec;
 
 const BEP_STORE_NAME: &str = "main_bep";
 
@@ -69,7 +70,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -153,15 +154,78 @@ impl StoreDriver for FlakyStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         todo!();
     }
 }
 
 default_health_status_indicator!(FlakyStore);
+
+/// Sleeps on every write and records how many writes were in flight at
+/// once, so a test can tell pipelined writes from sequential ones.
+#[derive(Debug, MetricsComponent)]
+struct SlowStore {
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+}
+
+#[async_trait]
+impl StoreDriver for SlowStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        results.fill(None);
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _upload_size: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+        let data = reader.consume(None).await?;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(data.len() as u64)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::NotFound, "SlowStore keeps nothing"))
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SlowStore);
 
 /// A transient store-upload failure (e.g. a Redis Sentinel failover) must NOT
 /// drop a BEP lifecycle event — the server retries the upload until it lands.
@@ -173,7 +237,7 @@ async fn publish_lifecycle_event_retries_transient_store_failure()
         attempts: AtomicUsize::new(0),
     });
     let store_manager = Arc::new(StoreManager::new());
-    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()));
+    store_manager.add_store(BEP_STORE_NAME, Store::new(flaky.clone()))?;
     let bep_server = make_bep_server(&store_manager)?;
 
     let request = PublishLifecycleEventRequest {
@@ -432,7 +496,7 @@ async fn publish_build_tool_event_stream_test() -> Result<(), Box<dyn core::erro
         // Send off the requests and validate the responses.
         for (sequence_number, request) in requests.iter().enumerate().map(|(i, req)| {
             // Sequence numbers are 1-indexed, while `.enumerate()` indexes from 0.
-            (i as i64 + 1, req)
+            (i.try_into().unwrap_or(i64::MAX).saturating_add(1), req)
         }) {
             let encoded_request = encode_stream_proto(request)?;
             request_tx.send(Frame::data(encoded_request)).await?;
@@ -568,5 +632,67 @@ async fn build_tool_event_stream_termination_test() -> Result<(), Box<dyn core::
         Some(bep_event::Event::BuildToolEvent(initial_request.clone()))
     );
 
+    Ok(())
+}
+
+#[nativelink_test(start_paused = true)]
+async fn build_tool_event_stream_pipelines_store_writes() -> Result<(), Box<dyn core::error::Error>>
+{
+    const EVENTS: i64 = 16;
+    let slow = Arc::new(SlowStore {
+        in_flight: AtomicUsize::new(0),
+        max_in_flight: AtomicUsize::new(0),
+    });
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(BEP_STORE_NAME, Store::new(slow.clone()))?;
+    let bep_server = make_bep_server(&store_manager)?;
+
+    let (tx, body) = ChannelBody::new();
+    let mut codec = ProstCodec::<PublishBuildToolEventStreamRequest, _>::default();
+    let stream = Streaming::new_request(codec.decoder(), body, None, None);
+    let mut response_stream = bep_server
+        .publish_build_tool_event_stream(Request::new(stream))
+        .await
+        .err_tip(|| "While invoking publish_build_tool_event_stream")?
+        .into_inner();
+
+    let stream_id = StreamId {
+        build_id: "some-build-id".to_string(),
+        invocation_id: "some-invocation-id".to_string(),
+        component: BuildComponent::Controller as i32,
+    };
+    for sequence_number in 1..=EVENTS {
+        let request = PublishBuildToolEventStreamRequest {
+            ordered_build_event: Some(OrderedBuildEvent {
+                stream_id: Some(stream_id.clone()),
+                sequence_number,
+                event: Some(BuildEvent {
+                    event_time: Some(Timestamp::date(1999, 1, 4)?),
+                    event: Some(Event::BuildEnqueued(BuildEnqueued { details: None })),
+                }),
+            }),
+            notification_keywords: vec![],
+            project_id: "some-project-id".to_string(),
+            check_preceding_lifecycle_events_present: false,
+        };
+        tx.send(Frame::data(encode_stream_proto(&request)?)).await?;
+    }
+    drop(tx);
+
+    // Acks arrive in sequence order whatever order the writes finish in.
+    for expected in 1..=EVENTS {
+        let response = response_stream
+            .next()
+            .await
+            .err_tip(|| "Expected an ack for every event")??;
+        assert_eq!(response.sequence_number, expected);
+    }
+    assert!(response_stream.next().await.is_none());
+
+    // Measure overlap directly; elapsed wall time depends on runner load.
+    assert!(
+        slow.max_in_flight.load(Ordering::SeqCst) > 1,
+        "writes never overlapped"
+    );
     Ok(())
 }

@@ -1,0 +1,188 @@
+---
+title: AI coding agents
+description: An agent's edit-build-test loop runs far more often than a human's, so build time sets both its wall clock and a large part of its token bill, and a shared cache turns most of those iterations into downloads.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone running coding agents against a codebase big enough
+that building it is not instant. **What you'll have at the end:** a clear model
+of why build infrastructure is agent infrastructure, and what specifically to
+put in place. **Time:** about ten minutes.
+
+## The loop is the unit of work [#the-loop-is-the-unit-of-work]
+
+A coding agent does not write a patch and stop. It edits, builds, reads the
+error, edits again, builds again, and repeats until the tests pass. That loop is
+the agent's entire mechanism for finding out whether it was right.
+
+A human runs that loop a few times an hour and spends the gaps thinking. An
+agent runs it as fast as the tooling allows, in a tight cycle, and frequently
+runs several in parallel across candidate approaches. The economics invert: for
+a person, build time is an interruption; for an agent, build time *is* the task
+duration.
+
+The arithmetic is unforgiving. A four-minute build inside a thirty-iteration
+session is two hours of wall clock in which nothing is being decided. Cut the
+build to forty seconds and the same session is twenty minutes.
+
+## Why agents hit caches more than people do [#why-agents-hit-caches-more-than-people-do]
+
+Here is the part that is rarely noticed: agents are unusually good cache clients,
+and the reason is that most of what they do is repetitive in exactly the way
+content-addressing rewards.
+
+**They revisit states they've already been in.** An agent that tries an
+approach, fails a test, and reverts has returned to a tree it already built. To
+a content-addressed cache that is not a similar state, it is *the same* state:
+same input hashes, same keys, every action a hit. The build after a revert can
+be nearly free.
+
+**They change one thing at a time.** A well-behaved agent makes a small,
+targeted edit. Small edits invalidate a small part of the action graph, and
+everything downstream of the untouched parts is still keyed the same. The
+rebuild is proportional to the edit, not to the repository.
+
+**They run in parallel over shared ancestry.** Three agents exploring three
+approaches to the same bug share almost all of their build graph. The first to
+build the common ancestry pays for it; the other two get hits. Same for an agent
+and the human reviewing its work.
+
+**They repeat each other's work across sessions.** A fresh session on the same
+commit rebuilds what yesterday's session already built. With a shared cache that
+is a download.
+
+The general form: **cache hit rate rises with the number of participants who
+share ancestry, and agents generate a great deal of shared ancestry.** A cache
+that is a modest optimization for one developer becomes the dominant factor when
+a fleet of agents is hammering the same tree.
+
+## Determinism is the other half [#determinism-is-the-other-half]
+
+Content-addressing gives agents something beyond speed, and it may matter more.
+
+An agent debugging a failure needs the failure to be real. If a test fails
+because of a stale artifact, a leaked environment variable, or a machine that
+differs from the one that built the dependency, the agent will chase a
+phantom, and it will chase it with great energy, writing plausible fixes for a
+problem that does not exist. Nondeterminism doesn't just slow an agent down; it
+sends it confidently in the wrong direction and burns tokens doing so.
+
+Hermetic, content-addressed builds make "same inputs, same outputs" a property
+of the system rather than a hope. When an agent reruns a build and the result
+changes, that change is now information.
+
+<Callout type="warn" title="This cuts both ways">
+  Remote execution requires hermetic actions, and a build that quietly depends
+  on the machine it runs on will fail remotely while working locally. That's
+  real work, and it's worth doing regardless: a build an agent can trust is a
+  build a person can too. See
+  [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity).
+</Callout>
+
+## The token argument [#the-token-argument]
+
+Wall clock is the visible cost. The token bill is the hidden one, and for
+teams running agents at scale it is frequently the larger.
+
+Every iteration of the loop spends tokens: the agent reads build output,
+reasons about it, and produces the next edit. Slow builds don't just make the
+loop longer, they make it *wider*: a long feedback delay pushes an agent toward
+batching more speculative changes per iteration, which produces bigger diffs,
+noisier failures, and more context to re-read when something breaks.
+
+Fast, trustworthy builds let an agent work in small verified increments. Small
+increments mean less context re-read per iteration and fewer wasted iterations
+chasing failures that were never real.
+
+## What to actually put in place [#what-to-actually-put-in-place]
+
+In rough order of return:
+
+**A shared cache both agents and humans use.** Not one per agent, not one for CI
+and another for developers. The value is in the sharing, and splitting it is the
+most common way teams leave the win on the table.
+[Shared cache](/getting-started/shared-cache) is that deployment.
+
+**Agents pointed at it from the start.** An agent that builds locally with no
+remote cache is generating exactly the redundant work this is designed to
+absorb. This is one flag in the build configuration the agent already uses.
+
+**Hermeticity treated as a bug class.** Every action that depends on unnamed
+state is a source of failures your agent cannot debug and will misdiagnose.
+
+**Remote execution once caching is steady.** Remote execution adds parallelism across a
+worker pool for the actions that genuinely have to run. It matters most when
+agents work in parallel, because that's when local cores become the ceiling.
+
+**Enough cache retention to cover how agents actually work.** Eviction policy is
+usually sized for a linear history of commits. Agents branch, revert and
+revisit far more than that, and a cache that has already evicted the tree an
+agent is returning to gives back the biggest single win on this page. Size for
+the breadth of states in play, not just the depth of history.
+
+## Common questions [#common-questions]
+
+<Accordions>
+
+<Accordion title="Should each agent get its own cache to avoid interference?" id="should-each-agent-get-its-own-cache-to-avoid-interference">
+
+No: that removes the main benefit. Cache entries are keyed by the hash of their
+inputs, so two agents cannot corrupt each other's results; the worst case is
+that they store separate entries for genuinely different work. Isolation you
+might want for other reasons is a network and access-control question, not a
+cache-partitioning one.
+
+</Accordion>
+
+<Accordion title="Can a bad agent poison the cache for everyone?" id="can-a-bad-agent-poison-the-cache-for-everyone">
+
+Not through ordinary use. An entry is only reachable by the hash of the inputs
+that produced it, so a bad edit produces a differently-keyed entry that nobody
+else asks for. What *can* cause a bad shared entry is a non-hermetic action
+whose output depends on something outside its declared inputs, which is the
+same hazard for humans, and another reason hermeticity is the foundation. Write
+access to the cache is a trust boundary; see
+[TLS and authentication](/how-to/tls-and-auth).
+
+</Accordion>
+
+<Accordion title="Does this help with test flakiness?" id="does-this-help-with-test-flakiness">
+
+Indirectly, and importantly. It doesn't fix a genuinely flaky test, but it
+removes the large class of failures caused by stale or inconsistent build state,
+so the flakes that remain are real ones. For an agent, that distinction is the
+difference between a debuggable signal and noise.
+
+</Accordion>
+
+<Accordion title="Our agents work on many small repos, not one monorepo." id="our-agents-work-on-many-small-repos-not-one-monorepo">
+
+The benefit tracks shared ancestry, so it's weaker across unrelated repos and
+still real within each one plus their common dependencies. If the repos share a
+toolchain or a base image, those actions are shared cache entries even when the
+source trees aren't.
+
+</Accordion>
+
+<Accordion title="How do I point my agent at NativeLink?" id="how-do-i-point-my-agent-at-nativelink">
+
+You don't configure the agent, you configure the build tool the agent invokes,
+and the agent picks it up because it runs the same commands you do. A remote
+cache flag in the checked-in build configuration is inherited by every agent and
+every human automatically. [Quickstart](/getting-started/quickstart) sets that
+up.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/getting-started/shared-cache" title="Shared cache">
+  The deployment this page argues for: one cache, shared by everyone and
+  everything that builds the tree.
+</NextStep>
+
+<NextStep href="/agents" kind="aside" title="For agents">
+  The other direction: making these docs and this codebase legible to an agent
+  that's reading them.
+</NextStep>

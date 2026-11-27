@@ -1,19 +1,24 @@
 ---
-name: Cargo Native
+name: CI / Cargo
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  # Cargo Native (Linux + macOS + Windows) is deferred to a nightly schedule +
+  # on-demand. Per-PR build/test signal is covered by the warm-cluster CI / NativeLink lane;
+  # this keeps full cargo and cross-platform coverage running daily against main.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+    paths:
+      - .config/nextest.toml
+      - .github/workflows/native-cargo.yaml
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,17 +26,21 @@ concurrency:
 
 env:
   RUSTFLAGS: -Dwarnings
+  # aws-lc-sys (JWT signing for GCS auth) assembles with NASM on x86_64
+  # Windows, which the runner image does not ship. Use the prebuilt objects
+  # the crate carries instead; the variable is ignored on every other target.
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   cargo-native:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
-        toolchain: [stable]
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        toolchain: [1.97.1] # Same as Nix
     name: ${{ matrix.os }} / ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -46,15 +55,27 @@ jobs:
       - name: Set up Rust toolchain
         run: rustup update && rustup default ${{ matrix.toolchain }}
 
+      - name: Install cargo-nextest
+        uses: >- # v2.90.8
+          taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c
+        with:
+          tool: cargo-nextest
+
       - name: Rust cache
-        # https://github.com/Swatinem/rust-cache/releases/tag/v2.9.1
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: >- # v2.9.1
+          Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
 
+      - name: Set up Azurite test runner
+        uses: ./.github/actions/setup-azurite-test-runner
+
       - name: Test on ${{ runner.os }}
-        run: cargo test --all --profile=smol
+        run: cargo nextest run --workspace --cargo-profile=smol --no-fail-fast
+
+      - name: Run doctests on ${{ runner.os }}
+        run: cargo test --workspace --exclude nativelink-proto --doc --profile=smol
 
       - name: Check schema export
         run: cargo run --bin build-schema --features dev-schema --package nativelink-config

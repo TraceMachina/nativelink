@@ -1,0 +1,88 @@
+---
+# The release the README and the docs tell people to run.
+#
+# Quickstart snippets don't hard-code a version. They look up the newest
+# release when a reader runs them, into NATIVELINK_VERSION, and build every
+# config URL, image tag and nix flake ref from it.
+# web/apps/docs/scripts/check-release-refs.mjs keeps it that way.
+#
+# - On a PR, a static check with no network access: no hard-coded release
+#   pins, and every page that uses NATIVELINK_VERSION sets it. Like the lints
+#   in docs-lint.yaml, it can only fail for a reason the PR can fix.
+# - When a release is published, the full check: every URL, image manifest
+#   and tag the snippets use must return 200 for the new release. Publishing
+#   is what moves /releases/latest, so this is the moment a missing image or
+#   a renamed example config would start breaking readers. The image is
+#   built by tagged_image.yaml on the tag push and may still be publishing,
+#   so this retries for up to 80 minutes before failing.
+# - Weekly, the same full check, as a backstop. External reachability stays
+#   off PRs for the reason docs-lint.yaml gives: an outage or a rate limit is
+#   not something a contributor can fix.
+name: Docs / Release references
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "web/apps/docs/content/**"
+      - "web/apps/web/content/**"
+      - "web/apps/docs/scripts/check-release-refs.mjs"
+      - ".github/workflows/release-refs.yaml"
+  release:
+    types: [published]
+  # Tuesday 06:23, arbitrary, spread away from the other scheduled jobs.
+  schedule:
+    - cron: 23 6 * * TUE
+  workflow_dispatch:
+
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-refs-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: No hard-coded release pins
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Check references
+        run: node web/apps/docs/scripts/check-release-refs.mjs
+
+  resolve:
+    name: Quickstarts resolve against the latest release
+    # /releases/latest skips prereleases, so a prerelease would only re-check
+    # the previous release.
+    if: >-
+      github.event_name != 'pull_request' &&
+      !(github.event_name == 'release' && github.event.release.prerelease)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # Readers copy the snippets from main (the README and the docs site),
+      # not from the release tag, so that is what has to work.
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Check references
+        env:
+          WAIT: ${{ github.event_name == 'release' && '4800' || '0' }}
+        run: |
+          node web/apps/docs/scripts/check-release-refs.mjs --resolve --wait "${WAIT}"

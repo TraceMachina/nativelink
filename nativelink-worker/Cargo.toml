@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-worker"
-version = "1.5.2"
+version = "1.9.0"
 
 [features]
 nix = []
@@ -23,9 +23,9 @@ dunce = { version = "1.0.5", default-features = false }
 filetime = { version = "0.2.25", default-features = false }
 formatx = { version = "0.2.3", default-features = false }
 futures = { version = "0.3.31", default-features = false }
-opentelemetry = { version = "0.30.0", default-features = false }
+opentelemetry = { version = "0.32.0", default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
-prost = { version = "0.13.5", default-features = false }
+prost = { version = "0.14.4", default-features = false }
 relative-path = { version = "2.0.0", default-features = false, features = [
   "alloc",
   "std",
@@ -37,7 +37,7 @@ serde_json = { version = "1.0.140", default-features = false, features = [
 ] }
 serde_json5 = { version = "0.2.1", default-features = false }
 shlex = { version = "2.0.0", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "process",
@@ -47,7 +47,7 @@ tokio = { version = "1.52.2", features = [
 tokio-stream = { version = "0.1.17", default-features = false, features = [
   "fs",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "gzip",
   "tls-ring",
   "transport",
@@ -64,19 +64,32 @@ libc = { version = "0.2.183", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { version = "0.2.183", default-features = false }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", default-features = false, features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-hyper = { version = "1.6.0", default-features = false }
+async-trait = { version = "0.1.88", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 pathdiff = { version = "0.2.3", default-features = false }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
-prost-types = { version = "0.13.5", default-features = false }
-serial_test = { version = "3.2.0", features = [
+prost-types = { version = "0.14.4", default-features = false }
+serial_test = { version = "4.0.0", features = [
   "async",
 ], default-features = false }
 tempfile = { version = "3.15.0", default-features = false }
+tokio = { version = "1.53.3", features = [
+  "test-util",
+], default-features = false }
+tonic-prost = { version = "0.14.6", default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }

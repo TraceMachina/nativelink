@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Join our Slack community
+    url: https://forms.gle/LtaWSixEC6bYi5xF7
+    about: Get faster responses from the NativeLink community
+  - name: Commercial support
+    url: mailto:marcus@tracemachina.com
+    about: Contact us for commercial support inquiries

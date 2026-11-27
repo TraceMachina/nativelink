@@ -1,0 +1,44 @@
+name: General Issue
+description: For anything that doesn't fit the other categories
+title: "[General]: "
+labels: ["needs:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Not sure if this is a bug or feature? Feel free to use this template.
+        For real-time help, join our [Slack community](https://forms.gle/LtaWSixEC6bYi5xF7).
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Issue type
+      options:
+        - Question
+        - Discussion
+        - Suggestion
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version (if applicable)
+      description: What version of NativeLink are you running?
+      placeholder: "e.g. v1.0.0, main@abc1234"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What's on your mind?
+      placeholder: "Tell us what you're thinking about..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any links, references, or screenshots that help explain.

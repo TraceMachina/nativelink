@@ -4,26 +4,75 @@ description: "Common setup for all runs using Nix."
 inputs:
   nativelink_attic_token:
     required: true
+  skip_free_disk:
+    required: false
+    default: "false"
+  read_only:
+    description: Use public substitution without an upload token or cache watcher
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
     - name: Free disk space
       uses: ./.github/actions/free-disk
+      if: ${{ inputs.skip_free_disk != 'true' }}
 
     - name: Install Nix
-      uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
+      # Stay on the Determinate installer: the nix-quick-install switch (Nix
+      # 2.34.7) makes the nix2container multi-arch image publish fail with a
+      # layer digest mismatch. See the tagged image workflow.
+      uses:
+        >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
         DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
       with:
         source-tag: v3.13.0
+        extra-conf: |
+          fallback = true # So we always work even if the cache is down
+          log-lines = 100 # Necessary in CI to get enough failure context
+          keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
+
+    - name: Expose Nix to later job steps
+      # The installer adds these through its own GITHUB_PATH write, but a
+      # runtime that drops composite-nested PATH additions at the job
+      # boundary leaves later `run:` steps without `nix`. Idempotent on
+      # runners where the installer's write already propagated.
+      shell: bash
+      run: |
+        echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+
+    - name: Configure public read-only cache
+      if: ${{ inputs.read_only == 'true' }}
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.config/nix"
+        printf '%s\n' \
+          'extra-substituters = https://attic.uc1.scdev.nativelink.net/nativelink' \
+          'extra-trusted-public-keys = nativelink:rKAGA1YHc6/sjaX4+QLUHl15N0a0o0d2v+Mt0zyz5sg=' \
+          >> "$HOME/.config/nix/nix.conf"
+
+    - name: Prefetch flake inputs
+      uses: >- # v4
+        nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+      with:
+        timeout_minutes: 10
+        max_attempts: 5
+        retry_wait_seconds: 30 # GitHub tarball 503s are usually brief; ride them out
+        command: nix flake archive --json > /dev/null
+        shell: bash
 
     - name: Setup attic cache
+      if: ${{ inputs.read_only != 'true' }}
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
       with:
         timeout_minutes: 30
         max_attempts: 3
+        retry_wait_seconds: 30 # if we're failing, we want to wait a reasonable amount of time
         command: |
           set -euo pipefail
+          date
           cd /tmp
           nix build nixpkgs#attic-client
           # Note NATIVELINK_ATTIC_TOKEN is blank for PR builds as they don't have secret access
@@ -37,7 +86,7 @@ runs:
             # * https://github.com/zhaofengli/attic/issues/226
             # * https://github.com/zhaofengli/attic/pull/317
             # We use the original one first to get caching of this
-            nix build --fallback github:TraceMachina/attic
+            nix build github:TraceMachina/attic
             RUST_BACKTRACE=full RUST_LOG=debug,hyper_util=info,rustls=info ./result/bin/attic watch-store nativelink &> attic-push.log &
 
             # For the cases where we don't have a cache of it, push it

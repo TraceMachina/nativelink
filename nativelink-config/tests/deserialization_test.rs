@@ -1,5 +1,4 @@
-#![allow(clippy::decimal_literal_representation)]
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,7 +92,7 @@ mod duration_tests {
             (r#"{"duration": 10}"#, 10),
             (r#"{"duration": "  1m 10s  "}"#, 70),
             // Complex duration formats
-            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_735_967),
+            (r#"{"duration": "1y3w4d5h6m7s"}"#, 33_714_367),
             (r#"{"duration": "0s"}"#, 0),
             (r#"{"duration": "1ns"}"#, 0), // Sub-second rounds to 0
             (r#"{"duration": "999h"}"#, 3_596_400),
@@ -129,10 +128,13 @@ mod duration_tests {
                 r#"{"duration": true}"#,
                 "expected either a number of seconds as an integer, or a string with a duration format (e.g., \"1h2m3s\", \"30m\", \"1d\")",
             ),
-            (r#"{"duration": "invalid"}"#, "expected number at 0"),
+            (
+                r#"{"duration": "invalid"}"#,
+                "expected duration to start with a unit value (a decimal integer) after an optional sign, but no integer was found",
+            ),
             (
                 r#"{"duration": "999999999999999999999s"}"#,
-                "number is too large",
+                "number too big to parse into 64-bit integer",
             ),
         ];
 
@@ -140,7 +142,10 @@ mod duration_tests {
             let error = serde_json5::from_str::<DurationEntity>(input)
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected_error));
+            assert!(
+                error.contains(expected_error),
+                "{error} != {expected_error}"
+            );
         }
     }
 
@@ -382,6 +387,8 @@ mod optional_values_tests {
 }
 
 mod boolean_tests {
+    use nativelink_config::stores::GrpcSpec;
+
     use crate::BoolEntity;
 
     #[test]
@@ -403,6 +410,38 @@ mod boolean_tests {
                 serde_json5::from_str(input).unwrap_or_else(|_| panic!("Failed on '{input}'"));
             assert_eq!(deserialized.value, expected, "{input}");
         }
+    }
+
+    #[test]
+    fn grpc_compression_accepts_string_and_environment_boolean() {
+        let string_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "true"
+            }"#,
+        )
+        .expect("string boolean should deserialize");
+        assert_eq!(
+            string_spec.experimental_remote_cache_compression,
+            Some(true)
+        );
+
+        // Safety: this test uses a unique variable and does not run code that
+        // reads mutable environment state concurrently.
+        unsafe { std::env::set_var("TEST_GRPC_REMOTE_CACHE_COMPRESSION", "false") };
+        let environment_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "${TEST_GRPC_REMOTE_CACHE_COMPRESSION}"
+            }"#,
+        )
+        .expect("environment boolean should deserialize");
+        assert_eq!(
+            environment_spec.experimental_remote_cache_compression,
+            Some(false)
+        );
     }
 }
 
@@ -486,7 +525,8 @@ mod shellexpand_tests {
 mod convert_numeric_with_shellexpand_tests {
     use std::env;
 
-    use serde_test::{Token, assert_de_tokens_error};
+    use serde_assert::de::Error as DeError;
+    use serde_assert::{Deserializer, Token};
 
     use super::*;
 
@@ -563,17 +603,29 @@ mod convert_numeric_with_shellexpand_tests {
 
     #[test]
     fn test_visit_u64_exceeds_i64_range() {
-        assert_de_tokens_error::<NumericEntity>(
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::U64(9_223_372_036_854_775_808),
-                Token::MapEnd,
-            ],
-            "out of range integral type conversion attempted",
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "NumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::U64(9_223_372_036_854_775_808),
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        let err = NumericEntity::deserialize(&mut deserializer).unwrap_err();
+        assert!(
+            // Correct message depends on Rust version
+            [
+                DeError::Custom("out of range integral type conversion attempted".into()),
+                DeError::Custom("number too large to fit in target type".into())
+            ]
+            .contains(&err)
         );
     }
 }
+
 #[cfg(test)]
 mod shellexpand_string_tests {
     use std::env;
@@ -610,22 +662,61 @@ mod shellexpand_string_tests {
     }
 }
 #[cfg(test)]
-mod convert_optional_numeric_with_shellexpand_tests {
+mod fast_slow_spec_tests {
+    use nativelink_config::stores::FastSlowSpec;
+    use pretty_assertions::assert_eq;
 
-    use serde_test::{Token, assert_de_tokens_error};
+    #[test]
+    fn has_slow_write_wait_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                has_slow_write_wait_timeout_s: "30s",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.has_slow_write_wait_timeout_s, 30);
+    }
+
+    #[test]
+    fn leader_inactivity_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                leader_inactivity_timeout_s: "1m",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.leader_inactivity_timeout_s, 60);
+    }
+}
+
+#[cfg(test)]
+mod convert_optional_numeric_with_shellexpand_tests {
+    use serde_assert::de::Error as DeError;
+    use serde_assert::{Deserializer, Token};
 
     use super::*;
 
     #[test]
     fn test_visit_unit_returns_none() {
-        serde_test::assert_de_tokens(
-            &OptionalNumericEntity { value: None },
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::Unit,
-                Token::MapEnd,
-            ],
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "OptionalNumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::Some,
+            Token::Unit,
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        assert_eq!(
+            OptionalNumericEntity::deserialize(&mut deserializer),
+            Ok(OptionalNumericEntity { value: None })
         );
     }
 
@@ -638,14 +729,26 @@ mod convert_optional_numeric_with_shellexpand_tests {
 
     #[test]
     fn test_visit_u64_exceeds_i64_range() {
-        assert_de_tokens_error::<OptionalNumericEntity>(
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::U64(9_223_372_036_854_775_808),
-                Token::MapEnd,
-            ],
-            "out of range integral type conversion attempted",
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "OptionalNumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::Some,
+            Token::U64(9_223_372_036_854_775_808),
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        let err = OptionalNumericEntity::deserialize(&mut deserializer).unwrap_err();
+        assert!(
+            // Correct message depends on Rust version
+            [
+                DeError::Custom("out of range integral type conversion attempted".into()),
+                DeError::Custom("number too large to fit in target type".into())
+            ]
+            .contains(&err)
         );
     }
 
@@ -675,4 +778,126 @@ mod convert_optional_numeric_with_shellexpand_tests {
         let deserialized: OptionalNumericEntity = serde_json5::from_str(json).unwrap();
         assert_eq!(deserialized.value, None);
     }
+}
+
+#[test]
+fn http_listener_tcp_nodelay_defaults_and_overrides() {
+    use nativelink_config::cas_server::HttpListener;
+
+    assert!(!HttpListener::default().tcp_nodelay);
+    for (input, expected) in [
+        ("{socket_address: '127.0.0.1:0'}", false),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: true}", true),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: false}", false),
+    ] {
+        let config: HttpListener = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.tcp_nodelay, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["tcp_nodelay"], expected);
+        let round_trip: HttpListener = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round_trip.tcp_nodelay, expected);
+    }
+    for invalid in ["null", "0", "'false'"] {
+        let input = format!("{{socket_address: '127.0.0.1:0', tcp_nodelay: {invalid}}}");
+        assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
+    }
+}
+
+#[test]
+fn directory_cache_clone_executables_defaults_and_overrides() {
+    use nativelink_config::cas_server::DirectoryCacheConfig;
+
+    for (input, expected) in [
+        ("{}", false),
+        ("{experimental_clone_executables: true}", true),
+        ("{experimental_clone_executables: false}", false),
+    ] {
+        let config: DirectoryCacheConfig = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.experimental_clone_executables, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["experimental_clone_executables"], expected);
+    }
+    for invalid in ["null", "1", "'true'"] {
+        let input = format!("{{experimental_clone_executables: {invalid}}}");
+        assert!(serde_json5::from_str::<DirectoryCacheConfig>(&input).is_err());
+    }
+}
+
+#[test]
+fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
+    use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
+    let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
+    assert!(matches!(
+        parsed,
+        StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Oss(_))
+    ));
+    for field in [
+        "consider_expired_after_s",
+        "max_retry_buffer_per_request",
+        "max_concurrent_uploads",
+        "upload_queue_timeout_s",
+    ] {
+        let config = format!(
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET","{field}":1}}"#
+        );
+        assert!(
+            serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
+            "unexpected OSS field accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn oss_credentials_are_required_and_redacted_from_debug() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+    let missing = r#"{"region":"cn-hangzhou","bucket":"test-bucket"}"#;
+    assert!(serde_json5::from_str::<ExperimentalOssSpec>(missing).is_err());
+    let spec = ExperimentalOssSpec {
+        access_key_id: "PRIVATE_OSS_KEY_ID".into(),
+        secret_access_key: "PRIVATE_OSS_SECRET".into(),
+        session_token: Some("PRIVATE_OSS_TOKEN".into()),
+        ..Default::default()
+    };
+    let debug = format!("{spec:?}");
+    for credential in [
+        "PRIVATE_OSS_KEY_ID",
+        "PRIVATE_OSS_SECRET",
+        "PRIVATE_OSS_TOKEN",
+    ] {
+        assert!(!debug.contains(credential));
+    }
+}
+
+#[test]
+fn oss_cname_defaults_to_false_and_round_trips() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+
+    let config = r#"{"region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"TESTKEY","secret_access_key":"TESTSECRET"}"#;
+    let mut spec: ExperimentalOssSpec = serde_json5::from_str(config).unwrap();
+    assert!(!spec.cname);
+    spec.cname = true;
+    spec.endpoint = Some("https://cache.example.com".into());
+    let round_trip: ExperimentalOssSpec =
+        serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
+    assert!(round_trip.cname);
+    assert_eq!(round_trip.endpoint, spec.endpoint);
+    for invalid in ["null", "1", "\"true\""] {
+        let input = format!("{},\"cname\":{invalid}}}", &config[..config.len() - 1]);
+        assert!(serde_json5::from_str::<ExperimentalOssSpec>(&input).is_err());
+    }
+}
+
+/// `SimpleSpec::from_config_defaults` is what an empty section deserializes
+/// to, so a serde default added to the spec cannot be missed there.
+#[test]
+fn simple_spec_from_config_defaults_matches_an_empty_section() {
+    let empty: nativelink_config::schedulers::SimpleSpec = serde_json5::from_str("{}").unwrap();
+    assert_eq!(
+        format!("{empty:?}"),
+        format!(
+            "{:?}",
+            nativelink_config::schedulers::SimpleSpec::from_config_defaults()
+        )
+    );
 }

@@ -1,6 +1,10 @@
 {
   "pages": [
     "nativelink-config",
+    "protocol-api",
+    "metrics",
+    "cli-and-env",
+    "oss-and-enterprise",
     "glossary",
     "changelog"
   ],

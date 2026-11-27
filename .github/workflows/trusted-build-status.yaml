@@ -1,0 +1,51 @@
+---
+name: CI / Trusted build status
+
+# Metadata and dispatch only: never check out PR code or build artifacts here.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  workflow_run:
+    workflows: [CI / NativeLink, CI / Nix]
+    types: [in_progress, completed]
+
+# New jobs get read-only access unless they explicitly request more.
+permissions:
+  contents: read
+
+# Serialize updates for the same commit. Every update reads the current API
+# state, so a late event cannot restore a superseded build's success.
+concurrency:
+  group: trusted-build-status-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: >-
+      github.repository == 'TraceMachina/nativelink' &&
+      (github.event_name == 'pull_request_target' ||
+       ((github.event.action == 'completed' || github.event.workflow_run.run_attempt > 1) &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)))
+    name: Report trusted build results
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create an immutable branch for an allowlisted fork revision
+      actions: write # dispatch the two existing branch workflows
+      pull-requests: read
+      statuses: write # report the trusted builds on the PR commit
+    steps:
+      - name: Check out trusted status reporter
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # GITHUB_SHA is the trusted base/default branch for both events.
+          ref: ${{ github.sha }}
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Dispatch missing trusted builds and update the PR status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/ci_trusted_builds.py

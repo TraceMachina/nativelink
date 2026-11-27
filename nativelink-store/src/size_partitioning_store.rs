@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use tokio::join;
 
@@ -55,6 +55,38 @@ impl StoreDriver for SizePartitioningStore {
             self.lower_store.clone().into_inner().post_init(),
         )?;
         Ok(())
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let StoreKey::Digest(digest) = key.borrow() else {
+            return Err(make_input_err!(
+                "SizePartitioningStore only supports Digest keys, got {key:?}"
+            ));
+        };
+        if digest.size_bytes() < self.partition_size {
+            self.lower_store.as_store_driver_pin().remove(key).await
+        } else {
+            self.upper_store.as_store_driver_pin().remove(key).await
+        }
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let StoreKey::Digest(digest) = key.borrow() else {
+            return Err(make_input_err!(
+                "SizePartitioningStore only supports Digest keys, got {key:?}"
+            ));
+        };
+        if digest.size_bytes() < self.partition_size {
+            self.lower_store
+                .as_store_driver_pin()
+                .remove_cached(key)
+                .await
+        } else {
+            self.upper_store
+                .as_store_driver_pin()
+                .remove_cached(key)
+                .await
+        }
     }
 
     async fn has_with_results(
@@ -171,10 +203,7 @@ impl StoreDriver for SizePartitioningStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.lower_store
             .register_remove_callback(callback.clone())?;
         self.upper_store.register_remove_callback(callback)?;

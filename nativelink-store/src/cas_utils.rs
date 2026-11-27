@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,6 @@ pub const ZERO_BYTE_DIGESTS: [DigestInfo; 2] = [
     ),
 ];
 
-#[expect(single_use_lifetimes, reason = "false positive")]
 #[inline]
 pub fn is_zero_digest<'a>(digest: impl Into<StoreKey<'a>>) -> bool {
     match digest.into() {

@@ -1,10 +1,10 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,27 +14,78 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::TryStreamExt;
 use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
+};
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Directory as ProtoDirectory, DirectoryNode, FileNode, SymlinkNode,
+    Directory as ProtoDirectory, DirectoryNode, FileNode, GetTreeRequest, SymlinkNode,
 };
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
+#[cfg(target_os = "macos")]
+use nativelink_store::filesystem_store::make_temp_key;
 use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::background_spawn;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
+#[cfg(target_os = "macos")]
+use nativelink_util::fs_util::clone_file_pristine;
 use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
+use prost::Message;
 use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, trace, warn};
+
+/// Maximum number of concurrently-polled node materializations (file
+/// fetches, subdirectory recursions, symlink creations) per directory
+/// level. Matches `DOWNLOAD_TO_DIRECTORY_CONCURRENCY` in
+/// `running_actions_manager.rs`: enough parallelism to overlap slow-store
+/// round trips, bounded so hardlink/copy syscalls do not fight the
+/// filesystem's metadata locks (see the gate comment in
+/// `download_to_directory`).
+const CONSTRUCT_DIRECTORY_CONCURRENCY: usize = 64;
+
+/// Default for `DirectoryCacheConfig::max_concurrent_fetches`, preserving
+/// the historical cache-wide fetch bound.
+const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 64;
+use tokio::sync::{Mutex, RwLock, Semaphore};
+use tracing::{debug, info, trace, warn};
+
+/// Prefix for in-progress construction trees under `cache_root`. Cache-entry
+/// names are digest strings (hex), so dot-prefixed scratch names can never
+/// collide with a published entry.
+const TEMP_PREFIX: &str = ".tmp-";
+
+/// Prefix for eviction tombstones awaiting background deletion.
+const TOMBSTONE_PREFIX: &str = ".del-";
+
+/// Name of the file the `experimental_clone_executables` startup probe
+/// clones into `cache_root`. Removed by the probe itself; a leftover from a
+/// crash is swept with the rest of `cache_root` at the next startup.
+#[cfg(target_os = "macos")]
+const CLONE_PROBE_NAME: &str = ".clone-probe";
+
+/// Minimum interval between summary log lines, in nanoseconds (one minute).
+const SUMMARY_LOG_INTERVAL_NANOS: u64 = 60_000_000_000;
+
+/// Current time as nanoseconds since the unix epoch, for lock-free LRU
+/// timestamps. Saturates instead of failing (`u64` nanos overflow in 2554).
+fn unix_nanos_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
 
 /// Configuration for the directory cache
 #[derive(Debug, Clone)]
@@ -45,6 +96,41 @@ pub struct DirectoryCacheConfig {
     pub max_size_bytes: u64,
     /// Base directory for cache storage
     pub cache_root: PathBuf,
+    /// Experimental: additionally cache every subdirectory by its own
+    /// `Directory` digest so unchanged subtrees are shared across different
+    /// root digests. Subtree entries participate in normal eviction and
+    /// multiply the entry count, so `max_entries` should be raised when
+    /// enabling this. Default: false (root-only caching, existing behavior).
+    pub experimental_subtree_caching: bool,
+    /// Maximum number of concurrent slow-store fetches across ALL directory
+    /// constructions of this cache. Permits are held only across leaf I/O
+    /// (directory-proto fetches, blob fetches/populates) and never across
+    /// subdirectory recursion, so recursion depth cannot deadlock the
+    /// semaphore. This is the bound that protects backing stores from RPC
+    /// storms: per-level construction concurrency compounds multiplicatively
+    /// across tree levels and concurrent actions (measured >1800 in-flight
+    /// fetches for 6 concurrent ~500-file trees without this cap). Low
+    /// values fragment coalesced/batched reads to at most this many items;
+    /// see the config-crate doc for the `experimental_read_batching`
+    /// interaction. Must be > 0. Default: 64.
+    pub max_concurrent_fetches: usize,
+    /// See `nativelink-config`'s `DirectoryCacheConfig::experimental_get_tree_prefetch`.
+    pub experimental_get_tree_prefetch: bool,
+    /// See `nativelink-config`'s `DirectoryCacheConfig::experimental_clone_executables`.
+    pub experimental_clone_executables: bool,
+}
+
+/// Receives every CAS digest before the directory cache starts materializing
+/// that node. Action workers use this hook to keep the digest pinned in their
+/// local eviction-managed CAS tiers for the duration of the action.
+pub trait DigestLease: Send + Sync {
+    fn acquire(&self, digest: &DigestInfo);
+}
+
+fn acquire_digest(lease: Option<&dyn DigestLease>, digest: &DigestInfo) {
+    if let Some(lease) = lease {
+        lease.acquire(digest);
+    }
 }
 
 impl Default for DirectoryCacheConfig {
@@ -53,21 +139,94 @@ impl Default for DirectoryCacheConfig {
             max_entries: 1000,
             max_size_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
             cache_root: std::env::temp_dir().join("nativelink_directory_cache"),
+            experimental_subtree_caching: false,
+            max_concurrent_fetches: DEFAULT_MAX_CONCURRENT_FETCHES,
+            experimental_get_tree_prefetch: false,
+            experimental_clone_executables: false,
         }
     }
 }
 
 /// Metadata for a cached directory
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CachedDirectoryMetadata {
     /// Path to the cached directory
     path: PathBuf,
-    /// Size in bytes
+    /// Recorded size in bytes. With subtree caching enabled this covers only
+    /// bytes not owned by a descendant entry, so the sum over the map
+    /// approximates unique materialized bytes.
     size: u64,
-    /// Last access time for LRU eviction
-    last_access: SystemTime,
-    /// Reference count (number of active users)
-    ref_count: usize,
+    /// Last access time (nanoseconds since the unix epoch) for LRU eviction.
+    /// Atomic so cache hits can refresh it under the cache READ lock instead
+    /// of serializing on the write lock.
+    last_access: AtomicU64,
+    /// Number of active users. Shared with the [`EntryPin`] RAII guards
+    /// handed out by `acquire_entry`, which decrement it on drop — even when
+    /// the future holding the pin is cancelled mid-await. Eviction skips
+    /// entries with a non-zero count.
+    ref_count: Arc<AtomicUsize>,
+}
+
+/// RAII pin on a cache entry: while alive, eviction will not select the
+/// entry, so its on-disk tree cannot be deleted out from under an unlocked
+/// materialization. Dropping the pin releases it — including implicitly when
+/// a construction future is cancelled (e.g. `buffer_unordered` dropping
+/// sibling futures after another node errors), so pins can never leak and
+/// permanently block eviction.
+#[derive(Debug)]
+struct EntryPin {
+    ref_count: Arc<AtomicUsize>,
+}
+
+impl Drop for EntryPin {
+    fn drop(&mut self) {
+        self.ref_count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A prepared tree held against eviction for the lifetime of this handle.
+/// A cache hit can return this handle without walking or recreating the tree.
+/// Consumers must expose the prepared tree read-only.
+#[derive(Debug)]
+pub struct PreparedDirectory {
+    path: PathBuf,
+    size: u64,
+    pin: EntryPin,
+}
+
+impl PreparedDirectory {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Drop guard for an in-progress temp construction tree: if the owning
+/// future is dropped before [`Self::disarm`] (cancellation — e.g.
+/// `buffer_unordered` drops sibling constructions on the first error), the
+/// partial tree is deleted in the background. Error paths instead disarm and
+/// clean up inline so a failed construction leaves nothing behind by the
+/// time the error propagates.
+#[derive(Debug)]
+struct ScratchGuard {
+    path: Option<PathBuf>,
+}
+
+impl ScratchGuard {
+    const fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            DirectoryCache::dispatch_evictions(vec![path]);
+        }
+    }
 }
 
 /// High-performance directory cache that uses hardlinks to avoid repeated
@@ -95,11 +254,59 @@ pub struct DirectoryCache {
     /// (zero-copy) instead of fetched into RAM and rewritten. When absent
     /// (e.g. an unusual store layout) the cache falls back to fetch+write.
     filesystem_store: Option<Arc<FilesystemStore>>,
+    /// Global slow-fetch budget shared by all constructions of this cache;
+    /// see `DirectoryCacheConfig::max_concurrent_fetches`.
+    fetch_permits: Semaphore,
     /// Count of materializations that used APFS `clonefile(2)` (macOS only;
     /// always zero on other platforms).
     clonefile_hits: AtomicU64,
     /// Count of materializations that used per-file `fs::hard_link`.
     hardlink_hits: AtomicU64,
+    /// Whether executable files are cloned from the CAS blob instead of
+    /// copied: `experimental_clone_executables` is set, the fast tier is a
+    /// `FilesystemStore`, and the startup probe could clone from it into
+    /// `cache_root`. Fixed for the life of the cache.
+    #[cfg(target_os = "macos")]
+    clone_executables: bool,
+    /// Count of executable files given their private inode by cloning the
+    /// CAS blob with APFS `clonefile(2)`. Only ever non-zero on macOS with
+    /// `experimental_clone_executables` enabled.
+    executable_clone_hits: AtomicU64,
+    /// Count of executable files whose clone was attempted and failed, so
+    /// they were copied instead. Steadily rising with `executable_clone_hits`
+    /// at zero means cloning is enabled but failing for every file (for
+    /// example, the store's files carry metadata a clone would inherit).
+    executable_clone_misses: AtomicU64,
+    /// Count of files given a private inode by fetching the blob and
+    /// writing a full copy: executables that could not be cloned, plus
+    /// non-executables that could not be hardlinked. Counted once the copy
+    /// is in place, so a failed copy is not a hit.
+    file_copy_hits: AtomicU64,
+    /// Count of subtree materializations served from the cache by the
+    /// subtree's own `Directory` digest. Only ever non-zero when
+    /// `experimental_subtree_caching` is enabled.
+    subtree_hits: AtomicU64,
+    /// Count of subtree constructions that could not be served from the
+    /// cache. Only ever non-zero when `experimental_subtree_caching` is
+    /// enabled.
+    subtree_misses: AtomicU64,
+    /// Count of entries removed by LRU eviction. A high rate relative to
+    /// hits means the cache is thrashing (`max_entries`/`max_size_bytes` too
+    /// small for the workload — especially with subtree caching enabled,
+    /// which multiplies the entry count).
+    evictions: AtomicU64,
+    /// Monotonic counter for process-unique scratch names (temp construction
+    /// trees and eviction tombstones) under `cache_root`.
+    scratch_seq: AtomicU64,
+    /// Mirror of the map's entry count, maintained at insert/evict/invalidate
+    /// so the sync `MetricsComponent::publish` and the rate-limited log
+    /// summary can read it without touching the async `RwLock`.
+    map_entries: AtomicU64,
+    /// Mirror of the map's total recorded size in bytes (see `map_entries`).
+    map_size_bytes: AtomicU64,
+    /// Timestamp (unix nanos) of the last summary log line, for rate
+    /// limiting.
+    last_summary_log: AtomicU64,
 }
 
 impl DirectoryCache {
@@ -112,6 +319,15 @@ impl DirectoryCache {
         config: DirectoryCacheConfig,
         cas_store: Arc<FastSlowStore>,
     ) -> Result<Self, Error> {
+        // A zero-permit semaphore would deadlock every construction.
+        if config.max_concurrent_fetches == 0 {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "directory_cache max_concurrent_fetches must be greater than 0"
+            ));
+        }
+        let max_concurrent_fetches = config.max_concurrent_fetches;
+
         // Ensure cache root exists
         fs::create_dir_all(&config.cache_root).await.err_tip(|| {
             format!(
@@ -134,15 +350,178 @@ impl DirectoryCache {
             );
         }
 
-        Ok(Self {
+        #[cfg(target_os = "macos")]
+        let clone_executables = config.experimental_clone_executables
+            && if let Some(filesystem_store) = &filesystem_store {
+                Self::probe_clone_executables(filesystem_store, &config.cache_root).await
+            } else {
+                warn!(
+                    "experimental_clone_executables needs a FilesystemStore fast store; \
+                     executable files will be copied"
+                );
+                false
+            };
+        #[cfg(not(target_os = "macos"))]
+        if config.experimental_clone_executables {
+            warn!(
+                "experimental_clone_executables only has an effect on macOS; \
+                 executable files will be copied"
+            );
+        }
+
+        let cache = Self {
             config,
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
             filesystem_store,
+            #[cfg(target_os = "macos")]
+            clone_executables,
+            fetch_permits: Semaphore::new(max_concurrent_fetches),
             clonefile_hits: AtomicU64::new(0),
             hardlink_hits: AtomicU64::new(0),
-        })
+            executable_clone_hits: AtomicU64::new(0),
+            executable_clone_misses: AtomicU64::new(0),
+            file_copy_hits: AtomicU64::new(0),
+            subtree_hits: AtomicU64::new(0),
+            subtree_misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
+            scratch_seq: AtomicU64::new(0),
+            map_entries: AtomicU64::new(0),
+            map_size_bytes: AtomicU64::new(0),
+            last_summary_log: AtomicU64::new(0),
+        };
+        cache.sweep_cache_root().await;
+        Ok(cache)
+    }
+
+    /// Clones one empty file from the `FilesystemStore` into `cache_root`
+    /// to find out, once, whether executables can be cloned at all: both
+    /// must be on the same APFS volume. The store's temp directory stands in
+    /// for its content directory — the store renames every blob from one to
+    /// the other, so they are on one filesystem — and is where the store
+    /// already creates and prunes scratch files. A failure is logged once
+    /// and turns cloning off for the life of the cache, so a layout that
+    /// can never clone does not pay a failed `clonefile(2)` per file.
+    #[cfg(target_os = "macos")]
+    async fn probe_clone_executables(
+        filesystem_store: &FilesystemStore,
+        cache_root: &Path,
+    ) -> bool {
+        let probe_key = make_temp_key(&StoreKey::Digest(DigestInfo::zero_digest()));
+        let (probe_entry, probe_file, src) = match filesystem_store.make_temp_file(probe_key).await
+        {
+            Ok(probe) => probe,
+            Err(e) => {
+                warn!(
+                    error = ?e,
+                    "experimental_clone_executables: could not create a probe file in the \
+                     filesystem store; executable files will be copied"
+                );
+                return false;
+            }
+        };
+        drop(probe_file);
+        let src = PathBuf::from(src);
+        let dst = cache_root.join(CLONE_PROBE_NAME);
+        drop(fs::remove_file(&dst).await);
+        let result = clone_file_pristine(&src, &dst, 0o555).await;
+        drop(fs::remove_file(&dst).await);
+        // Dropping the entry makes the store delete its probe file.
+        drop(probe_entry);
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(
+                    cas_file = %src.display(),
+                    cache_file = %dst.display(),
+                    error = %e,
+                    "experimental_clone_executables: a filesystem store file cannot be cloned \
+                     into the directory cache (they must be on the same APFS volume); \
+                     executable files will be copied"
+                );
+                false
+            }
+        }
+    }
+
+    /// Sweeps pre-existing content of `cache_root`. The in-memory map starts
+    /// empty, so anything already on disk is orphaned: entries from a
+    /// previous process (unusable — they are not in the map, and a partial
+    /// one would poison re-construction of its digest), plus stale temp
+    /// trees and tombstones. Each orphan is renamed to a tombstone
+    /// synchronously — after `new` returns, a fresh construction could
+    /// otherwise publish to the very canonical path a detached deletion is
+    /// about to remove — and the tombstones are deleted in the background.
+    async fn sweep_cache_root(&self) {
+        let mut orphans = Vec::new();
+        match fs::read_dir(&self.config.cache_root).await {
+            Ok(mut dir) => loop {
+                match dir.next_entry().await {
+                    Ok(Some(entry)) => orphans.push(entry.path()),
+                    Ok(None) => break,
+                    Err(e) => {
+                        warn!(error = ?e, "Failed reading cache root during orphan sweep");
+                        break;
+                    }
+                }
+            },
+            Err(e) => {
+                warn!(error = ?e, "Failed to scan cache root for orphaned entries");
+                return;
+            }
+        }
+        if orphans.is_empty() {
+            return;
+        }
+        debug!(
+            count = orphans.len(),
+            "Sweeping orphaned directory cache content"
+        );
+        let tombstones = self.tombstone_victims(orphans).await;
+        Self::dispatch_evictions(tombstones);
+    }
+
+    /// Acquires a permit from the cache-wide slow-fetch budget. Held only
+    /// across leaf I/O awaits, never across subdirectory recursion.
+    async fn acquire_fetch_permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, Error> {
+        self.fetch_permits
+            .acquire()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "Fetch semaphore closed: {e:?}"))
+    }
+
+    /// Emits an `info!` summary of the cache counters, rate-limited to at
+    /// most one line per [`SUMMARY_LOG_INTERVAL_NANOS`]. Called from the
+    /// hit/miss path so deployments without a metrics pipeline can still
+    /// verify the cache is working by grepping worker logs.
+    fn maybe_log_summary(&self) {
+        let now = unix_nanos_now();
+        let last = self.last_summary_log.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < SUMMARY_LOG_INTERVAL_NANOS {
+            return;
+        }
+        // Single winner per interval; losers skip the log line.
+        if self
+            .last_summary_log
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        info!(
+            clonefile_hits = self.clonefile_hits.load(Ordering::Relaxed),
+            hardlink_hits = self.hardlink_hits.load(Ordering::Relaxed),
+            executable_clone_hits = self.executable_clone_hits.load(Ordering::Relaxed),
+            executable_clone_misses = self.executable_clone_misses.load(Ordering::Relaxed),
+            file_copy_hits = self.file_copy_hits.load(Ordering::Relaxed),
+            subtree_hits = self.subtree_hits.load(Ordering::Relaxed),
+            subtree_misses = self.subtree_misses.load(Ordering::Relaxed),
+            evictions = self.evictions.load(Ordering::Relaxed),
+            entries = self.map_entries.load(Ordering::Relaxed),
+            total_size_bytes = self.map_size_bytes.load(Ordering::Relaxed),
+            "DirectoryCache summary"
+        );
     }
 
     /// Records which kernel mechanism materialized a tree, for observability.
@@ -165,33 +544,94 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
-        // Fast path: check if already in cache.
-        //
-        // The cache write lock is held only long enough to bump `ref_count`
-        // and snapshot the entry's path — NOT across the syscall-heavy
-        // `hardlink_directory_tree`. A global lock held across that
-        // materialization serializes every concurrent `get_or_create`. The
-        // `ref_count` bump is what makes releasing the lock safe: eviction
-        // skips any entry with `ref_count > 0`, so the cache path cannot be
-        // deleted out from under the unlocked materialization.
-        if let Some(cache_path) = self.acquire_entry(&digest).await {
-            debug!(?digest, ?cache_path, "Directory cache HIT");
-            let result = hardlink_directory_tree(&cache_path, dest_path).await;
-            self.release_entry(&digest).await;
-            match result {
-                Ok(method) => {
-                    self.record_clone_method(method);
-                    return Ok(true);
-                }
-                Err(e) => {
-                    warn!(
-                        ?digest,
-                        error = ?e,
-                        "Failed to hardlink from cache, will reconstruct"
-                    );
-                    // Fall through to reconstruction.
-                }
-            }
+        self.get_or_create_with_lease(digest, dest_path, None).await
+    }
+
+    /// Gets or creates a cached directory while optionally reserving each CAS
+    /// digest used by a construction.
+    ///
+    /// Existing cache hits only hardlink from the already-materialized cache
+    /// entry, whose own pin protects the source tree. On a miss, the lease is
+    /// called before the root, file, and child-directory digests are fetched
+    /// or populated, closing the admission-to-eviction race for active
+    /// actions.
+    pub async fn get_or_create_with_lease(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<bool, Error> {
+        let (hit, _size) = self
+            .get_or_create_entry(digest, dest_path, None, true, lease)
+            .await?;
+        Ok(hit)
+    }
+
+    /// Acquires a reusable tree without copying it to an action workspace.
+    /// The returned handle must outlive every mount or other use of its path.
+    pub async fn prepare_for_mount(
+        &self,
+        digest: DigestInfo,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        self.maybe_log_summary();
+        acquire_digest(lease, &digest);
+        if let Some(prepared) = self.acquire_entry(&digest).await {
+            nativelink_util::metrics::INPUT_MOUNT_METRICS
+                .cache_hits
+                .add(1, &[]);
+            return Ok(prepared);
+        }
+        let lock = {
+            let mut locks = self.construction_locks.lock().await;
+            locks
+                .entry(digest)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        let result = if let Some(prepared) = self.acquire_entry(&digest).await {
+            nativelink_util::metrics::INPUT_MOUNT_METRICS
+                .cache_hits
+                .add(1, &[]);
+            Ok(prepared)
+        } else {
+            nativelink_util::metrics::INPUT_MOUNT_METRICS
+                .cache_misses
+                .add(1, &[]);
+            self.construct_entry(digest, None, true, lease).await
+        };
+        self.forget_construction_lock(&digest).await;
+        result
+    }
+
+    /// Core get-or-create flow shared by root materializations
+    /// ([`Self::get_or_create`]) and, with `experimental_subtree_caching`
+    /// enabled, subtree materializations (`create_subdirectory`). Returns
+    /// `(hit, size)` where `hit` is true when the destination was served by
+    /// hardlinking an existing cache entry, and `size` is the entry's
+    /// recorded size in bytes.
+    ///
+    /// `protos` is a map of prefetched `Directory` protos consulted during
+    /// construction (see [`Self::prefetch_tree_protos`]); `prefetch_on_miss`
+    /// is true only for root-level calls, which issue the tree's logical
+    /// `GetTree` prefetch on a cold miss. Subtree flights pass the root's
+    /// map down instead, so cache hits (root or subtree) never prefetch. A
+    /// server may paginate that traversal across multiple RPCs.
+    async fn get_or_create_entry(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<(bool, u64), Error> {
+        self.maybe_log_summary();
+        acquire_digest(lease, &digest);
+
+        // Fast path: serve from an existing entry.
+        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+            return Ok((true, size));
         }
 
         debug!(?digest, "Directory cache MISS");
@@ -200,7 +640,11 @@ impl DirectoryCache {
         // Concurrent callers for the same digest block on this per-digest
         // mutex; when the constructor finishes and inserts the entry, the
         // waiters wake, find it in the cache, and materialize their own
-        // destination from the single shared cache entry.
+        // destination from the single shared cache entry. Root and subtree
+        // flights for the same digest share one mutex, and the lock order is
+        // deadlock-free by construction: a flight only ever waits on locks
+        // of its strict descendants, and the content-addressed Merkle DAG is
+        // acyclic.
         let construction_lock = {
             let mut locks = self.construction_locks.lock().await;
             locks
@@ -211,51 +655,123 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Run the construction/materialization under the per-digest guard,
-        // then drop the per-digest mutex from the stampede map regardless of
-        // outcome so it cannot grow unbounded. The guard (`_guard`) is still
-        // held until the end of this function — `forget_construction_lock`
-        // only unmaps the Arc; any waiter already cloned it before blocking.
-        let result = self.construct_and_materialize(digest, dest_path).await;
+        // then remove its lock from the map if no other callers are waiting.
+        // Waiters must keep sharing this flight even if construction failed.
+        let result = self
+            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
+            .await;
         self.forget_construction_lock(&digest).await;
         result
     }
 
+    /// Attempts to serve `digest` from an existing cache entry by hardlinking
+    /// it to `dest_path`, returning the entry's recorded size on success.
+    ///
+    /// The entry is pinned (see [`EntryPin`]) across the unlocked
+    /// `hardlink_directory_tree` so eviction cannot delete its tree
+    /// mid-materialization; only the brief refcount/LRU bookkeeping runs
+    /// under the cache lock (the READ lock — hits never serialize on the
+    /// write lock).
+    ///
+    /// Returns `None` when the digest is not cached, or when the entry's
+    /// on-disk tree failed to hardlink (missing/corrupt). In the failure
+    /// case the dead entry has been invalidated (removed + tombstoned, so it
+    /// cannot fail every future request forever) and the possibly partially
+    /// populated destination cleared, so the caller can construct fresh.
+    /// If another caller still holds the entry, return the error without
+    /// invalidating it: that caller may be using its tree through a mount.
+    async fn try_materialize_from_cache(
+        &self,
+        digest: &DigestInfo,
+        dest_path: &Path,
+    ) -> Result<Option<u64>, Error> {
+        let Some(PreparedDirectory {
+            path: cache_path,
+            size,
+            pin,
+        }) = self.acquire_entry(digest).await
+        else {
+            return Ok(None);
+        };
+        debug!(?digest, ?cache_path, "Directory cache HIT");
+        match hardlink_directory_tree(&cache_path, dest_path).await {
+            Ok(method) => {
+                drop(pin);
+                self.record_clone_method(method);
+                Ok(Some(size))
+            }
+            Err(e) => {
+                if !self.invalidate_entry(digest, &pin).await {
+                    return Err(e).err_tip(|| "Cannot rebuild a directory while it is in use");
+                }
+                warn!(
+                    ?digest,
+                    error = ?e,
+                    "Failed to hardlink from cache, invalidating entry and reconstructing"
+                );
+                drop(pin);
+                // The failed walk may have partially populated the
+                // destination; clear it so the reconstruction starts clean
+                // (`hardlink_directory_tree` refuses an existing destination
+                // and `create_file` fails on leftovers).
+                Self::remove_tree_best_effort(dest_path).await;
+                Ok(None)
+            }
+        }
+    }
+
     /// The cache-miss body, run while holding the per-digest construction
-    /// guard. Split out so `get_or_create` can unconditionally clean up the
-    /// construction-lock map entry afterwards on every exit path.
+    /// guard. Split out so `get_or_create_entry` can retire an unused
+    /// construction lock after either success or failure.
+    /// `protos` and `prefetch_on_miss` are documented on
+    /// [`Self::get_or_create_entry`].
     async fn construct_and_materialize(
         &self,
         digest: DigestInfo,
         dest_path: &Path,
-    ) -> Result<bool, Error> {
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<(bool, u64), Error> {
         // Re-check: another task may have just constructed this digest while
-        // we waited on the construction lock.
-        if let Some(cache_path) = self.acquire_entry(&digest).await {
-            let result = hardlink_directory_tree(&cache_path, dest_path).await;
-            self.release_entry(&digest).await;
-            match result {
-                Ok(method) => {
-                    self.record_clone_method(method);
-                    return Ok(true);
-                }
-                Err(e) => {
-                    warn!(
-                        ?digest,
-                        error = ?e,
-                        "Failed to hardlink after construction"
-                    );
-                    // Construct directly at dest_path as a last resort.
-                    self.construct_directory(digest, dest_path).await?;
-                    return Ok(false);
-                }
-            }
+        // we waited on the construction lock. If the entry turns out to be
+        // damaged it is invalidated and we fall through to rebuild it fresh
+        // (exactly once — we hold the construction lock).
+        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+            return Ok((true, size));
         }
 
-        // Construct the directory in cache. `construct_directory` returns the
-        // total tree size accumulated from `FileNode.digest.size_bytes` as it
-        // builds — no post-hoc filesystem walk is needed. It also sets every
-        // cache-entry directory's mode at creation time (0o755), so no
-        // separate permission-fixup walk is needed either.
+        let prepared = self
+            .construct_entry(digest, protos, prefetch_on_miss, lease)
+            .await?;
+        let method = hardlink_directory_tree(prepared.path(), dest_path)
+            .await
+            .err_tip(|| "Failed to hardlink newly cached directory")?;
+        self.record_clone_method(method);
+        Ok((false, prepared.size))
+    }
+
+    /// Constructs and publishes a pinned entry, without copying it elsewhere.
+    async fn construct_entry(
+        &self,
+        digest: DigestInfo,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        // Construct the directory into a UNIQUE temp path first, then
+        // atomically publish it to the canonical `cache_root/<digest>` path
+        // via rename. Constructing at the canonical path directly would
+        // poison the digest on failure: the partial tree left behind makes
+        // every future construction of the digest fail on its leftovers —
+        // and subtree digests are stable across builds, so one poisoned
+        // popular subtree would fail every subsequent build.
+        //
+        // `construct_directory` returns the total tree size accumulated from
+        // `FileNode.digest.size_bytes` as it builds — no post-hoc filesystem
+        // walk is needed. It also sets every cache-entry directory's mode at
+        // creation time (0o755), so no separate permission-fixup walk is
+        // needed either.
         //
         // The cache entry's *files* are deliberately never chmod'd here:
         // non-executable files are hardlinks to FilesystemStore CAS blobs (see
@@ -263,79 +779,219 @@ impl DirectoryCache {
         // with the CAS and every other in-flight action that hardlinked the
         // same blob — the inode-corruption bug PR #2347 fixed.
         let cache_path = self.get_cache_path(&digest);
-        let size = self.construct_directory(digest, &cache_path).await?;
+        // Root-level cold miss: prefetch the whole tree's `Directory` protos
+        // with one logical `GetTree` traversal, following server pagination.
+        // Subtree flights never prefetch — they inherit the root's map (or
+        // `None`) through `protos` instead.
+        let prefetched = if prefetch_on_miss {
+            Box::pin(self.prefetch_tree_protos(digest)).await
+        } else {
+            None
+        };
+        let protos = prefetched.as_ref().or(protos);
+        let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
+        let mut temp_guard = ScratchGuard::new(temp_path.clone());
+        let size = match self
+            .construct_directory(digest, &temp_path, protos, lease)
+            .await
+        {
+            Ok(size) => size,
+            Err(e) => {
+                temp_guard.disarm();
+                Self::remove_tree_best_effort(&temp_path).await;
+                return Err(e);
+            }
+        };
 
-        // Insert into the cache. Only the in-memory map mutation runs under
-        // the write lock: `evict_if_needed` selects victims and removes them
-        // from the map here, but their filesystem deletion is dispatched off
-        // the lock so eviction I/O never serializes other callers.
+        // Publish. A pre-existing canonical dir can only be crash leftovers
+        // from a previous process that the startup sweep has not yet
+        // removed: live entries are tracked in the map (this digest has no
+        // entry — we hold its construction lock and just re-checked), and
+        // eviction renames trees to tombstones under the cache write lock
+        // before deleting them.
+        Self::remove_tree_best_effort(&cache_path).await;
+        temp_guard.disarm();
+        if let Err(e) = fs::rename(&temp_path, &cache_path).await {
+            Self::remove_tree_best_effort(&temp_path).await;
+            return Err(e)
+                .err_tip(|| format!("Failed to publish cache entry: {}", cache_path.display()));
+        }
+
+        // Insert into the cache. The in-memory map mutation and the
+        // metadata-cheap tombstone renames of evicted victims run under the
+        // write lock (see `tombstone_victims` for why the renames must);
+        // the expensive filesystem deletion is dispatched off the lock so
+        // eviction I/O never serializes other callers.
         //
-        // The new entry is inserted with `ref_count: 1` — pinned. The
-        // hardlink-to-destination below runs unlocked, and a concurrent
-        // `get_or_create` for an unrelated digest could otherwise pick this
-        // brand-new, last-accessed-now entry as an eviction victim and delete
-        // its tree mid-hardlink. The pin blocks that; `release_entry` drops it
-        // to 0 once the hardlink is done.
-        let evicted = {
+        // Publish already pinned: a concurrent insertion must not evict the
+        // tree before its caller has finished copying or mounting it. The
+        // returned handle keeps the pin alive for the entire use.
+        let ref_count = Arc::new(AtomicUsize::new(1));
+        let pin = EntryPin {
+            ref_count: Arc::clone(&ref_count),
+        };
+        let tombstones = {
             let mut cache = self.cache.write().await;
-            let evicted = self.evict_if_needed(size, &mut cache);
-            cache.insert(
+            let victims = self.evict_if_needed(size, &mut cache);
+            let replaced = cache.insert(
                 digest,
                 CachedDirectoryMetadata {
                     path: cache_path.clone(),
                     size,
-                    last_access: SystemTime::now(),
-                    ref_count: 1,
+                    last_access: AtomicU64::new(unix_nanos_now()),
+                    ref_count,
                 },
             );
-            evicted
+            // Maintain the lock-free metric mirrors. A replaced entry cannot
+            // happen (we hold the construction lock and just re-checked), but
+            // account for it defensively so the mirrors can never drift.
+            if let Some(old) = replaced {
+                self.map_size_bytes.fetch_sub(old.size, Ordering::Relaxed);
+            } else {
+                self.map_entries.fetch_add(1, Ordering::Relaxed);
+            }
+            self.map_size_bytes.fetch_add(size, Ordering::Relaxed);
+            self.tombstone_victims(victims).await
         };
-        Self::dispatch_evictions(evicted);
+        Self::dispatch_evictions(tombstones);
 
-        // Hardlink to destination (unlocked). The entry is pinned
-        // (`ref_count == 1`) so it cannot be evicted from under this hardlink.
-        let result = hardlink_directory_tree(&cache_path, dest_path).await;
-        self.release_entry(&digest).await;
-        let method = result.err_tip(|| "Failed to hardlink newly cached directory")?;
-        self.record_clone_method(method);
-
-        Ok(false)
+        Ok(PreparedDirectory {
+            path: cache_path,
+            size,
+            pin,
+        })
     }
 
-    /// If `digest` is cached, bumps its `ref_count` (pinning it against
-    /// eviction) and returns a snapshot of its on-disk path. The cache write
-    /// lock is released before returning, so the caller can perform unlocked
-    /// I/O against the returned path. Every successful `acquire_entry` MUST be
-    /// balanced by exactly one `release_entry`.
-    async fn acquire_entry(&self, digest: &DigestInfo) -> Option<PathBuf> {
-        let mut cache = self.cache.write().await;
-        let metadata = cache.get_mut(digest)?;
-        metadata.last_access = SystemTime::now();
-        metadata.ref_count += 1;
-        Some(metadata.path.clone())
+    /// Removes a cache entry whose on-disk tree failed to materialize
+    /// (missing or corrupt), renames the tree to a tombstone, and deletes it
+    /// in the background — the same mechanism eviction uses. Without this, a
+    /// damaged entry would stay in the map and fail every future request for
+    /// its digest until it happened to be evicted.
+    ///
+    /// `pin` is the guard returned by `acquire_entry` for the failed
+    /// attempt: invalidation is skipped if the map now holds a DIFFERENT
+    /// entry for this digest (single-flight already rebuilt it), identified
+    /// by refcount-handle pointer identity.
+    /// Returns `false` if another caller still pins the entry.
+    async fn invalidate_entry(&self, digest: &DigestInfo, pin: &EntryPin) -> bool {
+        let tombstones = {
+            let mut cache = self.cache.write().await;
+            let is_same_entry = cache
+                .get(digest)
+                .is_some_and(|m| Arc::ptr_eq(&m.ref_count, &pin.ref_count));
+            if !is_same_entry {
+                return true;
+            }
+            // The failed materialization owns one pin. Other pins may belong
+            // to mounted actions, whose source must not be renamed or deleted.
+            // Holding the write lock prevents new pins during this check.
+            if pin.ref_count.load(Ordering::SeqCst) > 1 {
+                return false;
+            }
+            let Some(metadata) = cache.remove(digest) else {
+                return true;
+            };
+            self.map_entries.fetch_sub(1, Ordering::Relaxed);
+            self.map_size_bytes
+                .fetch_sub(metadata.size, Ordering::Relaxed);
+            self.tombstone_victims(vec![metadata.path]).await
+        };
+        Self::dispatch_evictions(tombstones);
+        true
     }
 
-    /// Releases a pin taken by [`Self::acquire_entry`]. Tolerates the entry
-    /// having been removed from the map in the interim (it cannot have been,
-    /// because a non-zero `ref_count` blocks eviction, but be defensive).
-    async fn release_entry(&self, digest: &DigestInfo) {
-        let mut cache = self.cache.write().await;
-        if let Some(metadata) = cache.get_mut(digest) {
-            metadata.ref_count = metadata.ref_count.saturating_sub(1);
+    /// Best-effort `remove_dir_all` that treats `NotFound` as success and
+    /// only warns on other failures. Used to clear partially populated
+    /// destinations before a retry, partially built temp trees after a
+    /// failed construction, and stale crash leftovers before publishing.
+    async fn remove_tree_best_effort(path: &Path) {
+        if let Err(e) = fs::remove_dir_all(path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(?path, error = ?e, "Failed to remove partial directory tree");
         }
     }
 
-    /// Drops the per-digest construction mutex from the stampede map once
-    /// construction (or the post-construction recheck) for `digest` is done.
-    /// Without this the map grows unbounded over the worker's lifetime.
+    /// Allocates a process-unique scratch path under `cache_root` (temp
+    /// construction trees, eviction tombstones). Unique within the process
+    /// via a monotonic counter; leftovers from previous processes are
+    /// removed by the startup sweep in [`Self::new`].
+    fn allocate_scratch_path(&self, prefix: &str) -> PathBuf {
+        let seq = self.scratch_seq.fetch_add(1, Ordering::Relaxed);
+        self.config.cache_root.join(format!("{prefix}{seq}"))
+    }
+
+    /// Renames each evicted tree to a unique tombstone path and returns the
+    /// tombstones for background deletion.
     ///
-    /// Safe to call while holding the construction guard: a concurrent waiter
-    /// already cloned the `Arc<Mutex>` before blocking, so removing the map
-    /// entry only prevents *future* callers from joining this exact mutex —
-    /// they will create a fresh one, re-check the cache, find the entry, and
-    /// take the fast hardlink path. It never causes a redundant construct.
+    /// MUST be called while still holding the cache write lock that removed
+    /// the victims from the map (or before the cache is shared, as in the
+    /// startup sweep). That ordering is what makes eviction race-free
+    /// against re-construction of an evicted digest: a constructor only
+    /// constructs after a cache re-check, the re-check needs the read lock,
+    /// so it is ordered after these renames — the background deletion can
+    /// therefore never touch a canonical path a fresh construction publishes
+    /// to. The rename itself is metadata-only and cheap; the expensive
+    /// `remove_dir_all` still happens off-lock in the background.
+    async fn tombstone_victims(&self, victims: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut tombstones = Vec::with_capacity(victims.len());
+        for path in victims {
+            let tombstone = self.allocate_scratch_path(TOMBSTONE_PREFIX);
+            match fs::rename(&path, &tombstone).await {
+                Ok(()) => tombstones.push(tombstone),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Already gone from disk; nothing to delete.
+                }
+                Err(e) => {
+                    warn!(
+                        ?path,
+                        error = ?e,
+                        "Failed to tombstone evicted directory, deleting in place"
+                    );
+                    tombstones.push(path);
+                }
+            }
+        }
+        tombstones
+    }
+
+    /// If `digest` is cached, pins it against eviction and returns a
+    /// handle holding its on-disk path, recorded size, and the RAII pin.
+    /// Runs under the cache READ lock — the refcount and LRU timestamp are
+    /// atomics, so hits do not serialize on the write lock. The increment is
+    /// race-free against eviction because eviction requires the write lock,
+    /// which excludes every read-lock holder: an entry with an outstanding
+    /// pin is always observed with a non-zero count by `evict_lru`.
+    async fn acquire_entry(&self, digest: &DigestInfo) -> Option<PreparedDirectory> {
+        let cache = self.cache.read().await;
+        let metadata = cache.get(digest)?;
+        metadata
+            .last_access
+            .store(unix_nanos_now(), Ordering::Relaxed);
+        metadata.ref_count.fetch_add(1, Ordering::SeqCst);
+        Some(PreparedDirectory {
+            path: metadata.path.clone(),
+            size: metadata.size,
+            pin: EntryPin {
+                ref_count: Arc::clone(&metadata.ref_count),
+            },
+        })
+    }
+
+    /// Removes an idle construction lock after the last caller finishes.
+    /// Keep it mapped while another caller owns an `Arc`: after a failed
+    /// construction that caller may retry before a cache entry exists, and
+    /// giving new callers a different mutex would allow concurrent publication
+    /// to the same path. The map lock prevents new clones during this check.
     async fn forget_construction_lock(&self, digest: &DigestInfo) {
-        self.construction_locks.lock().await.remove(digest);
+        let mut locks = self.construction_locks.lock().await;
+        // The map and this function's caller each own one strong reference.
+        if locks
+            .get(digest)
+            .is_some_and(|lock| Arc::strong_count(lock) == 2)
+        {
+            locks.remove(digest);
+        }
     }
 
     /// Constructs a directory from the CAS at the given path and returns the
@@ -349,19 +1005,111 @@ impl DirectoryCache {
     ///
     /// Each directory's final mode (0o755) is set at creation time, so no
     /// separate recursive permission pass is needed after construction.
+    /// Prefetches every `Directory` proto of `root`'s tree with a logical
+    /// `GetTree` traversal, following `next_page_token` when the server
+    /// paginates it, and keys each proto by its re-computed digest (the
+    /// responses carry protos, not digests). Returns `None` — meaning
+    /// "use the per-level fetch path" — when the feature is disabled, the
+    /// slow tier is not a `GrpcStore`, or the stream fails; a `Some` map
+    /// may also be incomplete, which `construct_directory` tolerates by
+    /// fetching any missing proto individually. One fetch permit covers
+    /// the entire paginated traversal.
+    async fn prefetch_tree_protos(
+        &self,
+        root: DigestInfo,
+    ) -> Option<HashMap<DigestInfo, ProtoDirectory>> {
+        if !self.config.experimental_get_tree_prefetch {
+            return None;
+        }
+        let grpc_store = self
+            .cas_store
+            .slow_store()
+            .downcast_ref::<GrpcStore>(None)?;
+        let digest_hasher = opentelemetry::Context::current()
+            .get::<DigestHasherFunc>()
+            .map_or_else(default_digest_hasher_func, |v| *v);
+        let result: Result<HashMap<DigestInfo, ProtoDirectory>, Error> = async {
+            let _permit = self.acquire_fetch_permit().await?;
+            let mut protos = HashMap::new();
+            let mut page_token = String::new();
+            loop {
+                let mut stream = grpc_store
+                    .get_tree(tonic::Request::new(GetTreeRequest {
+                        instance_name: String::new(),
+                        root_digest: Some(root.into()),
+                        page_size: 0,
+                        page_token,
+                        digest_function: digest_hasher.proto_digest_func().into(),
+                    }))
+                    .await
+                    .err_tip(|| "in prefetch_tree_protos")?
+                    .into_inner();
+                let mut next_page_token = String::new();
+                while let Some(response) = stream
+                    .message()
+                    .await
+                    .map_err(Error::from)
+                    .err_tip(|| "reading GetTree stream in prefetch_tree_protos")?
+                {
+                    next_page_token = response.next_page_token;
+                    for directory in response.directories {
+                        // GetTree yields protos without digests; recompute with
+                        // the caller's digest function so lookups match the
+                        // digests embedded in parent directories.
+                        let encoded = directory.encode_to_vec();
+                        let mut hasher = digest_hasher.hasher();
+                        hasher.update(&encoded);
+                        protos.insert(hasher.finalize_digest(), directory);
+                    }
+                }
+                if next_page_token.is_empty() {
+                    break;
+                }
+                page_token = next_page_token;
+            }
+            Ok(protos)
+        }
+        .await;
+        match result {
+            Ok(protos) => {
+                trace!(?root, protos = protos.len(), "GetTree prefetch complete");
+                Some(protos)
+            }
+            Err(err) => {
+                debug!(
+                    ?err,
+                    ?root,
+                    "GetTree prefetch failed; using per-level fetches"
+                );
+                None
+            }
+        }
+    }
+
     fn construct_directory<'a>(
         &'a self,
         digest: DigestInfo,
         dest_path: &'a Path,
+        protos: Option<&'a HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&'a dyn DigestLease>,
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
+            // The root is reserved by `get_or_create_entry`; child digests are
+            // reserved before their recursive futures are queued below.
 
-            // Fetch the Directory proto
-            let directory: ProtoDirectory =
+            // Use the prefetched proto when available; otherwise fetch it
+            // (permit held only for the fetch). A prefetch-map miss (e.g.
+            // an incomplete GetTree response) degrades to the fetch path.
+            let prefetched = protos.and_then(|map| map.get(&digest));
+            let directory: ProtoDirectory = if let Some(directory) = prefetched {
+                directory.clone()
+            } else {
+                let _permit = self.acquire_fetch_permit().await?;
                 get_and_decode_digest(self.cas_store.as_ref(), digest.into())
                     .await
-                    .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?;
+                    .err_tip(|| format!("Failed to fetch directory digest: {digest:?}"))?
+            };
 
             // Create the destination directory. It must be writable while it
             // is being populated; 0o755 is its final mode too, so set it now
@@ -369,25 +1117,51 @@ impl DirectoryCache {
             self.create_dir_writable(dest_path).await?;
 
             let mut total_size: u64 = 0;
-
-            // Process files
             for file in &directory.files {
-                self.create_file(dest_path, file).await?;
                 if let Some(file_digest) = &file.digest {
                     // size_bytes is non-negative; clamp defensively.
                     total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
+                    if let Ok(file_digest) = DigestInfo::try_from(file_digest) {
+                        acquire_digest(lease, &file_digest);
+                    }
                 }
             }
 
-            // Process subdirectories recursively
+            // Materialize all nodes of this directory level concurrently,
+            // sharing one concurrency budget — the same shape as
+            // `download_to_directory`. Every file that is not in the fast
+            // tier pays a full slow-store round trip, so awaiting nodes
+            // sequentially serializes N round trips and dominates cold-cache
+            // construction time for large trees. Futures yield the subtree
+            // size they materialized (0 for files, whose sizes are already
+            // summed from their digests above, and for symlinks).
+            let mut node_futures: Vec<BoxFuture<'_, Result<u64, Error>>> = Vec::with_capacity(
+                directory.files.len() + directory.directories.len() + directory.symlinks.len(),
+            );
+            for file in &directory.files {
+                node_futures.push(Box::pin(async move {
+                    self.create_file(dest_path, file).await.map(|()| 0)
+                }));
+            }
             for dir_node in &directory.directories {
-                total_size += self.create_subdirectory(dest_path, dir_node).await?;
+                if let Some(dir_digest) = &dir_node.digest
+                    && let Ok(dir_digest) = DigestInfo::try_from(dir_digest)
+                {
+                    acquire_digest(lease, &dir_digest);
+                }
+                node_futures.push(Box::pin(
+                    self.create_subdirectory(dest_path, dir_node, protos, lease),
+                ));
             }
-
-            // Process symlinks
             for symlink in &directory.symlinks {
-                self.create_symlink(dest_path, symlink).await?;
+                node_futures.push(Box::pin(async move {
+                    self.create_symlink(dest_path, symlink).await.map(|()| 0)
+                }));
             }
+            total_size += futures::stream::iter(node_futures)
+                .buffer_unordered(CONSTRUCT_DIRECTORY_CONCURRENCY)
+                .try_fold(0u64, |acc, size| async move { Ok(acc + size) })
+                .await?;
 
             Ok(total_size)
         })
@@ -421,7 +1195,11 @@ impl DirectoryCache {
     /// This imposes two correctness rules, both handled here:
     ///  * Executable files (`FileNode.is_executable`) need the `+x` bit, which
     ///    cannot be applied to a shared CAS inode. They are given their own
-    ///    private inode via fetch+write and then chmod'd — never hardlinked.
+    ///    private inode and then chmod'd — never hardlinked. That inode is
+    ///    a fetch+write copy, or, on macOS with
+    ///    `experimental_clone_executables`, an APFS `clonefile(2)` clone of
+    ///    the CAS blob (its own mode, copy-on-write data, nothing read or
+    ///    written) with the copy as the fallback whenever a clone fails.
     ///  * If the blob is not locally hardlinkable (the fast tier is not a
     ///    `FilesystemStore`, or the blob is not present in it / was evicted),
     ///    fall back to fetch+write for that file rather than failing.
@@ -447,12 +1225,70 @@ impl DirectoryCache {
             fs::write(&file_path, b"")
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
+            // macOS only: read-only like every other materialized input, and
+            // +x when asked for, so an empty wrapper script still execs. Linux
+            // keeps the default mode, as before, to avoid an extra chmod per
+            // empty file there.
+            #[cfg(target_os = "macos")]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if file_node.is_executable {
+                    0o555
+                } else {
+                    0o444
+                };
+                fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
+                    .await
+                    .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+            }
             return Ok(());
         }
 
         // Executable files need their own inode to carry the +x bit without
-        // mutating the shared CAS blob — copy, never hardlink.
+        // mutating the shared CAS blob — clone or copy, never hardlink.
         if file_node.is_executable {
+            #[cfg(target_os = "macos")]
+            if self.clone_executables
+                && let Some(filesystem_store) = &self.filesystem_store
+            {
+                match self
+                    .clone_cas_blob_executable(filesystem_store, &digest, &file_path)
+                    .await
+                {
+                    Ok(()) => {
+                        self.executable_clone_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
+                    }
+                    // The blob left the filesystem tier, it carries
+                    // metadata a copy would not, ... — not fatal: a
+                    // failed clone normally leaves nothing behind, and the
+                    // copy below builds the same file the way it always
+                    // has. `executable_clone_misses` makes a clone that
+                    // always fails visible.
+                    Err(e) => {
+                        self.executable_clone_misses.fetch_add(1, Ordering::Relaxed);
+                        // A rejected clone that could not be removed is
+                        // still in the way, and the copy cannot be written
+                        // over it. A file that was there before the clone
+                        // (AlreadyExists) is not ours, and the copy
+                        // overwrites it as it always has.
+                        if e.code != Code::AlreadyExists
+                            && fs::symlink_metadata(&file_path).await.is_ok()
+                        {
+                            return Err(e.append(format!(
+                                "{} is left behind, so the file cannot be copied there instead",
+                                file_path.display()
+                            )));
+                        }
+                        trace!(
+                            ?digest,
+                            ?file_path,
+                            error = ?e,
+                            "CAS blob not cloneable, copying instead"
+                        );
+                    }
+                }
+            }
             return self.copy_file_to(&digest, &file_path, true).await;
         }
 
@@ -495,29 +1331,99 @@ impl DirectoryCache {
         digest: &DigestInfo,
         file_path: &Path,
     ) -> Result<(), Error> {
-        // Ensure the blob is in the fast (filesystem) tier so it has an
-        // on-disk file we can hardlink.
-        self.cas_store
-            .populate_fast_store(StoreKey::Digest(*digest))
-            .await
-            .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
-
-        let file_entry = filesystem_store
-            .get_file_entry_for_digest(digest)
-            .await
-            .err_tip(|| "Resolving CAS file entry for hardlink")?;
-
         let file_path = file_path.to_path_buf();
-        file_entry
-            .get_file_path_locked(move |src| async move {
+        self.with_cas_blob_path_locked(
+            filesystem_store,
+            digest,
+            "hardlink",
+            move |src| async move {
                 fs::hard_link(&src, &file_path).await.err_tip(|| {
                     format!(
                         "Failed to hardlink CAS blob into cache entry: {}",
                         file_path.display()
                     )
                 })
-            })
+            },
+        )
+        .await
+    }
+
+    /// Runs `materialize` on the on-disk path of the `FilesystemStore` CAS
+    /// blob for `digest`, for `hardlink_cas_blob` and
+    /// `clone_cas_blob_executable` alike, so the eviction-race discipline
+    /// lives in one place: the blob is first populated into the fast tier
+    /// (which may fetch from the slow store, so it holds a fetch permit),
+    /// then its path is resolved and used under the entry lock, so an
+    /// eviction cannot move it while `materialize` runs.
+    ///
+    /// Returns a `NotFound` error if the blob is not present in the
+    /// filesystem tier; `purpose` names the use in that error.
+    async fn with_cas_blob_path_locked<T, Fut, F>(
+        &self,
+        filesystem_store: &FilesystemStore,
+        digest: &DigestInfo,
+        purpose: &'static str,
+        materialize: F,
+    ) -> Result<T, Error>
+    where
+        Fut: Future<Output = Result<T, Error>> + Send,
+        F: FnOnce(std::ffi::OsString) -> Fut + Send,
+    {
+        {
+            let _permit = self.acquire_fetch_permit().await?;
+            self.cas_store
+                .populate_fast_store(StoreKey::Digest(*digest))
+                .await
+                .err_tip(|| format!("Failed to populate fast store for {digest}"))?;
+        }
+
+        filesystem_store
+            .get_file_entry_for_digest(digest)
             .await
+            .err_tip(|| format!("Resolving CAS file entry for {purpose}"))?
+            .get_file_path_locked(materialize)
+            .await
+    }
+
+    /// Gives the executable `digest` its private `0o555` inode at `file_path`
+    /// by cloning the `FilesystemStore` CAS blob with APFS `clonefile(2)`
+    /// instead of fetching it into memory and writing it back out.
+    ///
+    /// A clone is a new inode that shares the blob's data blocks
+    /// copy-on-write, so its chmod lands on the clone alone and the shared
+    /// `0o444` CAS inode is never touched — the same guarantee
+    /// `copy_file_to` gives, without reading or writing the file's bytes.
+    /// The blob's path is resolved and cloned under the entry lock, exactly
+    /// like `hardlink_cas_blob`, so an eviction cannot move it mid-clone.
+    /// A clone that would carry more than the blob's bytes (extended
+    /// attributes, BSD file flags) is discarded; see `clone_file_pristine`.
+    ///
+    /// The clone keeps the blob's mtime, as the hardlink of a
+    /// non-executable file does.
+    ///
+    /// Any error means "not cloneable" and normally leaves nothing at
+    /// `file_path`, and callers fall back to `copy_file_to`; a rejected
+    /// clone that could not be removed is the exception, which `create_file`
+    /// checks for.
+    #[cfg(target_os = "macos")]
+    async fn clone_cas_blob_executable(
+        &self,
+        filesystem_store: &FilesystemStore,
+        digest: &DigestInfo,
+        file_path: &Path,
+    ) -> Result<(), Error> {
+        let dst = file_path.to_path_buf();
+        self.with_cas_blob_path_locked(filesystem_store, digest, "clone", move |src| async move {
+            clone_file_pristine(Path::new(&src), &dst, 0o555)
+                .await
+                .err_tip(|| {
+                    format!(
+                        "Failed to clone CAS blob into cache entry: {}",
+                        dst.display()
+                    )
+                })
+        })
+        .await
     }
 
     /// Fetches the blob for `digest` from the CAS and writes a private copy at
@@ -530,11 +1436,13 @@ impl DirectoryCache {
         file_path: &Path,
         executable: bool,
     ) -> Result<(), Error> {
-        let data = self
-            .cas_store
-            .get_part_unchunked(StoreKey::Digest(*digest), 0, None)
-            .await
-            .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?;
+        let data = {
+            let _permit = self.acquire_fetch_permit().await?;
+            self.cas_store
+                .get_part_unchunked(StoreKey::Digest(*digest), 0, None)
+                .await
+                .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?
+        };
 
         fs::write(file_path, data.as_ref())
             .await
@@ -557,15 +1465,26 @@ impl DirectoryCache {
         #[cfg(not(unix))]
         let _ = executable;
 
+        self.file_copy_hits.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Creates a subdirectory from a `DirectoryNode`, returning the total size
     /// of the subtree it materializes.
+    ///
+    /// With `experimental_subtree_caching` enabled, the subtree is looked up
+    /// in (and inserted into) the cache by its own `Directory` digest, so a
+    /// subtree already constructed under any previous root is one
+    /// `hardlink_directory_tree` call instead of a full recursive rebuild.
+    /// When disabled (the default), the subtree is always constructed
+    /// directly under the parent with no cache interaction — today's
+    /// behavior, unchanged.
     async fn create_subdirectory(
         &self,
         parent: &Path,
         dir_node: &DirectoryNode,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
@@ -576,8 +1495,37 @@ impl DirectoryCache {
 
         trace!(?dir_path, ?digest, "Creating subdirectory");
 
+        if self.config.experimental_subtree_caching {
+            // Subtree caching: look the subtree up in (and insert it into)
+            // the cache by its own digest through the same core flow root
+            // materializations use. REAPI `Directory` nodes are
+            // content-addressed, so a subtree digest seen under one root is
+            // byte-identical wherever else it appears; construction recurses
+            // through this method, so nested subtrees get their own entries
+            // too (leaf-level reuse).
+            let (hit, _size) = self
+                .get_or_create_entry(digest, &dir_path, protos, false, lease)
+                .await?;
+            let counter = if hit {
+                &self.subtree_hits
+            } else {
+                &self.subtree_misses
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            // The child's cache entry owns its bytes: contribute 0 to the
+            // parent's recorded size, so an entry's size covers only bytes
+            // not owned by a descendant entry and the sum over the map
+            // approximates unique materialized bytes. Counting the real
+            // subtree size here instead would tally every file once per
+            // ancestor level (~depth-fold inflation of `max_size_bytes`
+            // pressure) and make the cache self-defeat via phantom
+            // evictions.
+            return Ok(0);
+        }
+
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path).await
+        self.construct_directory(digest, &dir_path, protos, lease)
+            .await
     }
 
     /// Creates a symlink from a `SymlinkNode`
@@ -623,7 +1571,7 @@ impl DirectoryCache {
 
         // Check entry count
         while cache.len() >= self.config.max_entries {
-            let Some((_size, path)) = Self::evict_lru(cache) else {
+            let Some((e_size, path)) = Self::evict_lru(cache) else {
                 // nothing evictable (all entries pinned) — have to exit
                 warn!(
                     current_items = cache.len(),
@@ -632,6 +1580,9 @@ impl DirectoryCache {
                 );
                 break;
             };
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+            self.map_entries.fetch_sub(1, Ordering::Relaxed);
+            self.map_size_bytes.fetch_sub(e_size, Ordering::Relaxed);
             evicted_paths.push(path);
         }
 
@@ -650,6 +1601,9 @@ impl DirectoryCache {
                     );
                     break;
                 };
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+                self.map_entries.fetch_sub(1, Ordering::Relaxed);
+                self.map_size_bytes.fetch_sub(e_size, Ordering::Relaxed);
                 size_after -= e_size;
                 evicted_paths.push(path);
             }
@@ -669,8 +1623,8 @@ impl DirectoryCache {
     ) -> Option<(u64, PathBuf)> {
         let to_evict = cache
             .iter()
-            .filter(|(_, m)| m.ref_count == 0)
-            .min_by_key(|(_, m)| m.last_access)
+            .filter(|(_, m)| m.ref_count.load(Ordering::SeqCst) == 0)
+            .min_by_key(|(_, m)| m.last_access.load(Ordering::Relaxed))
             .map(|(digest, _)| *digest)?;
         let metadata = cache.remove(&to_evict)?;
         debug!(
@@ -696,10 +1650,21 @@ impl DirectoryCache {
         }
         background_spawn!("directory_cache_evict", async move {
             for path in paths {
-                if !path.exists() {
-                    // Already gone (e.g. a prior cleanup, or the cache root
-                    // was torn down). Nothing to do, and not an error.
-                    continue;
+                match fs::metadata(&path).await {
+                    Err(_) => {
+                        // Already gone (e.g. a prior cleanup, or the cache
+                        // root was torn down). Nothing to do, not an error.
+                        continue;
+                    }
+                    Ok(metadata) if !metadata.is_dir() => {
+                        // Stray file (only plausible from an orphan sweep of
+                        // a polluted cache root).
+                        if let Err(e) = fs::remove_file(&path).await {
+                            warn!(?path, error = ?e, "Failed to remove evicted file from disk");
+                        }
+                        continue;
+                    }
+                    Ok(_) => {}
                 }
                 if let Err(e) = set_dir_writable_recursive(&path).await {
                     warn!(
@@ -728,7 +1693,10 @@ impl DirectoryCache {
     pub async fn stats(&self) -> CacheStats {
         let cache = self.cache.read().await;
         let total_size: u64 = cache.values().map(|m| m.size).sum();
-        let in_use = cache.values().filter(|m| m.ref_count > 0).count();
+        let in_use = cache
+            .values()
+            .filter(|m| m.ref_count.load(Ordering::SeqCst) > 0)
+            .count();
 
         CacheStats {
             entries: cache.len(),
@@ -736,7 +1704,84 @@ impl DirectoryCache {
             in_use_entries: in_use,
             clonefile_hits: self.clonefile_hits.load(Ordering::Relaxed),
             hardlink_hits: self.hardlink_hits.load(Ordering::Relaxed),
+            executable_clone_hits: self.executable_clone_hits.load(Ordering::Relaxed),
+            executable_clone_misses: self.executable_clone_misses.load(Ordering::Relaxed),
+            file_copy_hits: self.file_copy_hits.load(Ordering::Relaxed),
+            subtree_hits: self.subtree_hits.load(Ordering::Relaxed),
+            subtree_misses: self.subtree_misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
         }
+    }
+}
+
+impl MetricsComponent for DirectoryCache {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        let _enter = group!(field_metadata.name).entered();
+        publish!(
+            "clonefile_hits",
+            &self.clonefile_hits,
+            MetricKind::Counter,
+            "Materializations that used APFS clonefile(2) (macOS only)"
+        );
+        publish!(
+            "hardlink_hits",
+            &self.hardlink_hits,
+            MetricKind::Counter,
+            "Materializations that used per-file hardlinks"
+        );
+        publish!(
+            "executable_clone_hits",
+            &self.executable_clone_hits,
+            MetricKind::Counter,
+            "Executable files cloned from the CAS blob with APFS clonefile(2) (macOS only)"
+        );
+        publish!(
+            "executable_clone_misses",
+            &self.executable_clone_misses,
+            MetricKind::Counter,
+            "Executable files whose clone failed and that were copied instead (macOS only)"
+        );
+        publish!(
+            "file_copy_hits",
+            &self.file_copy_hits,
+            MetricKind::Counter,
+            "Files fetched and written as a full private copy"
+        );
+        publish!(
+            "subtree_hits",
+            &self.subtree_hits,
+            MetricKind::Counter,
+            "Subtree materializations served from the cache (experimental_subtree_caching)"
+        );
+        publish!(
+            "subtree_misses",
+            &self.subtree_misses,
+            MetricKind::Counter,
+            "Subtree materializations that had to be constructed (experimental_subtree_caching)"
+        );
+        publish!(
+            "evictions",
+            &self.evictions,
+            MetricKind::Counter,
+            "Cache entries removed by LRU eviction (high rate = cache thrash)"
+        );
+        publish!(
+            "entries",
+            &self.map_entries,
+            MetricKind::Default,
+            "Current number of cached directory entries"
+        );
+        publish!(
+            "total_size_bytes",
+            &self.map_size_bytes,
+            MetricKind::Default,
+            "Current recorded size of all cached entries in bytes"
+        );
+        Ok(MetricPublishKnownKindData::Component)
     }
 }
 
@@ -750,6 +1795,24 @@ pub struct CacheStats {
     pub clonefile_hits: u64,
     /// Materializations that used per-file `fs::hard_link`.
     pub hardlink_hits: u64,
+    /// Executable files cloned from the CAS blob with APFS `clonefile(2)`
+    /// (macOS).
+    pub executable_clone_hits: u64,
+    /// Executable files whose clone failed and that were copied instead
+    /// (macOS).
+    pub executable_clone_misses: u64,
+    /// Files fetched and written as a full private copy.
+    pub file_copy_hits: u64,
+    /// Subtree materializations served from the cache by digest. Always zero
+    /// unless `experimental_subtree_caching` is enabled.
+    pub subtree_hits: u64,
+    /// Subtree constructions not servable from the cache. Always zero unless
+    /// `experimental_subtree_caching` is enabled.
+    pub subtree_misses: u64,
+    /// Entries removed by LRU eviction. A high rate relative to hits means
+    /// the cache is thrashing and `max_entries`/`max_size_bytes` should be
+    /// raised.
+    pub evictions: u64,
 }
 
 #[cfg(test)]
@@ -794,6 +1857,8 @@ mod tests {
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
             },
             Store::new(fast_store),
             Store::new(slow_store.clone()),
@@ -849,6 +1914,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
 
         let cache = DirectoryCache::new(config, store).await?;
@@ -919,12 +1985,20 @@ mod tests {
         // point: real CAS backends won't have it.
 
         let directory = ProtoDirectory {
-            files: vec![FileNode {
-                name: "empty.txt".to_string(),
-                digest: Some(zero_digest.into()),
-                is_executable: false,
-                ..Default::default()
-            }],
+            files: vec![
+                FileNode {
+                    name: "empty.sh".to_string(),
+                    digest: Some(zero_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "empty.txt".to_string(),
+                    digest: Some(zero_digest.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+            ],
             directories: vec![],
             symlinks: vec![],
             ..Default::default()
@@ -937,6 +2011,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, store).await?;
 
@@ -948,6 +2023,33 @@ mod tests {
         assert!(empty_path.exists(), "zero-byte file should be created");
         let metadata = fs::metadata(&empty_path).await.unwrap();
         assert_eq!(metadata.len(), 0, "zero-byte file must be 0 bytes");
+
+        // Read-only like every other input, and an empty executable keeps
+        // its +x bit (an empty wrapper script must still exec). Checked on
+        // macOS only: Linux keeps the default mode for empty files.
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (name, mode) in [("empty.txt", 0o444), ("empty.sh", 0o555)] {
+                let metadata = fs::metadata(dest.join(name)).await.unwrap();
+                assert_eq!(metadata.len(), 0, "{name}");
+                assert_eq!(metadata.permissions().mode() & 0o7777, mode, "{name}");
+            }
+        }
+        // Elsewhere empty files keep the default mode from `fs::write`, which
+        // is owner-writable; a chmod to 0o444 or 0o555 would clear that bit.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["empty.txt", "empty.sh"] {
+                let mode = fs::metadata(dest.join(name))
+                    .await
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_ne!(mode & 0o200, 0, "{name} must not be chmod'd: mode {mode:o}");
+            }
+        }
 
         Ok(())
     }
@@ -1175,6 +2277,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, store).await?;
 
@@ -1241,6 +2344,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, store).await?;
 
@@ -1319,6 +2423,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, cas_store).await?;
 
@@ -1369,6 +2474,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, store).await?;
 
@@ -1439,6 +2545,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, cas_store).await?;
 
@@ -1495,6 +2602,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = DirectoryCache::new(config, cas_store).await?;
         let dest = temp_dir.path().join("dest");
@@ -1534,6 +2642,7 @@ mod tests {
             max_entries: 10,
             max_size_bytes: 1024 * 1024,
             cache_root,
+            ..Default::default()
         };
         let cache = Arc::new(DirectoryCache::new(config, store).await?);
 
@@ -1574,6 +2683,875 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn get_tree_prefetch_falls_back_without_grpc_store() -> Result<(), Error> {
+        // With the flag on but a non-grpc slow tier, prefetch must return
+        // None and construction must fall back to per-level fetches with
+        // identical results.
+        let temp_dir = TempDir::new().unwrap();
+        let cache_root = temp_dir.path().join("cache");
+        let (store, dir_digest) = setup_test_store(&temp_dir).await;
+        let config = DirectoryCacheConfig {
+            max_entries: 10,
+            max_size_bytes: 1024 * 1024,
+            cache_root,
+            experimental_get_tree_prefetch: true,
+            ..Default::default()
+        };
+        let cache = DirectoryCache::new(config, store).await?;
+        let dest = temp_dir.path().join("dest");
+        assert!(!cache.get_or_create(dir_digest, &dest).await?);
+        assert!(dest.join("test.txt").exists());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn queued_construction_retry_excludes_new_requests() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        // Reproduce a failed constructor handing its lock to a waiting retry.
+        // No entry has been published yet, so new requests must join
+        // that same flight rather than race to replace the same cache path.
+        let constructor = Arc::new(Mutex::new(()));
+        cache
+            .construction_locks
+            .lock()
+            .await
+            .insert(digest, constructor.clone());
+        let retry = constructor.clone();
+        let retry_guard = retry.lock().await;
+        cache.forget_construction_lock(&digest).await;
+        drop(constructor);
+
+        let dest = temp_dir.path().join("dest");
+        let request = cache.get_or_create(digest, &dest);
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), request.as_mut())
+                .await
+                .is_err(),
+            "a new request bypassed an existing construction retry"
+        );
+        drop(retry_guard);
+        drop(retry);
+        assert!(!request.await?);
+        assert!(dest.join("test.txt").exists());
+        assert!(cache.construction_locks.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn failed_materialization_preserves_mounted_entry() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        let prepared = cache.prepare_for_mount(digest, None).await?;
+        // An invalid destination must not invalidate another action's mount.
+        let dest = temp_dir.path().join("dest");
+        fs::write(&dest, b"not a directory").await?;
+        assert!(cache.get_or_create(digest, &dest).await.is_err());
+        let cached = cache.acquire_entry(&digest).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&prepared.pin.ref_count, &cached.pin.ref_count),
+            "failed materialization replaced a pinned mount source"
+        );
+        assert!(prepared.path().join("test.txt").exists());
+        drop(cached);
+        drop(prepared);
+        fs::remove_file(&dest).await?;
+        assert!(cache.get_or_create(digest, &dest).await?);
+        Ok(())
+    }
+
+    /// What the executable-clone tests need to know about a CAS blob file.
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, PartialEq, Eq)]
+    struct BlobStat {
+        ino: u64,
+        mode: u32,
+        nlink: u64,
+        content: Vec<u8>,
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn stat_blob(path: &Path) -> BlobStat {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let m = fs::metadata(path).await.unwrap();
+        BlobStat {
+            ino: m.ino(),
+            mode: m.permissions().mode() & 0o7777,
+            nlink: m.nlink(),
+            content: fs::read(path).await.unwrap(),
+        }
+    }
+
+    /// Seeds a directory holding one executable `tool` (64 KiB, so it spans
+    /// several filesystem blocks) and pulls the blob into the filesystem
+    /// tier. Returns the store, the root digest, the blob's bytes and the
+    /// CAS blob's on-disk path.
+    #[cfg(target_os = "macos")]
+    async fn setup_executable_store(
+        temp_dir: &TempDir,
+    ) -> (Arc<FastSlowStore>, DigestInfo, Vec<u8>, PathBuf) {
+        let (cas_store, slow_store) = make_fast_slow_store(temp_dir).await;
+
+        let content: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let file_digest = upload_blob(&slow_store, 21, &content).await;
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: "tool".to_string(),
+                digest: Some(file_digest.into()),
+                is_executable: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = upload_blob(&slow_store, 22, &dir_data).await;
+
+        cas_store
+            .populate_fast_store(StoreKey::Digest(file_digest))
+            .await
+            .unwrap();
+        let cas_path = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_file_entry_for_digest(&file_digest)
+            .await
+            .unwrap()
+            .get_file_path_locked(|p| async move { Ok(PathBuf::from(p)) })
+            .await
+            .unwrap();
+        (cas_store, dir_digest, content, cas_path)
+    }
+
+    /// On macOS an executable is a `clonefile(2)` clone of the CAS blob: it
+    /// has the bytes and the 0o555 mode the copy path produces, on its own
+    /// inode, and the CAS blob keeps its inode, its 0o444 mode, its single
+    /// link and its bytes.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_construct_executable_clones_cas_blob() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+        assert_eq!(cas_before.mode, 0o444, "CAS blobs are stored read-only");
+        assert_eq!(cas_before.nlink, 1);
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 1, "executable must be cloned");
+        assert_eq!(stats.file_copy_hits, 0, "nothing may be copied");
+
+        // Both the cache entry and the action's materialized tree.
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}: mode", file.display());
+            assert_eq!(got.content, content, "{}: bytes", file.display());
+            assert_ne!(got.ino, cas_before.ino, "{}: private inode", file.display());
+            assert_eq!(got.nlink, 1, "{}: not a hardlink", file.display());
+        }
+
+        assert_eq!(
+            stat_blob(&cas_path).await,
+            cas_before,
+            "CAS blob inode, mode, link count and bytes must be untouched"
+        );
+        Ok(())
+    }
+
+    /// Copy-on-write isolation: rewriting, truncating and chmod-ing the
+    /// cloned executable never reaches the CAS blob it shares blocks with.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_is_isolated_from_cas_blob() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        assert_eq!(cache.stats().await.executable_clone_hits, 1);
+        let clone = cache.get_cache_path(&dir_digest).join("tool");
+
+        // chmod the clone.
+        fs::set_permissions(&clone, std::fs::Permissions::from_mode(0o700)).await?;
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after chmod");
+
+        // Overwrite a range in the middle of the clone, in place.
+        let mut file = fs::OpenOptions::new().write(true).open(&clone).await?;
+        file.seek(std::io::SeekFrom::Start(8192)).await?;
+        file.write_all(&vec![0xAA; 20_000]).await?;
+        file.sync_all().await?;
+        drop(file);
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after overwrite");
+        let mut expected = content.clone();
+        expected[8192..28_192].fill(0xAA);
+        assert_eq!(fs::read(&clone).await?, expected, "the write hit the clone");
+
+        // Truncate the clone.
+        let file = fs::OpenOptions::new().write(true).open(&clone).await?;
+        file.set_len(100).await?;
+        file.sync_all().await?;
+        drop(file);
+        assert_eq!(stat_blob(&cas_path).await, cas_before, "after truncate");
+        assert_eq!(fs::metadata(&clone).await?.len(), 100);
+
+        // The action's tree is a clone of the entry taken before any of
+        // that, so it is still pristine.
+        assert_eq!(fs::read(dest.join("tool")).await?, content);
+        Ok(())
+    }
+
+    /// The clone owns a reference to its data blocks: evicting the CAS blob
+    /// from the `FilesystemStore` (rename to temp, then unlink) leaves the
+    /// cached executable intact and readable.
+    /// Polls for up to five seconds until no file under `root` (recursively)
+    /// matches `counts`, for files a store unlinks in the background.
+    /// Returns how many still matched on the last look.
+    #[cfg(target_os = "macos")]
+    async fn wait_until_no_files_under(
+        root: &Path,
+        counts: impl Fn(&std::fs::Metadata) -> bool + Sync,
+    ) -> Result<usize, Error> {
+        let mut files_left = usize::MAX;
+        for _ in 0..500 {
+            files_left = 0;
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(dir) = pending.pop() {
+                let mut entries = fs::read_dir(&dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir() {
+                        pending.push(entry.path());
+                    } else if counts(&entry.metadata().await?) {
+                        files_left += 1;
+                    }
+                }
+            }
+            if files_left == 0 {
+                break;
+            }
+            tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+        }
+        Ok(files_left)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_survives_cas_eviction() -> Result<(), Error> {
+        use nativelink_util::store_trait::StoreDriver;
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let file_digest = DigestInfo::new([21u8; 32], content.len() as u64);
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store.clone(),
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        assert_eq!(cache.stats().await.executable_clone_hits, 1);
+
+        // Evict the blob through the store itself (rename to the temp
+        // directory, unlink once the entry drops), and wait for the file to
+        // really leave the disk.
+        let filesystem_store = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_arc()
+            .unwrap();
+        assert!(
+            Pin::new(filesystem_store.as_ref())
+                .remove(file_digest.into())
+                .await?,
+            "the blob must have been in the filesystem store"
+        );
+        assert!(
+            filesystem_store
+                .get_file_entry_for_digest(&file_digest)
+                .await
+                .is_err()
+        );
+        assert!(!cas_path.exists(), "eviction must move the CAS blob away");
+        let blob_files_left = wait_until_no_files_under(&temp_dir.path().join("cas_temp"), |m| {
+            m.len() == content.len() as u64
+        })
+        .await?;
+        assert_eq!(blob_files_left, 0, "the evicted blob must be unlinked");
+
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.content, content, "{}", file.display());
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+        }
+        Ok(())
+    }
+
+    /// Clones racing the store's own eviction of the same blob: the clone is
+    /// taken under the entry path lock, so each attempt either clones the
+    /// complete blob (fetched back into the fast tier if the eviction got
+    /// there first) or finds it gone and falls back to the copy. Every
+    /// materialized executable must be byte-exact and 0o555 either way.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_races_cas_eviction() -> Result<(), Error> {
+        use nativelink_util::store_trait::StoreDriver;
+
+        const ROUNDS: usize = 200;
+        const CLONES_PER_ROUND: usize = 8;
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _dir_digest, content, _cas_path) = setup_executable_store(&temp_dir).await;
+        let file_digest = DigestInfo::new([21u8; 32], content.len() as u64);
+        let filesystem_store = cas_store
+            .fast_store()
+            .downcast_ref::<FilesystemStore>(None)
+            .unwrap()
+            .get_arc()
+            .unwrap();
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let file_node = FileNode {
+            name: "tool".to_string(),
+            digest: Some(file_digest.into()),
+            is_executable: true,
+            ..Default::default()
+        };
+
+        for round in 0..ROUNDS {
+            let mut parents = Vec::new();
+            for i in 0..CLONES_PER_ROUND {
+                let parent = temp_dir.path().join(format!("r{round}-{i}"));
+                fs::create_dir_all(&parent).await?;
+                parents.push(parent);
+            }
+            // One eviction per round, swept across the windows of
+            // `create_file` by a delay that varies with the round.
+            let evict = async {
+                tokio::time::sleep(core::time::Duration::from_micros((round % 25) as u64 * 40))
+                    .await;
+                Pin::new(filesystem_store.as_ref())
+                    .remove(file_digest.into())
+                    .await
+            };
+            let creates = futures::future::join_all(
+                parents
+                    .iter()
+                    .map(|parent| cache.create_file(parent, &file_node)),
+            );
+            let (evicted, created) = tokio::join!(evict, creates);
+            evicted?;
+            for (parent, result) in parents.iter().zip(created) {
+                result?;
+                let got = stat_blob(&parent.join("tool")).await;
+                assert_eq!(got.mode, 0o555, "round {round}");
+                assert_eq!(got.nlink, 1, "round {round}");
+                assert!(got.content == content, "round {round}: wrong bytes");
+                fs::remove_dir_all(parent).await?;
+            }
+        }
+
+        // Every file was built by one path or the other, never neither.
+        let stats = cache.stats().await;
+        assert_eq!(
+            stats.executable_clone_hits + stats.file_copy_hits,
+            (ROUNDS * CLONES_PER_ROUND) as u64
+        );
+        assert!(stats.executable_clone_hits > 0, "{stats:?}");
+        Ok(())
+    }
+
+    /// When `clonefile(2)` fails — here because the destination already
+    /// exists (EEXIST) — the executable is built by the fetch+write copy
+    /// instead, with the same bytes and mode, and the CAS blob is still
+    /// untouched.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_clone_failure_falls_back_to_copy() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+
+        // A leftover at the destination: clonefile(2) refuses to replace
+        // it and leaves it alone, and the copy overwrites it as it always
+        // has.
+        let parent = temp_dir.path().join("parent");
+        fs::create_dir_all(&parent).await?;
+        let dst = parent.join("tool");
+        fs::write(&dst, b"stale").await?;
+
+        let file_node = FileNode {
+            name: "tool".to_string(),
+            digest: Some(DigestInfo::new([21u8; 32], content.len() as u64).into()),
+            is_executable: true,
+            ..Default::default()
+        };
+        cache.create_file(&parent, &file_node).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "the clone must have failed");
+        assert_eq!(stats.file_copy_hits, 1, "the copy must have run");
+        let got = stat_blob(&dst).await;
+        assert_eq!(got.content, content);
+        assert_eq!(got.mode, 0o555);
+        assert_ne!(got.ino, cas_before.ino);
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    /// The default: without `experimental_clone_executables` an executable
+    /// is built by the fetch+write copy, exactly as before the option
+    /// existed, and nothing is cloned or probed.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_copied_unless_clone_enabled() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(!cache.config.experimental_clone_executables, "default");
+        assert!(!cache.clone_executables);
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "nothing may be cloned");
+        assert_eq!(stats.file_copy_hits, 1, "the executable must be copied");
+        let got = stat_blob(&cache.get_cache_path(&dir_digest).join("tool")).await;
+        assert_eq!(got.mode, 0o555);
+        assert_eq!(got.content, content);
+        assert_ne!(got.ino, cas_before.ino);
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    /// The startup probe succeeds when the store and the cache share a
+    /// volume, and cleans up after itself on both sides.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_clone_probe_succeeds_and_leaves_nothing() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, _slow_store) = make_fast_slow_store(&temp_dir).await;
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: cache_root.clone(),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables, "same volume: probe must succeed");
+        assert!(!logs_contain("executable files will be copied"));
+        assert!(!cache_root.join(CLONE_PROBE_NAME).exists());
+
+        // The store deletes its own probe file in the background.
+        let files_left =
+            wait_until_no_files_under(&temp_dir.path().join("cas_temp"), |_| true).await?;
+        assert_eq!(files_left, 0, "probe file left in the store's temp dir");
+        Ok(())
+    }
+
+    /// A failed startup probe is logged once and turns cloning off for the
+    /// life of the cache: executables are copied without a clone attempt.
+    /// The failure here is a `cache_root` the probe cannot write to (EACCES);
+    /// a cross-volume layout (EXDEV) takes the same branch.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_clone_probe_failure_disables_cloning() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            // root ignores directory permissions, so the probe would succeed.
+            return Ok(());
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, _cas_path) = setup_executable_store(&temp_dir).await;
+        let cache_root = temp_dir.path().join("cache");
+        fs::create_dir_all(&cache_root).await?;
+        fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o555)).await?;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: cache_root.clone(),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await;
+        fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o755)).await?;
+        let cache = cache?;
+
+        assert!(!cache.clone_executables, "the probe must have failed");
+        assert!(logs_contain("cannot be cloned into the directory cache"));
+        assert!(logs_contain("executable files will be copied"));
+
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0);
+        assert_eq!(stats.file_copy_hits, 1);
+        let got = stat_blob(&dest.join("tool")).await;
+        assert_eq!(got.mode, 0o555);
+        assert_eq!(got.content, content);
+        Ok(())
+    }
+
+    /// The window between `populate_fast_store` and the clone: the blob is
+    /// populated but gone from the filesystem tier by the time its entry is
+    /// looked up. Staged deterministically by pointing the cache's
+    /// `FilesystemStore` handle at a second, empty store, so the populate
+    /// succeeds against the real fast tier and the lookup finds nothing. The
+    /// executable must then be built, correctly, by the copy.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_copied_when_blob_vanishes_before_clone() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        let cas_before = stat_blob(&cas_path).await;
+
+        let mut cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables);
+        let empty_store = FilesystemStore::new(&FilesystemSpec {
+            content_path: temp_dir
+                .path()
+                .join("empty_content")
+                .to_string_lossy()
+                .into_owned(),
+            temp_path: temp_dir
+                .path()
+                .join("empty_temp")
+                .to_string_lossy()
+                .into_owned(),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?;
+        cache.filesystem_store = Some(empty_store);
+
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "there was nothing to clone");
+        assert_eq!(stats.file_copy_hits, 1, "the copy must have run");
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+            assert_eq!(got.nlink, 1, "{}", file.display());
+            assert!(got.content == content, "{}: wrong bytes", file.display());
+        }
+        assert_eq!(stat_blob(&cas_path).await, cas_before);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    use nativelink_util::fs_util::file_metadata_for_tests::{
+        set_file_flags, set_xattr, xattr_names,
+    };
+
+    /// A CAS blob carrying an extended attribute is not cloned — the clone
+    /// would hand that attribute to the action — but copied, and the copy
+    /// does not have it.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_with_xattr_on_blob_is_copied() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (cas_store, dir_digest, content, cas_path) = setup_executable_store(&temp_dir).await;
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Setting an attribute needs write permission; the blob is 0o444.
+            fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o644)).await?;
+            set_xattr(&cas_path, "com.apple.quarantine", b"0081;0;test;");
+            fs::set_permissions(&cas_path, std::fs::Permissions::from_mode(0o444)).await?;
+        }
+        assert!(xattr_names(&cas_path).contains(&"com.apple.quarantine".to_string()));
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        assert!(cache.clone_executables);
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0, "a dirty blob is not cloned");
+        assert_eq!(
+            stats.executable_clone_misses, 1,
+            "the failed clone is counted"
+        );
+        assert_eq!(stats.file_copy_hits, 1, "it is copied");
+        for file in [
+            cache.get_cache_path(&dir_digest).join("tool"),
+            dest.join("tool"),
+        ] {
+            let got = stat_blob(&file).await;
+            assert_eq!(got.mode, 0o555, "{}", file.display());
+            assert!(got.content == content, "{}: wrong bytes", file.display());
+            assert!(
+                !xattr_names(&file).contains(&"com.apple.quarantine".to_string()),
+                "{}: inherited the blob's attribute",
+                file.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// A CAS blob carrying a BSD file flag is copied, not cloned: the clone
+    /// would inherit the flag, and an immutable (`uchg`) clone could be
+    /// neither chmod'd nor ever deleted from the cache. Nothing in the cache
+    /// entry or the action tree carries a flag afterwards.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn test_executable_with_file_flags_on_blob_is_copied() -> Result<(), Error> {
+        use std::os::macos::fs::MetadataExt;
+
+        for (name, flags) in [("nodump", libc::UF_NODUMP), ("uchg", libc::UF_IMMUTABLE)] {
+            let temp_dir = TempDir::new().unwrap();
+            let (cas_store, dir_digest, content, cas_path) =
+                setup_executable_store(&temp_dir).await;
+            set_file_flags(&cas_path, flags);
+
+            let cache_root = temp_dir.path().join("cache");
+            let cache = DirectoryCache::new(
+                DirectoryCacheConfig {
+                    max_entries: 10,
+                    max_size_bytes: 1024 * 1024,
+                    cache_root: cache_root.clone(),
+                    experimental_clone_executables: true,
+                    ..Default::default()
+                },
+                cas_store,
+            )
+            .await?;
+            let dest = temp_dir.path().join("dest");
+            let result = cache.get_or_create(dir_digest, &dest).await;
+            // Clear the flag before any assertion can fail, so the temp
+            // directory (and the immutable blob in it) can be deleted.
+            set_file_flags(&cas_path, 0);
+            result?;
+
+            let stats = cache.stats().await;
+            assert_eq!(stats.executable_clone_hits, 0, "{name}: not cloned");
+            assert_eq!(stats.executable_clone_misses, 1, "{name}: miss counted");
+            assert_eq!(stats.file_copy_hits, 1, "{name}: copied");
+            for file in [
+                cache.get_cache_path(&dir_digest).join("tool"),
+                dest.join("tool"),
+            ] {
+                let got = stat_blob(&file).await;
+                assert_eq!(got.mode, 0o555, "{name}: {}", file.display());
+                assert!(got.content == content, "{name}: wrong bytes");
+                assert_eq!(
+                    fs::metadata(&file).await?.st_flags(),
+                    0,
+                    "{name}: {} inherited a file flag",
+                    file.display()
+                );
+            }
+            // Nothing immutable is left behind anywhere under the cache.
+            fs::remove_dir_all(&dest).await?;
+            fs::remove_dir_all(&cache_root).await?;
+        }
+        Ok(())
+    }
+
+    /// Without a `FilesystemStore` fast tier there is no blob file to clone
+    /// or hardlink, so every file is copied, executable or not, with the
+    /// modes the copy path always produced.
+    #[cfg(unix)]
+    #[nativelink_test]
+    async fn test_executable_copied_without_filesystem_store() -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let fast_store = MemoryStore::new(&MemorySpec::default());
+        let slow_store = MemoryStore::new(&MemorySpec::default());
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Memory(MemorySpec::default()),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
+                leader_inactivity_timeout_s: 0,
+            },
+            Store::new(fast_store),
+            Store::new(slow_store.clone()),
+        );
+        let slow_store = Store::new(slow_store);
+
+        let tool = upload_blob(&slow_store, 31, b"#!/bin/sh\necho ran\n").await;
+        let data = upload_blob(&slow_store, 32, b"plain data").await;
+        let directory = ProtoDirectory {
+            files: vec![
+                FileNode {
+                    name: "data".to_string(),
+                    digest: Some(data.into()),
+                    is_executable: false,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(tool.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut dir_data = Vec::new();
+        directory.encode(&mut dir_data).unwrap();
+        let dir_digest = upload_blob(&slow_store, 33, &dir_data).await;
+
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                max_entries: 10,
+                max_size_bytes: 1024 * 1024,
+                cache_root: temp_dir.path().join("cache"),
+                experimental_clone_executables: true,
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?;
+        let dest = temp_dir.path().join("dest");
+        cache.get_or_create(dir_digest, &dest).await?;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.executable_clone_hits, 0);
+        assert_eq!(stats.file_copy_hits, 2);
+        let mode = |name: &'static str| {
+            let path = dest.join(name);
+            async move {
+                fs::metadata(&path)
+                    .await
+                    .map(|m| m.permissions().mode() & 0o7777)
+            }
+        };
+        assert_eq!(mode("tool").await?, 0o555);
+        assert_eq!(mode("data").await?, 0o444);
+        assert_eq!(fs::read(dest.join("tool")).await?, b"#!/bin/sh\necho ran\n");
+        assert_eq!(fs::read(dest.join("data")).await?, b"plain data");
         Ok(())
     }
 }

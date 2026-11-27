@@ -1,0 +1,20 @@
+---
+name: Set up Azurite test runner
+description: "Installs pnpm and the Azurite emulator needed for AzureBlobStore tests"
+runs:
+  using: "composite"
+  steps:
+    - name: Set up pnpm
+      uses: >- # v3.1.1
+        pnpm/setup@a0881977cd8ea73b1ed212236c99ca10dcc80cf4
+      with:
+        version: 11.22.0
+    - name: Install Azurite
+      run: pnpm install --frozen-lockfile
+      shell: bash -euo pipefail {0}
+      working-directory: nativelink-store/tests/azurite_runner
+
+    - name: Test Azurite dependencies
+      run: pnpm run test
+      shell: bash -euo pipefail {0}
+      working-directory: nativelink-store/tests/azurite_runner

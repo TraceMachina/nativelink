@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ use core::borrow::BorrowMut;
 use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -31,15 +31,19 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
+use nativelink_util::digest_hasher::digest_hasher_func_from_context;
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::metrics::{record_store_tier_io, record_store_tier_read};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations,
-    UploadSizeInfo, slow_update_store_with_file,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
+    slow_update_store_with_file,
 };
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
+
+use crate::filesystem_store::FilesystemStore;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -73,8 +77,67 @@ pub struct FastSlowStore {
     // the best-known size. Consulted by `has_with_results` so that a
     // concurrent writer that has not yet finished pushing to the slow store
     // is still visible to a concurrent existence check, preventing redundant
-    // duplicate uploads of the same blob.
-    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<tokio::sync::Mutex<MaybeSize>>>>,
+    // duplicate uploads of the same blob. One slot per key: a second writer
+    // of the same key replaces the entry, and the earlier write, though
+    // still running, is no longer visible here — at worst a duplicate
+    // upload, never a wrong answer.
+    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<InFlightSlowWrite>>>,
+    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` (the `0`
+    /// default) waits indefinitely: the deadline is opt-in.
+    has_slow_write_wait_timeout: Option<Duration>,
+    /// See [`FastSlowSpec::leader_inactivity_timeout_s`]. `None` never
+    /// times a fill out.
+    leader_inactivity_timeout: Option<Duration>,
+}
+
+/// One slow-store write in flight. `has()` waiters wait on `size` for as
+/// long as the WRITE has been in flight (not per call), so a wedged writer
+/// delays existence checks of its key at most once; afterwards they report
+/// the key missing immediately.
+#[derive(Debug)]
+struct InFlightSlowWrite {
+    registered_at: tokio::time::Instant,
+    /// Set by whichever waiter first gives up on this write, so a wedged
+    /// writer is logged and counted once rather than per existence check.
+    gave_up_reported: AtomicBool,
+    size: Arc<tokio::sync::Mutex<MaybeSize>>,
+}
+
+impl InFlightSlowWrite {
+    /// Records that a waiter gave up on this write, once per write.
+    fn report_gave_up(
+        &self,
+        metrics: &FastSlowStoreMetrics,
+        key: &StoreKey<'_>,
+        wait_timeout: Duration,
+    ) {
+        if !self.gave_up_reported.swap(true, Ordering::Relaxed) {
+            metrics
+                .has_in_flight_wait_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(
+                %key,
+                timeout_secs = wait_timeout.as_secs(),
+                "has() gave up waiting on an in-flight slow write; reporting the key missing until the write resolves"
+            );
+        }
+    }
+}
+
+/// Activity signal shared between a fill's transfer loop and the inactivity
+/// watchdog in `populate_and_maybe_stream`. Allocated only when
+/// `leader_inactivity_timeout` is set, so the default path pays nothing.
+#[derive(Debug, Default)]
+struct FillActivity {
+    /// Bumped whenever the fill observably moves: a chunk pulled off the
+    /// slow stream, or a chunk delivered to the fast tier and the reader.
+    ticks: AtomicU64,
+    /// Set once the slow stream has delivered EOF and every in-range byte
+    /// has been handed on. What remains after that (the fast tier's commit,
+    /// the reader's EOF) is local work, so the watchdog stands down instead
+    /// of killing a completed transfer during a slow commit. It also covers
+    /// a zero-byte blob, whose fill never ticks at all.
+    transfer_complete: AtomicBool,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -101,6 +164,33 @@ impl LoaderGuard<'_> {
     }
 }
 
+/// Removes `key`'s entry from `map` only when it still holds `own` (by Arc
+/// identity) and `should_remove` agrees, all under one lock. The dedup
+/// guards share it so that no drop ever removes a successor's live entry: a
+/// later writer or loader of the same key replaces the map slot, and the
+/// earlier guard's drop must leave that replacement alone.
+///
+/// `own` is consumed and dropped INSIDE the locked section, before
+/// `should_remove` runs, so a predicate reading `Arc::strong_count` sees a
+/// count serialized with every other guard's drop: two guards dropping
+/// concurrently cannot both observe each other's still-undropped clone and
+/// both leave the entry behind.
+fn remove_map_entry_if_own<K: Eq + core::hash::Hash, V>(
+    map: &Mutex<HashMap<K, Arc<V>>>,
+    key: K,
+    own: Arc<V>,
+    should_remove: impl FnOnce(&Arc<V>) -> bool,
+) {
+    let mut guard = map.lock();
+    if let std::collections::hash_map::Entry::Occupied(occupied_entry) = guard.entry(key) {
+        let is_own = Arc::ptr_eq(occupied_entry.get(), &own);
+        drop(own);
+        if is_own && should_remove(occupied_entry.get()) {
+            occupied_entry.remove();
+        }
+    }
+}
+
 /// Cancel-safe RAII guard that removes an entry from
 /// `FastSlowStore::in_flight_slow_writes` when dropped. This ensures the
 /// map does not leak entries if the surrounding `update()` future is
@@ -108,6 +198,7 @@ impl LoaderGuard<'_> {
 struct InFlightSlowWriteGuard {
     weak_store: Weak<FastSlowStore>,
     key: Option<StoreKey<'static>>,
+    entry: Arc<InFlightSlowWrite>,
     write_complete_guard: tokio::sync::OwnedMutexGuard<MaybeSize>,
 }
 
@@ -125,7 +216,17 @@ impl Drop for InFlightSlowWriteGuard {
         let Some(key) = self.key.take() else {
             return;
         };
-        store.in_flight_slow_writes.lock().remove(&key);
+        // A re-upload after `has` reported the key missing at the wait
+        // timeout replaces this writer's entry; unconditional removal once
+        // the entry is confirmed ours, since waiters hold their own clones
+        // (which is also why the count-blind predicate ignores the extra
+        // clone this guard still holds in its field).
+        remove_map_entry_if_own(
+            &store.in_flight_slow_writes,
+            key,
+            self.entry.clone(),
+            |_| true,
+        );
     }
 }
 
@@ -140,17 +241,15 @@ impl Drop for LoaderGuard<'_> {
             return;
         };
 
-        let mut guard = store.populating_digests.lock();
-        if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
-            guard.entry(self.key.borrow().into_owned())
-            && Arc::ptr_eq(occupied_entry.get(), &loader)
-        {
-            drop(loader);
-            if Arc::strong_count(occupied_entry.get()) == 1 {
-                // This is the last loader, so remove it.
-                occupied_entry.remove();
-            }
-        }
+        remove_map_entry_if_own(
+            &store.populating_digests,
+            self.key.borrow().into_owned(),
+            loader,
+            // Our own clone was dropped under the map lock just before this
+            // runs, so a count of 1 means the map is the only holder left:
+            // no follower still waits on the loader, and it can go.
+            |entry| Arc::strong_count(entry) == 1,
+        );
     }
 }
 
@@ -167,22 +266,32 @@ impl FastSlowStore {
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Mutex::new(HashMap::new()),
+            has_slow_write_wait_timeout: (spec.has_slow_write_wait_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.has_slow_write_wait_timeout_s as u64)),
+            leader_inactivity_timeout: (spec.leader_inactivity_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.leader_inactivity_timeout_s as u64)),
         })
     }
 
     fn register_in_flight_slow_write(&self, key: StoreKey<'_>) -> InFlightSlowWriteGuard {
         let owned = key.into_owned();
-        let write_complete = Arc::new(tokio::sync::Mutex::new(None));
-        let write_complete_guard = write_complete
+        let size = Arc::new(tokio::sync::Mutex::new(None));
+        let write_complete_guard = size
             .clone()
             .try_lock_owned()
             .expect("Newly created mutex is locked");
+        let entry = Arc::new(InFlightSlowWrite {
+            registered_at: tokio::time::Instant::now(),
+            gave_up_reported: AtomicBool::new(false),
+            size,
+        });
         self.in_flight_slow_writes
             .lock()
-            .insert(owned.borrow().into_owned(), write_complete);
+            .insert(owned.borrow().into_owned(), entry.clone());
         InFlightSlowWriteGuard {
             weak_store: self.weak_self.clone(),
             key: Some(owned),
+            entry,
             write_complete_guard,
         }
     }
@@ -209,6 +318,32 @@ impl FastSlowStore {
 
     pub const fn slow_store(&self) -> &Store {
         &self.slow_store
+    }
+
+    /// Returns the filesystem-backed tiers that can evict a digest.
+    ///
+    /// The worker's fast store is normally a `FilesystemStore`, while the slow
+    /// store may be one behind a `RefStore`. `Store::downcast_ref` follows
+    /// wrappers that delegate `inner_store`; transforming wrappers intentionally
+    /// keep themselves visible because their digest-to-bytes mapping may differ,
+    /// so they are not recursively inspected here.
+    pub fn get_filesystem_stores(&self) -> Vec<Arc<FilesystemStore>> {
+        let mut stores = Vec::with_capacity(2);
+        for store in [&self.fast_store, &self.slow_store] {
+            let Some(filesystem_store) = store
+                .downcast_ref::<FilesystemStore>(None)
+                .and_then(FilesystemStore::get_arc)
+            else {
+                continue;
+            };
+            if !stores
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &filesystem_store))
+            {
+                stores.push(filesystem_store);
+            }
+        }
+        stores
     }
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
@@ -240,6 +375,33 @@ impl FastSlowStore {
         }
     }
 
+    /// Records one inactivity-watchdog trip (metric plus WARN) and builds
+    /// the error the fill fails with. `phase` names which fill phase made
+    /// no progress, so the log tells a wedged existence check from a
+    /// wedged transfer or commit.
+    fn fill_inactivity_error(
+        &self,
+        key: &StoreKey<'_>,
+        inactivity: Duration,
+        phase: &str,
+    ) -> Error {
+        self.metrics
+            .leader_inactivity_timeouts
+            .fetch_add(1, Ordering::Relaxed);
+        warn!(
+            %key,
+            timeout_secs = inactivity.as_secs(),
+            phase,
+            "Cache fill made no progress within the inactivity timeout; failing it so a new leader can take over"
+        );
+        make_err!(
+            Code::DeadlineExceeded,
+            "The cache fill for {} made no progress for {}s during {phase}",
+            key.as_str(),
+            inactivity.as_secs()
+        )
+    }
+
     async fn populate_and_maybe_stream(
         self: Pin<&Self>,
         key: StoreKey<'_>,
@@ -247,38 +409,72 @@ impl FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let reader_stream_size = if self
-            .slow_store
-            .inner_store(Some(key.borrow()))
+        // A `NotFound` for a digest key carries the digest as typed
+        // context, so the worker can report it as the missing input and the
+        // client re-uploads exactly that blob; see `ErrorContext`.
+        fn name_missing_digest(err: Error, key: &StoreKey<'_>) -> Error {
+            if let StoreKey::Digest(d) = key {
+                // The digest function of the active request, so a BLAKE3
+                // digest is not reported as if it were SHA256.
+                err.with_context(ErrorContext::MissingDigest {
+                    hash: d.packed_hash().to_string(),
+                    size: d.size_bytes().try_into().unwrap_or(i64::MAX),
+                    digest_function: digest_hasher_func_from_context()
+                        .resource_name_segment()
+                        .map(str::to_string),
+                })
+            } else {
+                err
+            }
+        }
+        let slow_inner_store = self.slow_store.inner_store(Some(key.borrow()));
+        let reader_stream_size = if slow_inner_store
             .optimized_for(StoreOptimizations::LazyExistenceOnSync)
         {
             trace!(
                 %key,
-                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                store_name = %slow_inner_store.get_name(),
                 "Skipping .has() check due to LazyExistenceOnSync optimization"
             );
-            UploadSizeInfo::MaxSize(u64::MAX)
+            // The length is unknown without the skipped `.has()`, but the
+            // slow store could not have held anything larger than its limit.
+            // A digest's size is no substitute: an AC value's length differs
+            // from its key's.
+            UploadSizeInfo::MaxSize(slow_inner_store.max_upload_size())
         } else {
-            UploadSizeInfo::ExactSize(self
-                    .slow_store
-                    .has(key.borrow())
-                    .await
+            // The sizing `has()` is the fill's first remote call, issued
+            // before the transfer (and its watchdog) exists, so a backend
+            // that wedges the existence check instead of the read would
+            // otherwise pin the fill forever. There is no progress to
+            // measure on a point query: one full inactivity window is the
+            // bound.
+            let has_fut = self.slow_store.has(key.borrow());
+            let maybe_len = match self.leader_inactivity_timeout {
+                None => has_fut.await,
+                Some(inactivity) => match tokio::time::timeout(inactivity, has_fut).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        return Err(self.fill_inactivity_error(
+                            &key,
+                            inactivity,
+                            "the slow store's sizing has()",
+                        ));
+                    }
+                },
+            };
+            UploadSizeInfo::ExactSize(maybe_len
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
-                        let err = make_err!(
-                            Code::NotFound,
-                            "Object {} not found in either fast or slow store. \
-                                If using multiple workers, ensure all workers share the same CAS storage path.",
-                            key.as_str()
-                        );
-                        if let StoreKey::Digest(d) = key.borrow() {
-                            err.with_context(ErrorContext::MissingDigest {
-                                hash: d.packed_hash().to_string(),
-                                size: d.size_bytes() as i64,
-                            })
-                        } else {
-                            err
-                        }
+                        name_missing_digest(
+                            make_err!(
+                                Code::NotFound,
+                                "Object {} not found in either fast or slow store, \
+                                    or the slow store considers it expired (consider_expired_after_s). \
+                                    If using multiple workers, ensure all workers share the same CAS storage path.",
+                                key.as_str()
+                            ),
+                            &key,
+                        )
                     })?
             )
         };
@@ -287,6 +483,12 @@ impl FastSlowStore {
         let mut bytes_received: u64 = 0;
         let mut counted_hit = false;
 
+        // Read by the inactivity watchdog below to tell a slow transfer from
+        // a wedged one. Allocated only when the watchdog is armed.
+        let fill_activity = self
+            .leader_inactivity_timeout
+            .map(|_| Arc::new(FillActivity::default()));
+        let data_stream_activity = fill_activity.clone();
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
         let data_stream_fut = async move {
@@ -297,6 +499,15 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
+                    reader_stream_size
+                        .validate_size(bytes_received)
+                        .map_err(|mut err| {
+                            err.code = Code::DataLoss;
+                            err.append("Slow store ended before the cache fill was complete")
+                        })?;
+                    if let Some(activity) = &data_stream_activity {
+                        activity.transfer_complete.store(true, Ordering::Release);
+                    }
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
@@ -308,6 +519,7 @@ impl FastSlowStore {
                     self.metrics
                         .slow_store_hit_count
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("slow", "hit");
                     counted_hit = true;
                 }
 
@@ -316,6 +528,7 @@ impl FastSlowStore {
                 self.metrics
                     .slow_store_downloaded_bytes
                     .fetch_add(output_buf_len, Ordering::Acquire);
+                record_store_tier_io("slow", "read", output_buf_len);
 
                 let writer_fut = Self::calculate_range(
                     &(bytes_received..bytes_received + output_buf_len),
@@ -328,10 +541,19 @@ impl FastSlowStore {
                 );
 
                 bytes_received += output_buf_len;
+                if let Some(activity) = &data_stream_activity {
+                    activity.ticks.fetch_add(1, Ordering::Release);
+                }
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
                 writer_res.err_tip(|| "Failed to write result to writer in fast_slow store")?;
+                if let Some(activity) = &data_stream_activity {
+                    // Delivery completing is progress too: without this tick
+                    // the final chunk's consumption by the fast tier and the
+                    // reader would run on a dead clock.
+                    activity.ticks.fetch_add(1, Ordering::Release);
+                }
             }
         };
 
@@ -340,8 +562,54 @@ impl FastSlowStore {
             .fast_store
             .update(key.borrow(), fast_rx, reader_stream_size);
 
+        // The fill fails once no byte has moved for the inactivity timeout:
+        // dropping the joined future tears down all three sides at once, so
+        // a wedged slow read cannot pin the fill (and every follower waiting
+        // on it) forever. Progress resets the clock, so a slow but moving
+        // multi-gigabyte transfer is never cut; a whole-transfer deadline
+        // would be wrong here for exactly that reason. Once the transfer
+        // itself completes, only the fast tier's commit remains: it gets one
+        // further full window — grace for a slow local sync that must not
+        // cost a completed transfer, still a bound when the fast tier is a
+        // remote store whose commit can wedge.
+        let joined_fut = async { join!(data_stream_fut, slow_store_fut, fast_store_fut) };
         let (data_stream_res, slow_res, fast_res) =
-            join!(data_stream_fut, slow_store_fut, fast_store_fut);
+            match self.leader_inactivity_timeout.zip(fill_activity) {
+                None => joined_fut.await,
+                Some((inactivity, activity)) => {
+                    tokio::pin!(joined_fut);
+                    loop {
+                        let seen = activity.ticks.load(Ordering::Acquire);
+                        match tokio::time::timeout(inactivity, &mut joined_fut).await {
+                            Ok(results) => break results,
+                            Err(_elapsed) => {
+                                if activity.transfer_complete.load(Ordering::Acquire) {
+                                    break match tokio::time::timeout(inactivity, &mut joined_fut)
+                                        .await
+                                    {
+                                        Ok(results) => results,
+                                        Err(_elapsed) => {
+                                            return Err(self.fill_inactivity_error(
+                                                &key,
+                                                inactivity,
+                                                "the fast tier's commit",
+                                            ));
+                                        }
+                                    };
+                                }
+                                if activity.ticks.load(Ordering::Acquire) != seen {
+                                    continue;
+                                }
+                                return Err(self.fill_inactivity_error(
+                                    &key,
+                                    inactivity,
+                                    "the transfer",
+                                ));
+                            }
+                        }
+                    }
+                }
+            };
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
@@ -355,8 +623,14 @@ impl FastSlowStore {
                     },
                 )
             }
+            Err(err) if err.code == Code::DataLoss => Err(err),
             Err(err) => match slow_res {
-                Err(slow_err) if slow_err.code == Code::NotFound => Err(slow_err),
+                // The slow store lost the blob under the read (an evicting
+                // tier behind a gRPC store, say): the same missing input as
+                // a blob that was never there.
+                Err(slow_err) if matches!(slow_err.code, Code::NotFound | Code::DataLoss) => {
+                    Err(name_missing_digest(slow_err, &key))
+                }
                 _ => fast_res.merge(slow_res).merge(Err(err)),
             },
         }
@@ -436,6 +710,33 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
+    /// Both tiers drop their copy: the fast one is the cache this store
+    /// keeps, the slow one may be a cache of its own.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let fast = self
+            .fast_store
+            .as_store_driver_pin()
+            .remove(key.borrow())
+            .await?;
+        let slow = self.slow_store.as_store_driver_pin().remove(key).await?;
+        Ok(fast || slow)
+    }
+
+    /// Only the fast tier is a cache; the slow tier keeps its own copy.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let fast = self
+            .fast_store
+            .as_store_driver_pin()
+            .remove(key.borrow())
+            .await?;
+        let slow = self
+            .slow_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await?;
+        Ok(fast || slow)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],
@@ -448,10 +749,58 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
+        // A read-only slow store receives no uploads: the fast store is
+        // where writes land and the only place a new blob can be, so it
+        // counts toward presence, and the slow store answers for whatever
+        // predates it. Without this a reader that misses the fast tier is
+        // told the blob does not exist, and a blob is re-uploaded on every
+        // check even though the upload can only land where it already is.
+        // Across instances this holds when the fast store is shared (a
+        // compression tier over one backend); a per-instance fast tier
+        // such as memory or a local filesystem only answers for what that
+        // instance stored.
+        //
+        // The two lookups stay sequential on purpose: the slow store is
+        // asked only about the fast store's misses, so the second round
+        // trip is paid on a shrinking share of keys instead of every key.
+        if matches!(
+            self.slow_direction,
+            StoreDirection::ReadOnly | StoreDirection::Get
+        ) {
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.is_none().then_some(i))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let keys: Vec<StoreKey<'_>> = missing.iter().map(|&i| key[i].borrow()).collect();
+            let mut slow_results = vec![None; keys.len()];
+            self.slow_store
+                .has_with_results(&keys, &mut slow_results)
+                .await?;
+            for (i, r) in missing.into_iter().zip(slow_results) {
+                results[i] = r;
+            }
+            return Ok(());
+        }
+
         // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
-        // Check for any in-flight requests to the slow store next.
+        // Check for any in-flight requests to the slow store next. A writer
+        // holds its entry's lock for as long as its slow write runs, so a
+        // wedged writer holds it indefinitely, and every `has` of that key
+        // (FindMissingBlobs, a worker's upload check, a just-uploaded blob's
+        // first read) would inherit the hang. Each wait is therefore bounded
+        // by how long the WRITE has been in flight, not per call: a wedged
+        // write delays existence checks at most once, and once it is older
+        // than the deadline every later check reports the key missing
+        // immediately. The worst case is a client re-uploading a blob that
+        // was landing anyway.
+        let wait_timeout = self.has_slow_write_wait_timeout;
         let mut in_flight_futs = FuturesUnordered::new();
         {
             let in_flight = self.in_flight_slow_writes.lock();
@@ -459,9 +808,29 @@ impl StoreDriver for FastSlowStore {
                 for (i, (k, result)) in key.iter().zip(results.iter_mut()).enumerate() {
                     if result.is_none() {
                         let owned = k.borrow().into_owned();
-                        if let Some(maybe_size) = in_flight.get(&owned) {
-                            let maybe_size = maybe_size.clone();
-                            in_flight_futs.push(async move { (i, *maybe_size.lock().await) });
+                        if let Some(entry) = in_flight.get(&owned) {
+                            let entry = entry.clone();
+                            let metrics = &self.metrics;
+                            in_flight_futs.push(async move {
+                                let Some(wait_timeout) = wait_timeout else {
+                                    return (i, *entry.size.lock().await);
+                                };
+                                let remaining =
+                                    wait_timeout.saturating_sub(entry.registered_at.elapsed());
+                                // A write already past the deadline is
+                                // answered without arming a timer.
+                                if remaining.is_zero() {
+                                    entry.report_gave_up(metrics, &owned, wait_timeout);
+                                    return (i, None);
+                                }
+                                match tokio::time::timeout(remaining, entry.size.lock()).await {
+                                    Ok(size_guard) => (i, *size_guard),
+                                    Err(_elapsed) => {
+                                        entry.report_gave_up(metrics, &owned, wait_timeout);
+                                        (i, None)
+                                    }
+                                }
+                            });
                         }
                     }
                 }
@@ -471,12 +840,12 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
+        // NOTE: With a writable slow store we intentionally *NEVER* check
+        // the fast store, this is to ensure that we re-upload data to the
+        // slow store if it only exists in the fast store. Workers depend on
+        // this: `upload_file` asks `has` before uploading an output and
+        // skips the upload when the digest is present, so consulting a
+        // worker's local fast tier here would stop outputs reaching the CAS.
 
         Ok(())
     }
@@ -636,7 +1005,27 @@ impl StoreDriver for FastSlowStore {
 
     /// `FastSlowStore` has optimizations for dealing with files.
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
-        optimization == StoreOptimizations::FileUpdates
+        match optimization {
+            StoreOptimizations::FileUpdates => true,
+            // `get_part` reports a missing key as `NotFound` on its own, so a
+            // store above can skip its sizing `has()` whenever our slow store
+            // lets us skip ours. Asked without a key, a key-routed slow store
+            // (shard, size_partitioning) answers for itself and reports
+            // `false`, so this never claims laziness for one route's backend.
+            StoreOptimizations::LazyExistenceOnSync => self
+                .slow_store
+                .inner_store::<StoreKey<'_>>(None)
+                .optimized_for(StoreOptimizations::LazyExistenceOnSync),
+            _ => false,
+        }
+    }
+
+    /// A store above sizes a lazy fill by this limit, so report the slow
+    /// store's: a fill reads it from there.
+    fn max_upload_size(&self) -> u64 {
+        self.slow_store
+            .inner_store::<StoreKey<'_>>(None)
+            .max_upload_size()
     }
 
     /// Optimized variation to consume the file if one of the stores is a
@@ -768,8 +1157,21 @@ impl StoreDriver for FastSlowStore {
     ) -> Result<(), Error> {
         // `has()` can report a stale map entry whose file is gone, so
         // get_part may still return NotFound; fall through to the slow
-        // store unless we have already streamed bytes to the caller.
-        if self.fast_store.has(key.borrow()).await?.is_some() {
+        // store. With bytes already streamed to the caller that is a resume:
+        // a digest names an immutable blob, so what the fast tier sent is a
+        // correct prefix and the slow store serves the rest from there (a
+        // Redis tier evicting the key under a read is the live case). Any
+        // other key could hold different content in each tier, so a short
+        // read there stays an error.
+        // One existence check, reused: this is the hot read path and `has()`
+        // on a filesystem fast store is a syscall.
+        let mut offset = offset;
+        let mut length = length;
+        let in_fast_store = self.fast_store.has(key.borrow()).await?.is_some();
+        if !in_fast_store {
+            record_store_tier_read("fast", "miss");
+        }
+        if in_fast_store {
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
@@ -783,6 +1185,8 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_downloaded_bytes
                         .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    record_store_tier_read("fast", "hit");
+                    record_store_tier_io("fast", "read", writer.get_bytes_written());
                     return Ok(());
                 }
                 Err(e)
@@ -791,8 +1195,31 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_stale_map_falls_through
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("fast", "stale");
                     warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
                     // fall through to populate path
+                }
+                Err(e) if e.code == Code::NotFound && matches!(key, StoreKey::Digest(_)) => {
+                    let sent = writer.get_bytes_written() - bytes_before;
+                    if let Some(wanted) = length {
+                        let rest = wanted.saturating_sub(sent);
+                        if rest == 0 {
+                            return Ok(());
+                        }
+                        length = Some(rest);
+                    }
+                    offset += sent;
+                    self.metrics
+                        .fast_store_short_reads_resumed
+                        .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("fast", "short");
+                    warn!(
+                        %key,
+                        sent,
+                        ?e,
+                        "Fast store ended short; resuming from the slow store"
+                    );
+                    // fall through to populate path, from the next byte
                 }
                 Err(e) => return Err(e),
             }
@@ -815,6 +1242,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 
@@ -835,6 +1264,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 
@@ -844,10 +1275,14 @@ impl StoreDriver for FastSlowStore {
         //
         //   * Leader (created the OnceCell entry): runs `populate` with
         //     OUR `writer`, streaming directly to the caller while
-        //     filling the fast cache. No timeout: a multi-GB blob
-        //     legitimately takes minutes to stream, and cancelling our
-        //     own populate would propagate the failure to every other
-        //     reader of this digest.
+        //     filling the fast cache. No whole-transfer deadline: a
+        //     multi-GB blob legitimately takes minutes to stream, and
+        //     cancelling our own populate propagates the failure to every
+        //     other reader of this digest. When
+        //     `leader_inactivity_timeout_s` is set, the populate IS
+        //     cancelled (with `DEADLINE_EXCEEDED`) once it makes no
+        //     progress for a full window — see the watchdog in
+        //     `populate_and_maybe_stream`.
         //
         //   * Follower: bound the wait so a wedged leader does not pin
         //     us until the upstream `gRPC` deadline fires. The follower
@@ -928,10 +1363,7 @@ impl StoreDriver for FastSlowStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.fast_store.register_remove_callback(callback.clone())?;
         self.slow_store.register_remove_callback(callback)?;
         Ok(())
@@ -954,8 +1386,20 @@ struct FastSlowStoreMetrics {
     leader_wait_timeouts: AtomicU64,
     #[metric(help = "get_part calls that bypassed dedup for huge blobs")]
     huge_blob_dedup_bypasses: AtomicU64,
+    #[metric(
+        help = "In-flight slow writes that has() gave up waiting on at the configured deadline, counted once per write; their keys are reported missing until the write resolves"
+    )]
+    has_in_flight_wait_timeouts: AtomicU64,
+    #[metric(
+        help = "Cache fills failed because they made no progress for leader_inactivity_timeout_s (the sizing has(), the transfer, and the post-transfer commit alike; the WARN names the phase); the next reader of the key leads a fresh fill"
+    )]
+    leader_inactivity_timeouts: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
     fast_store_stale_map_falls_through: AtomicU64,
+    #[metric(
+        help = "Reads of a digest the fast store ended short, resumed from the slow store at the byte it stopped"
+    )]
+    fast_store_short_reads_resumed: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
+use opentelemetry::KeyValue;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,25 @@ pub enum UploadSizeInfo {
     /// checks, but still provide useful information to the underlying store about the data being
     /// sent that it can then use to optimize the upload process.
     MaxSize(u64),
+}
+
+impl UploadSizeInfo {
+    /// Check the payload length before publishing an upload. Use the transfer
+    /// size, not the key's digest size: AC values and encoded data may have a
+    /// different length from their keys.
+    pub fn validate_size(self, actual: u64) -> Result<(), Error> {
+        match self {
+            Self::ExactSize(expected) if actual != expected => Err(make_err!(
+                Code::InvalidArgument,
+                "Expected {expected} upload bytes, received {actual}"
+            )),
+            Self::MaxSize(maximum) if actual > maximum => Err(make_err!(
+                Code::InvalidArgument,
+                "Upload exceeded maximum size {maximum}: received {actual}"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Utility to send all the data to the store from a file.
@@ -401,10 +421,7 @@ impl Store {
     }
 
     #[inline]
-    pub fn register_remove_callback(
-        &self,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    pub fn register_remove_callback(&self, callback: RemoveCallback) -> Result<(), Error> {
         self.inner.clone().register_remove_callback(callback)
     }
 }
@@ -617,6 +634,8 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
     }
 }
 
+pub type RemoveCallback = Arc<dyn RemoveItemCallback>;
+
 #[async_trait]
 pub trait StoreDriver:
     Sync + Send + Unpin + MetricsComponent + HealthStatusIndicator + 'static
@@ -624,6 +643,25 @@ pub trait StoreDriver:
     // Do "all the stores are setup" init e.g. if we need access to the store manager
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
+
+    /// Drops a disposable copy of `key`, so the next read can repopulate it
+    /// from another tier. Returns whether anything was dropped. The default
+    /// keeps the copy and returns `false`.
+    ///
+    /// Memory and filesystem implementations always evict when asked; they
+    /// cannot infer whether they hold the durable copy. Repair calls
+    /// [`StoreDriver::remove_cached`] instead, which only reaches tiers a
+    /// composition marks as caches.
+    async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    /// Like [`StoreDriver::remove`], but only for copies in cache tiers
+    /// inside this store; the copy reads fall back to is kept.
+    /// Stores that forward `remove` must forward this too.
+    async fn remove_cached(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
 
     /// See: [`StoreLike::has`] for details.
     #[inline]
@@ -676,6 +714,15 @@ pub trait StoreDriver:
     /// See: [`StoreLike::optimized_for`] for details.
     fn optimized_for(&self, _optimization: StoreOptimizations) -> bool {
         false
+    }
+
+    /// The largest object this store can hold, in bytes. A caller that
+    /// streams data out of this store without knowing its length can announce
+    /// this as the [`UploadSizeInfo::MaxSize`] of the copy, because nothing
+    /// larger could have been stored here. The default, `u64::MAX`, means the
+    /// store has no known limit; wrappers do not forward it.
+    fn max_upload_size(&self) -> u64 {
+        u64::MAX
     }
 
     /// See: [`StoreLike::update_with_whole_file`] for details.
@@ -865,10 +912,14 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error>;
+    /// Starts reporting this store's size and entry count as `cache.size`
+    /// and `cache.entries` under `attrs`. Returns `false` for a store that
+    /// does not track its own size, which then reports nothing.
+    fn enable_cache_size_metrics(&self, _attrs: &[KeyValue]) -> bool {
+        false
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error>;
 }
 
 // Callback to be called when a store deletes an item. This is used so
@@ -943,6 +994,15 @@ pub trait SchedulerStore: Send + Sync + 'static {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send;
 
+    /// Counts the keys in the store matching the given index prefix.
+    ///
+    /// Unlike `search_by_index_prefix` this never fetches the entries, so the
+    /// cost does not grow with the number of matches. Callers that only need
+    /// a total, such as reporting queue depth, should use this.
+    fn count_by_index_prefix<K>(&self, index: K) -> impl Future<Output = Result<u64, Error>> + Send
+    where
+        K: SchedulerIndexProvider + Send;
+
     /// Returns data for the provided key with the given version if
     /// `StoreKeyProvider::Versioned` is `TrueValue`.
     fn get_and_decode<K>(
@@ -964,6 +1024,17 @@ pub trait SchedulerIndexProvider {
 
     /// The sort key for the index (if any).
     const MAYBE_SORT_KEY: Option<&'static str> = None;
+
+    /// Whether results sorted by `MAYBE_SORT_KEY` come back descending.
+    ///
+    /// A backend serves one direction per index, so the direction is a
+    /// property of the provider rather than of the call. The scheduler's
+    /// awaited-action index packs priority into the high bits and an
+    /// inverted insert timestamp into the low bits, so descending is
+    /// "highest priority first, then oldest first"; ascending is the exact
+    /// opposite, which is what the Redis backend served until this const
+    /// existed.
+    const SORT_DESCENDING: bool = false;
 
     /// If the data is versioned.
     type Versioned: BoolValue;

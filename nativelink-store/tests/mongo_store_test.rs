@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,8 +77,10 @@ fn create_test_spec_with_key_prefix(
 }
 
 // Helper to keep hold of Mongo process parts so we don't accidentally drop them!
+// Dropping MongoProcess kills the mongod, so owning these IS the cleanup.
 #[derive(Debug)]
 pub(crate) struct MongoParts {
+    #[allow(dead_code)]
     pub process: MongoProcess,
     #[allow(dead_code)]
     pub embedded: MongoEmbedded,
@@ -89,6 +91,7 @@ pub(crate) struct MongoParts {
 pub(crate) struct TestMongoHelper {
     pub store: Arc<ExperimentalMongoStore>,
     pub database_name: String,
+    #[allow(dead_code)]
     pub mongo_local: Option<MongoParts>,
     pub spec: ExperimentalMongoSpec,
 }
@@ -102,17 +105,20 @@ impl TestMongoHelper {
         let test_mongo_url = if let Ok(url) = std::env::var("NATIVELINK_TEST_MONGO_URL") {
             url
         } else {
-            let port = redis_test::utils::get_random_available_port();
-            let mongo_runner = MongoEmbedded::new("7.0.11").set_port(port);
+            let mongo_runner = MongoEmbedded::new("7.0.11");
             let process = mongo_runner
                 .start()
                 .await
                 .err_tip(|| "Failed to start MongoDB")?;
+            // The runner picks its own free port (and re-picks it if it loses
+            // a bind race), so use the connection string it reports rather
+            // than assuming a port chosen up front is still free.
+            let url = process.connection_string.clone();
             mongo_local.replace(MongoParts {
                 process,
                 embedded: mongo_runner,
             });
-            format!("mongodb://127.0.0.1:{port}/")
+            url
         };
 
         let spec = create_test_spec_with_key_prefix(key_prefix, test_mongo_url);
@@ -145,14 +151,14 @@ impl TestMongoHelper {
 
 impl Drop for TestMongoHelper {
     fn drop(&mut self) {
-        // No longer cleaning up databases - we want to keep them for inspection
+        // No longer cleaning up databases - we want to keep them for inspection.
+        // Dropping mongo_local kills the mongod; that path must never panic,
+        // because Drop also runs while unwinding from a failed assertion and a
+        // double panic would abort the whole test binary.
         eprintln!(
             "Test database '{}' retained for inspection",
             self.database_name
         );
-        if let Some(mut parts) = self.mongo_local.take() {
-            parts.process.kill().expect("Failed to kill mongo process");
-        }
     }
 }
 
@@ -585,8 +591,8 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         eprintln!("Successfully created CAS entry #{i} with digest: {digest}");
     }
 
-    // Query MongoDB directly to verify entries were written
-    let helper = TestMongoHelper::new(None).await?;
+    // Query MongoDB directly (same instance and database the store wrote to)
+    // to verify entries were written.
     let client_options = ClientOptions::parse(&helper.spec.connection_string)
         .await
         .map_err(|e| make_err!(Code::Internal, "Failed to parse connection string: {e}"))?;
@@ -604,6 +610,7 @@ async fn create_ten_cas_entries() -> Result<(), Error> {
         .map_err(|e| make_err!(Code::Internal, "Failed to count documents: {e}"))?;
 
     eprintln!("Total documents in CAS collection: {count}");
+    assert_eq!(count, 10, "Expected one document per uploaded CAS entry");
 
     // List first few documents
     let mut cursor = collection
@@ -1018,5 +1025,34 @@ async fn single_request_permit() -> Result<(), Error> {
         "Number of waiting permits for Mongo waiting=0"
     ));
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_preserves_mongo_value() -> Result<(), Error> {
+    let helper = TestMongoHelper::new(None).await?;
+    let key = DigestInfo::try_new(VALID_HASH1, 999)?;
+    let good = Bytes::from(vec![7; 78]);
+    helper.store.update_oneshot(key, good.clone()).await?;
+    for finish in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                if finish {
+                    tx.send_eof()?;
+                }
+                Ok::<_, Error>(())
+            };
+            let (result, _) = tokio::join!(
+                helper.store.update(key, rx, UploadSizeInfo::ExactSize(78)),
+                send
+            );
+            assert!(result.is_err());
+            assert_eq!(helper.store.get_part_unchunked(key, 0, None).await?, good);
+        }
+    }
     Ok(())
 }

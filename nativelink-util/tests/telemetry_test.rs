@@ -1,3 +1,17 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use core::convert::Infallible;
 use core::future::Future;
 use core::net::SocketAddr;
@@ -39,16 +53,21 @@ where
 {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> {
         let context = global::get_text_map_propagator(|propagator| {
             propagator.extract(&OTELHeaderExtractor(&parts.headers))
         });
-        if let Some(client_headers) = context.get::<ClientHeaders>() {
-            Ok(Self(client_headers.clone()))
-        } else {
-            error!("Missing OTEL headers");
-            Err((StatusCode::BAD_REQUEST, "OTEL headers are missing"))
-        }
+        std::future::ready(
+            if let Some(client_headers) = context.get::<ClientHeaders>() {
+                Ok(Self(client_headers.clone()))
+            } else {
+                error!("Missing OTEL headers");
+                Err((StatusCode::BAD_REQUEST, "OTEL headers are missing"))
+            },
+        )
     }
 }
 
@@ -238,7 +257,7 @@ impl Service<Request<Body>> for TestMetricsService {
                 );
                 // ProstCodec<T, U>: Encode = T (sent to client),
                 //                   Decode = U (received from client).
-                let mut grpc = tonic::server::Grpc::new(tonic::codec::ProstCodec::<
+                let mut grpc = tonic::server::Grpc::new(tonic_prost::ProstCodec::<
                     ExportMetricsServiceResponse,
                     ExportMetricsServiceRequest,
                 >::default());
@@ -385,6 +404,7 @@ fn expected_sum_data_points() -> Vec<(String, String, Vec<String>, String)> {
                 value: Some(AnyValue {
                     value: Some(any_value::Value::StringValue(value.to_string())),
                 }),
+                key_strindex: 0,
             }
         )
     };
@@ -417,7 +437,7 @@ async fn metrics_are_tracked_without_otel_endpoint() -> Result<(), Box<dyn core:
     // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
     unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
     assert!(
-        maybe_load_balanced_channel().await.is_none(),
+        maybe_load_balanced_channel().await?.is_none(),
         "Expected no channel when {NL_OTEL_ENDPOINT} is unset"
     );
     let exporter = MetricExporter::builder()
@@ -456,7 +476,7 @@ async fn metrics_are_tracked_with_otel_endpoint() -> Result<(), Box<dyn core::er
     let maybe_channel = maybe_load_balanced_channel().await;
     // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
     unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
-    let channel = maybe_channel.expect("Expected a channel when NL_OTEL_ENDPOINT is set");
+    let channel = maybe_channel?.expect("Expected a channel when NL_OTEL_ENDPOINT is set");
     let exporter = MetricExporter::builder()
         .with_tonic()
         .with_channel(channel.into())

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeSet, HashMap};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use futures::{Future, StreamExt, future};
+use futures::future::BoxFuture;
+use futures::{Future, FutureExt, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, RequestEvent, event, request_event,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    StartExecute, WorkerLoad,
+};
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::{
+    AgeBuckets, record_awaited_action_orphan, record_executing_ages, record_matching_pass,
+    record_parked_dispatched, record_queue_ages, record_queue_depth, record_sweep_failure,
+    record_unsatisfiable_failed, record_unsatisfiable_queued,
+};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_event::{OriginMetadata, get_node_id};
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -39,28 +49,71 @@ use opentelemetry::KeyValue;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
+use parking_lot::Mutex;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
+use crate::api_worker_scheduler::{AVOID_FALLBACK_AFTER, ApiWorkerScheduler, QueuedAction};
+use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use crate::resource_sketch::ResourceSketch;
+use crate::simple_scheduler_state_manager::{
+    RetryLimits, SimpleSchedulerStateManager, is_lost_record,
+};
+use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
-use crate::worker_registry::WorkerRegistry;
-use crate::worker_scheduler::WorkerScheduler;
+use crate::worker_registry::{SharedWorkerRegistry, WorkerRegistry};
+use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
-/// Default timeout for workers in seconds.
+/// Default timeout for workers in seconds: four default keepalive intervals
+/// (2.5s each). The old value of two meant one late keepalive under load
+/// evicted the worker and requeued everything it held.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+const DEFAULT_WORKER_TIMEOUT_S: u64 = 10;
+
+/// How often this scheduler tells its peers what its workers can run and
+/// reads what theirs can.
+const FLEET_EXCHANGE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How many exchange intervals a published fleet record outlives its last
+/// refresh, so one missed refresh does not make a peer's workers vanish.
+const FLEET_RECORD_TTL_INTERVALS: u32 = 3;
+
+/// Floor on how many queued actions one matching pass fails as unsatisfiable.
+/// The cap bleeds a large burst over several (back-to-back) passes instead of
+/// failing a whole shape-class at once, and bounds the cumulative
+/// version-conflict backoff sleeps a single pass can incur.
+const MAX_UNSATISFIABLE_FAILS_PER_PASS: usize = 16;
+
+/// A backlog larger than `floor * DIVISOR` raises the cap to `backlog /
+/// DIVISOR`, so a large single-shape burst drains in ~DIVISOR back-to-back
+/// passes rather than `backlog / floor` of them (whose tail could outlast a
+/// client's own timeout).
+const UNSATISFIABLE_FAIL_BACKLOG_DIVISOR: usize = 4;
+
+/// The per-pass unsatisfiable-fail cap for a pass, given the previous pass's
+/// unsatisfiable backlog: the floor, or a fraction of the backlog if larger.
+const fn unsatisfiable_fail_cap(last_backlog: usize) -> usize {
+    let scaled = last_backlog / UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+    if scaled > MAX_UNSATISFIABLE_FAILS_PER_PASS {
+        scaled
+    } else {
+        MAX_UNSATISFIABLE_FAILS_PER_PASS
+    }
+}
+
+/// Default timeout for a sent kill to be acknowledged in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S: u64 = 60;
 
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+pub(crate) const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
 
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
@@ -117,6 +170,8 @@ impl ActionStateResult for SimpleSchedulerActionStateResult {
     }
 }
 
+type AbandonedSweep = Arc<dyn Fn() -> BoxFuture<'static, Result<u64, Error>> + Send + Sync>;
+
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
@@ -146,10 +201,56 @@ pub struct SimpleScheduler {
     /// is dropped the spawn will be cancelled as well.
     task_worker_matching_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that retires queued actions nobody is waiting on.
+    /// Dropped with the struct, like the matching task.
+    task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
+
+    /// One pass of that sweep, for a test to run when its clock says so;
+    /// the task sleeps on real time.
+    abandoned_sweep: AbandonedSweep,
+
+    /// Background task that retires executing actions whose worker has gone
+    /// quiet or no longer runs them. Dropped with the struct; `None` when
+    /// `executing_sweep_interval_s` disables it.
+    task_executing_sweep_spawn: Option<JoinHandleDropGuard<()>>,
+
+    /// Background task that swaps worker capabilities with peer schedulers
+    /// on the same state. Dropped with the struct, like the matching task.
+    task_fleet_exchange_spawn: JoinHandleDropGuard<()>,
+
     /// Every duration, do logging of worker matching
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
     worker_match_logging_interval: Option<Duration>,
+
+    /// How long each action property shape has gone without any worker able
+    /// to run it.
+    unsatisfiable_tracker: Mutex<UnsatisfiableTracker>,
+    /// The clock for actions queued while no worker is connected anywhere
+    /// (`no_worker_action_timeout_s`); `None` when that timeout is off.
+    no_worker_tracker: Option<Mutex<UnsatisfiableTracker>>,
+
+    /// When the earliest action the last pass left waiting, because only
+    /// workers it failed on were free here, may be offered to one of them:
+    /// `AVOID_FALLBACK_AFTER` after its requeue. The matching task wakes
+    /// for it, so that fallback does not wait on some other event.
+    avoid_fallback_due: Mutex<Option<SystemTime>>,
+
+    /// Typed platform properties by the hash of the raw ones. Typing is a
+    /// lookup and a parse per property per queued action per pass, and the
+    /// raw properties of a queued action rarely change (an escalation is
+    /// the exception, and it changes the hash), so the pass reuses the
+    /// typed set. Cleared when full rather than evicted, like
+    /// `static_verdicts`.
+    typed_properties: Mutex<HashMap<u64, PlatformProperties>>,
+
+    /// The number of unsatisfiable actions still queued at the end of the last
+    /// matching pass, used to size the next pass's per-pass fail cap so a large
+    /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
+    last_unsatisfiable_backlog: AtomicUsize,
+
+    /// The clock the state manager uses.
+    now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -162,8 +263,48 @@ impl core::fmt::Debug for SimpleScheduler {
                 "task_worker_matching_spawn",
                 &self.task_worker_matching_spawn,
             )
+            .field(
+                "task_abandoned_sweep_spawn",
+                &self.task_abandoned_sweep_spawn,
+            )
+            .field(
+                "task_executing_sweep_spawn",
+                &self.task_executing_sweep_spawn,
+            )
+            .field("task_fleet_exchange_spawn", &self.task_fleet_exchange_spawn)
             .finish_non_exhaustive()
     }
+}
+
+/// How many typed property sets the pass keeps before starting over.
+const MAX_TYPED_PROPERTIES: usize = 10_000;
+
+/// The typed form of an action's raw properties, from the cache when the
+/// same raw set was typed before.
+fn typed_properties_for(
+    cache: &Mutex<HashMap<u64, PlatformProperties>>,
+    manager: &PlatformPropertyManager,
+    raw: &HashMap<String, String>,
+) -> Result<PlatformProperties, Error> {
+    use core::hash::{Hash, Hasher};
+    let mut pairs: Vec<(&String, &String)> = raw.iter().collect();
+    pairs.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (name, value) in &pairs {
+        name.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    if let Some(typed) = cache.lock().get(&key) {
+        return Ok(typed.clone());
+    }
+    let typed = manager.make_platform_properties(raw.clone())?;
+    let mut cache = cache.lock();
+    if cache.len() >= MAX_TYPED_PROPERTIES {
+        cache.clear();
+    }
+    cache.insert(key, typed.clone());
+    Ok(typed)
 }
 
 impl SimpleScheduler {
@@ -184,6 +325,7 @@ impl SimpleScheduler {
             queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker_id.to_string(),
+            request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
         };
         Event {
             event: Some(event::Event::Request(RequestEvent {
@@ -271,53 +413,307 @@ impl SimpleScheduler {
         self.do_try_match(true).await
     }
 
+    /// Runs the abandoned-queue sweep once, as its task does every client
+    /// timeout; returns how many actions it retired.
+    pub async fn sweep_abandoned_queued_actions_for_test(&self) -> Result<u64, Error> {
+        (self.abandoned_sweep)().await
+    }
+
+    /// A pass as production runs it between logging intervals: cached
+    /// verdicts are used rather than recomputed.
+    pub async fn do_try_match_quietly_for_test(&self) -> Result<(), Error> {
+        self.do_try_match(false).await
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers: one peer with
+    /// these workers.
+    pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.set_peer_schedulers_for_test(vec![PeerScheduler {
+            scheduler_id: "peer".to_string(),
+            workers: peer_fleet,
+            renews_worker_leases: true,
+        }])
+        .await;
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers.
+    pub async fn set_peer_schedulers_for_test(&self, peers: Vec<PeerScheduler>) {
+        self.worker_scheduler
+            .set_peer_fleet(Some(peers), (self.now_fn)())
+            .await;
+    }
+
+    /// The id this scheduler publishes to its peers under.
+    pub fn worker_registry_for_test(&self) -> &SharedWorkerRegistry {
+        self.worker_scheduler.worker_registry()
+    }
+
+    pub fn scheduler_id_for_test(&self) -> &str {
+        self.worker_scheduler.scheduler_id()
+    }
+
+    /// The workers held for a queued action right now.
+    pub async fn held_workers_for_test(&self) -> Vec<WorkerId> {
+        self.worker_scheduler.held_workers_for_test().await
+    }
+
+    /// Stands in for a failed fleet exchange with peer schedulers.
+    pub async fn set_peers_unknown_for_test(&self) {
+        self.worker_scheduler
+            .set_peer_fleet(None, (self.now_fn)())
+            .await;
+    }
+
+    /// A counter that changes every time the fleet does.
+    pub async fn fleet_generation_for_test(&self) -> u64 {
+        self.worker_scheduler.fleet_generation().await
+    }
+
+    /// What this scheduler would publish to peer schedulers.
+    pub async fn fleet_shapes_for_test(&self) -> Vec<PlatformProperties> {
+        self.worker_scheduler.fleet_shapes().await
+    }
+
+    /// How long until the matching loop would next wake on behalf of an
+    /// unsatisfiable shape, if at all.
+    pub fn next_wake_for_test(&self) -> Option<Duration> {
+        self.next_wake((self.now_fn)())
+    }
+
+    /// How long until a pass should run without being told to: for an
+    /// unsatisfiable or a no-worker shape, or for an action whose avoidance
+    /// fallback comes due, whichever comes first.
+    fn next_wake(&self, now: SystemTime) -> Option<Duration> {
+        let unsatisfiable = self.unsatisfiable_tracker.lock().next_deadline(now);
+        let no_worker = self
+            .no_worker_tracker
+            .as_ref()
+            .and_then(|tracker| tracker.lock().next_deadline(now));
+        let avoid_fallback = self
+            .avoid_fallback_due
+            .lock()
+            .map(|due| due.duration_since(now).unwrap_or(Duration::ZERO));
+        [unsatisfiable, no_worker, avoid_fallback]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
-        async fn match_action_to_worker(
+        let match_started = Instant::now();
+        let result = self.do_try_match_inner(full_worker_logging).await;
+        record_matching_pass(match_started.elapsed().as_secs_f64(), result.is_ok());
+        result
+    }
+
+    async fn do_try_match_inner(&self, full_worker_logging: bool) -> Result<(), Error> {
+        struct UnsatisfiablePass<'a> {
+            tracker: &'a Mutex<UnsatisfiableTracker>,
+            now: SystemTime,
+            fleet_generation: u64,
+            /// Most actions this pass may fail as unsatisfiable (blast-radius
+            /// cap, sized from the last pass's backlog by `unsatisfiable_fail_cap`).
+            cap: usize,
+            /// How many it has failed so far this pass.
+            fails_this_pass: AtomicUsize,
+        }
+
+        /// Logs an action no worker can run and, once its property shape has
+        /// been unsatisfiable for the configured timeout and the action has
+        /// itself been queued that long, fails it.
+        async fn handle_unsatisfiable(
+            action_state_result: &dyn ActionStateResult,
+            matching_engine_state_manager: &dyn MatchingEngineStateManager,
+            workers: &ApiWorkerScheduler,
+            platform_properties: &PlatformProperties,
+            insert_timestamp: SystemTime,
+            reason: &UnsatisfiableReason,
+            pass: &UnsatisfiablePass<'_>,
+        ) -> Result<(), Error> {
+            let shape = PropertyShape::from(platform_properties);
+            let (observation, fails_actions) = {
+                let mut tracker = pass.tracker.lock();
+                let observation = tracker.observe(
+                    shape.clone(),
+                    pass.now,
+                    pass.fleet_generation,
+                    insert_timestamp,
+                );
+                (observation, tracker.fails_actions())
+            };
+            if observation.should_warn {
+                // Without a timeout nothing is failed, and a pool that
+                // scales up from zero shows up here on every cold start.
+                if fails_actions {
+                    warn!(
+                        %reason,
+                        waited_s = observation.waited.as_secs(),
+                        "Queued action cannot run on any connected worker"
+                    );
+                } else {
+                    info!(
+                        %reason,
+                        waited_s = observation.waited.as_secs(),
+                        "Queued action cannot run on any connected worker"
+                    );
+                }
+            }
+            if !observation.is_due {
+                return Ok(());
+            }
+            // The action must also have waited the timeout itself, so one that
+            // arrives while its shape is already due is not failed on sight.
+            // Actions queued together still fail within about one timeout;
+            // during a pool outage later actions fail as they age instead of
+            // in an immediate burst. The tracker wakes the loop when it does.
+            if !observation.action_eligible {
+                return Ok(());
+            }
+            // A worker that joined here or on a peer since the pass began may
+            // be able to run it, so leave it for the next pass to judge.
+            if workers.fleet_generation().await != pass.fleet_generation {
+                return Ok(());
+            }
+
+            // Blast-radius cap: fail at most `cap` actions per pass. Over-cap
+            // actions were still observed above (their timers keep running) and
+            // are reconsidered next pass, so a large burst bleeds off over a few
+            // back-to-back passes rather than failing all at once.
+            if pass.fails_this_pass.load(Ordering::Relaxed) >= pass.cap {
+                return Ok(());
+            }
+            pass.fails_this_pass.fetch_add(1, Ordering::Relaxed);
+
+            let operation_id = {
+                let (action_state, _origin_metadata) = action_state_result
+                    .as_state()
+                    .await
+                    .err_tip(|| "Failed to get state of an unsatisfiable action")?;
+                action_state.client_operation_id.clone()
+            };
+            // The client only hears what it asked for; what workers offer
+            // stays in the server log above.
+            let err = make_err!(
+                Code::FailedPrecondition,
+                "Action cannot be scheduled, {}. No capable worker has been connected for {}s.",
+                reason.for_client(),
+                observation.waited.as_secs()
+            );
+            let failed = matching_engine_state_manager
+                .fail_queued_operation(&operation_id, err)
+                .await
+                .err_tip(|| "Failed to fail an unsatisfiable action in do_try_match")?;
+            if failed {
+                record_unsatisfiable_failed(reason.property_names());
+                // So a pass that retires every eligible action of the shape
+                // does not read as stuck and back off the next wake.
+                pass.tracker.lock().note_failed(&shape);
+            }
+            Ok(())
+        }
+
+        /// A listed action with what matching needs of it.
+        struct Loaded {
+            action_state_result: Box<dyn ActionStateResult>,
+            action_info: ActionInfoWithProps,
+            /// Workers a retry of this action should not go back to, and
+            /// their nodes.
+            avoid: Vec<WorkerId>,
+            avoid_nodes: Vec<String>,
+            /// When the action was last queued.
+            queued_since: SystemTime,
+        }
+
+        /// Reads what matching needs of a listed action. `None` when the
+        /// record cannot be read: gone from the store (eviction), or
+        /// unreadable. Counted so an operator can see the store losing
+        /// records, skipped so the rest of the pass still runs, and not an
+        /// error, since an error here made the pass rerun at once and log
+        /// ten times a second until the entry went away.
+        async fn load_action(
+            action_state_result: Box<dyn ActionStateResult>,
+            platform_property_manager: &PlatformPropertyManager,
+            typed_properties: &Mutex<HashMap<u64, PlatformProperties>>,
+        ) -> Result<Option<Loaded>, Error> {
+            let (action_info, maybe_origin_metadata) =
+                match action_state_result.as_action_info().await {
+                    Ok(found) => found,
+                    Err(err) if is_lost_record(&err) => {
+                        if err.code == Code::NotFound {
+                            debug!(
+                                ?err,
+                                "Queued operation listed but its record is gone; skipping"
+                            );
+                        } else {
+                            warn!(
+                                ?err,
+                                "Queued operation listed but its record cannot be read; skipping"
+                            );
+                        }
+                        record_awaited_action_orphan("matching");
+                        return Ok(None);
+                    }
+                    // The store itself failed, so the pass is incomplete:
+                    // an error here reruns it at once, as before.
+                    Err(err) => {
+                        return Err(err).err_tip(
+                            || "Failed to get action info in SimpleScheduler::do_try_match",
+                        );
+                    }
+                };
+
+            let platform_properties = typed_properties_for(
+                typed_properties,
+                platform_property_manager,
+                &action_info.platform_properties,
+            )
+            .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
+
+            // One read of the record for what the pass needs of it.
+            let facts = action_state_result
+                .dispatch_facts()
+                .await
+                .unwrap_or_default();
+            let queued_since = facts.queued_since.unwrap_or(action_info.insert_timestamp);
+            Ok(Some(Loaded {
+                action_state_result,
+                action_info: ActionInfoWithProps {
+                    inner: action_info,
+                    platform_properties,
+                    origin_metadata: maybe_origin_metadata.unwrap_or_default(),
+                    scheduler_start_execute_event_id: None,
+                },
+                avoid: facts.avoid_worker_ids,
+                avoid_nodes: facts.avoid_node_names,
+                queued_since,
+            }))
+        }
+
+        /// What became of a dispatch that did not fail.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Dispatch {
+            /// The worker was told to run the action.
+            Sent,
+            /// Another scheduler assigned the action first; nothing was sent.
+            LostRace,
+        }
+
+        /// Hands a matched action to its worker. `Ok(Dispatch::Sent)` means
+        /// the worker was actually told; a lost assignment race is not an
+        /// error but sends nothing.
+        async fn dispatch_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
-            platform_property_manager: &PlatformPropertyManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
-            full_worker_logging: bool,
-        ) -> Result<(), Error> {
-            let (action_info, maybe_origin_metadata) =
-                action_state_result
-                    .as_action_info()
-                    .await
-                    .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
-
-            // TODO(palfrey) We should not compute this every time and instead store
-            // it with the ActionInfo when we receive it.
-            let platform_properties = platform_property_manager
-                .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(
-                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
-                )?;
-
-            let origin_metadata = maybe_origin_metadata.unwrap_or_default();
-            let action_info = ActionInfoWithProps {
-                inner: action_info,
-                platform_properties,
-                origin_metadata: origin_metadata.clone(),
-                scheduler_start_execute_event_id: None,
-            };
-
-            // Try to find a worker for the action.
-            let worker_id = {
-                match workers
-                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
-                    .await
-                {
-                    Some(worker_id) => worker_id,
-                    // If we could not find a worker for the action,
-                    // we have nothing to do.
-                    None => return Ok(()),
-                }
-            };
-
+            worker_id: WorkerId,
+            action_info: ActionInfoWithProps,
+            now_fn: &(dyn Fn() -> SystemTime + Send + Sync),
+        ) -> Result<Dispatch, Error> {
+            let origin_metadata = action_info.origin_metadata.clone();
             let event_origin_metadata = origin_metadata.clone();
             let attach_operation_fut = async move {
                 // Extract the operation_id from the action_state.
@@ -338,7 +734,7 @@ impl SimpleScheduler {
                     if err.code == Code::Aborted {
                         // If the operation was aborted, it means that the operation was
                         // cancelled due to another operation being assigned to the worker.
-                        return Ok(());
+                        return Ok(Dispatch::LostRace);
                     }
                     // Any other error is a real error.
                     return Err(err);
@@ -357,8 +753,12 @@ impl SimpleScheduler {
                 });
 
                 debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
+                let dispatched_at = now_fn()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 workers
-                    .worker_notify_run_action(worker_id, operation_id, action_info)
+                    .worker_notify_run_action(worker_id, operation_id, action_info, dispatched_at)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
@@ -374,7 +774,7 @@ impl SimpleScheduler {
                     .await;
                 }
 
-                Ok(())
+                Ok(Dispatch::Sent)
             };
             tokio::pin!(attach_operation_fut);
 
@@ -389,9 +789,157 @@ impl SimpleScheduler {
                 .await
         }
 
+        /// Actions this pass read that found no room, in the order the
+        /// queue listed them: highest priority first, then oldest. That is
+        /// the order room is offered to them in, before the action the
+        /// pass is reading, whenever the fleet's capacity changes. Parking
+        /// is a push; a replay walks the list once and asks the fleet once
+        /// per property shape it meets, since every action of one shape
+        /// asks the same of a worker: a shape whose first parked action
+        /// finds no room is skipped for the rest of that replay.
+        #[derive(Default)]
+        struct Parked {
+            /// Each with its shape, computed once at parking.
+            queue: VecDeque<(PropertyShape, Loaded)>,
+            /// Actions that were not parked because the list was full.
+            cap_dropped: u64,
+        }
+
+        /// Past this many parked actions a pass stops parking, so a newer
+        /// action past that point may take room ahead of one of them. The
+        /// head of the queue, which is what a client waits on, is always
+        /// parked.
+        const PARKED_CAP: usize = 10_000;
+
+        impl Parked {
+            fn park(&mut self, loaded: Loaded) {
+                if self.queue.len() >= PARKED_CAP {
+                    self.cap_dropped += 1;
+                    return;
+                }
+                let shape = PropertyShape::from(&loaded.action_info.platform_properties);
+                self.queue.push_back((shape, loaded));
+            }
+
+            fn is_empty(&self) -> bool {
+                self.queue.is_empty()
+            }
+        }
+
+        /// What one pass did with its parked actions.
+        #[derive(Default)]
+        struct Placement {
+            /// Parked actions that found a worker and were dispatched to it.
+            attempted: u64,
+            /// Of those, the ones the worker was actually told to run.
+            dispatched: u64,
+            /// Of those, the ones another scheduler assigned first.
+            lost_race: u64,
+            /// Of those, the ones whose dispatch failed.
+            failed: u64,
+        }
+
+        /// Offers the room that opened since the pass last looked to the
+        /// parked actions in listing order. Every parked action that found
+        /// a worker leaves the list, whatever its dispatch came to.
+        #[expect(clippy::too_many_arguments)]
+        async fn place_parked(
+            parked: &mut Parked,
+            placement: &mut Placement,
+            contended: &mut HashSet<PropertyShape>,
+            workers: &ApiWorkerScheduler,
+            matching_engine_state_manager: &dyn MatchingEngineStateManager,
+            maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+            full_worker_logging: bool,
+            now: SystemTime,
+            now_fn: &(dyn Fn() -> SystemTime + Send + Sync),
+        ) -> Result<(), Error> {
+            let mut result = Ok(());
+            let mut blocked: HashSet<PropertyShape> = HashSet::new();
+            let mut still_parked = VecDeque::with_capacity(parked.queue.len());
+            while let Some((shape, loaded)) = parked.queue.pop_front() {
+                if blocked.contains(&shape) || contended.contains(&shape) {
+                    still_parked.push_back((shape, loaded));
+                    continue;
+                }
+                let MatchOutcome::Matched(worker_id) = workers
+                    .find_worker_for_action(
+                        &loaded.action_info.platform_properties,
+                        full_worker_logging,
+                        now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
+                            queued_since: loaded.queued_since,
+                        }),
+                    )
+                    .await
+                else {
+                    still_parked.push_back((shape.clone(), loaded));
+                    blocked.insert(shape);
+                    continue;
+                };
+                placement.attempted += 1;
+                match dispatch_to_worker(
+                    loaded.action_state_result.as_ref(),
+                    workers,
+                    matching_engine_state_manager,
+                    maybe_origin_event_tx,
+                    worker_id,
+                    loaded.action_info,
+                    now_fn,
+                )
+                .await
+                {
+                    Ok(Dispatch::Sent) => placement.dispatched += 1,
+                    Ok(Dispatch::LostRace) => {
+                        placement.lost_race += 1;
+                        contended.insert(shape);
+                    }
+                    Err(err) => {
+                        placement.failed += 1;
+                        result = result.merge(Err(err));
+                    }
+                }
+            }
+            parked.queue = still_parked;
+            result
+        }
+
         let mut result = Ok(());
 
         let start = Instant::now();
+
+        let unsatisfiable_pass = UnsatisfiablePass {
+            tracker: &self.unsatisfiable_tracker,
+            now: (self.now_fn)(),
+            fleet_generation: self.worker_scheduler.fleet_generation().await,
+            cap: unsatisfiable_fail_cap(self.last_unsatisfiable_backlog.load(Ordering::Relaxed)),
+            fails_this_pass: AtomicUsize::new(0),
+        };
+        // With no worker connected anywhere and the no-worker timeout set,
+        // every queued action is judged by that clock instead. A fleet the
+        // census cannot vouch for counts as having workers.
+        let no_worker_pass = match &self.no_worker_tracker {
+            Some(tracker)
+                if self
+                    .worker_scheduler
+                    .no_worker_anywhere(unsatisfiable_pass.now)
+                    .await =>
+            {
+                Some(UnsatisfiablePass {
+                    tracker,
+                    now: unsatisfiable_pass.now,
+                    fleet_generation: unsatisfiable_pass.fleet_generation,
+                    cap: unsatisfiable_pass.cap,
+                    fails_this_pass: AtomicUsize::new(0),
+                })
+            }
+            _ => None,
+        };
+        let no_workers_reason = UnsatisfiableReason::no_workers();
 
         let mut stream = self
             .get_queued_operations()
@@ -406,19 +954,226 @@ impl SimpleScheduler {
             );
         }
 
-        while let Some(action_state_result) = stream.next().await {
+        let workers = self.worker_scheduler.as_ref();
+        let matching_engine_state_manager = self.matching_engine_state_manager.as_ref();
+        let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
+        let mut parked = Parked::default();
+        let mut placement = Placement::default();
+        // Once a peer wins an assignment, let it advance through that
+        // property shape for this pass. Other shapes can still use this
+        // scheduler's workers, and the next pass tries every shape again.
+        let mut contended = HashSet::new();
+        let mut oldest_queued = Vec::new();
+        let hold_pass = workers.begin_pass_holds().await;
+        let mut capacity_seen = workers.capacity_generation();
+        let mut queued_seen: u64 = 0;
+        // How long each action read has waited since its client submitted
+        // it, requeues included: the pass already reads every queued action,
+        // so the ages cost nothing more from the store.
+        let mut queued_ages = AgeBuckets::default();
+        'actions: while let Some(action_state_result) = stream.next().await {
+            queued_seen += 1;
+            let loaded = match load_action(
+                action_state_result,
+                self.platform_property_manager.as_ref(),
+                &self.typed_properties,
+            )
+            .await
+            {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => continue,
+                Err(err) => {
+                    result = result.merge(Err(err));
+                    continue;
+                }
+            };
+            queued_ages.observe_since(
+                loaded.action_info.inner.insert_timestamp,
+                unsatisfiable_pass.now,
+            );
+            if full_worker_logging {
+                oldest_queued.push(loaded.action_info.inner.clone());
+                oldest_queued.sort_unstable_by_key(|action| action.insert_timestamp);
+                oldest_queued.truncate(5);
+            }
+            let shape = PropertyShape::from(&loaded.action_info.platform_properties);
+            if contended.contains(&shape) {
+                continue;
+            }
+
+            // Room that opened since the pass last placed anything belongs
+            // to the oldest action still waiting, not to this one, which is
+            // newer than everything parked. The generation is read under the
+            // placement lock, so a change cannot slip between the two.
+            let outcome = loop {
+                let (outcome, generation) = workers
+                    .find_worker_for_action_observed(
+                        &loaded.action_info.platform_properties,
+                        full_worker_logging,
+                        unsatisfiable_pass.now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
+                            queued_since: loaded.queued_since,
+                        }),
+                    )
+                    .await;
+                if generation == capacity_seen || parked.is_empty() {
+                    capacity_seen = generation;
+                    break outcome;
+                }
+                capacity_seen = generation;
+                result = result.merge(
+                    place_parked(
+                        &mut parked,
+                        &mut placement,
+                        &mut contended,
+                        workers,
+                        matching_engine_state_manager,
+                        maybe_origin_event_tx,
+                        full_worker_logging,
+                        unsatisfiable_pass.now,
+                        self.now_fn.as_ref(),
+                    )
+                    .await,
+                );
+                if contended.contains(&shape) {
+                    continue 'actions;
+                }
+            };
+
+            match outcome {
+                MatchOutcome::Matched(worker_id) => {
+                    result = result.merge(
+                        dispatch_to_worker(
+                            loaded.action_state_result.as_ref(),
+                            workers,
+                            matching_engine_state_manager,
+                            maybe_origin_event_tx,
+                            worker_id,
+                            loaded.action_info,
+                            self.now_fn.as_ref(),
+                        )
+                        .await
+                        .map(|dispatch| {
+                            if dispatch == Dispatch::LostRace {
+                                contended.insert(shape);
+                            }
+                        }),
+                    );
+                }
+                // A worker could run it once one has room. The match
+                // considered holding a worker for it (`reservation_hold`).
+                MatchOutcome::WaitingForCapacity => {
+                    parked.park(loaded);
+                }
+                // Nothing to wait for; a worker connecting starts a new pass,
+                // unless the no-worker clock is running.
+                MatchOutcome::NoWorkersConnected => {
+                    if let Some(no_worker_pass) = &no_worker_pass {
+                        result = result.merge(
+                            handle_unsatisfiable(
+                                loaded.action_state_result.as_ref(),
+                                matching_engine_state_manager,
+                                workers,
+                                &loaded.action_info.platform_properties,
+                                loaded.action_info.inner.insert_timestamp,
+                                &no_workers_reason,
+                                no_worker_pass,
+                            )
+                            .await,
+                        );
+                    }
+                }
+                MatchOutcome::Unsatisfiable(reason) => {
+                    result = result.merge(
+                        handle_unsatisfiable(
+                            loaded.action_state_result.as_ref(),
+                            matching_engine_state_manager,
+                            workers,
+                            &loaded.action_info.platform_properties,
+                            loaded.action_info.inner.insert_timestamp,
+                            &reason,
+                            &unsatisfiable_pass,
+                        )
+                        .await,
+                    );
+                }
+            }
+        }
+        // Room that opened after the last action was read.
+        if !parked.is_empty() && workers.capacity_generation() != capacity_seen {
             result = result.merge(
-                match_action_to_worker(
-                    action_state_result.as_ref(),
-                    self.worker_scheduler.as_ref(),
-                    self.matching_engine_state_manager.as_ref(),
-                    self.platform_property_manager.as_ref(),
-                    self.maybe_origin_event_tx.as_ref(),
+                place_parked(
+                    &mut parked,
+                    &mut placement,
+                    &mut contended,
+                    workers,
+                    matching_engine_state_manager,
+                    maybe_origin_event_tx,
                     full_worker_logging,
+                    unsatisfiable_pass.now,
+                    self.now_fn.as_ref(),
                 )
                 .await,
             );
         }
+        // An action left waiting because only workers it failed on were
+        // free here goes to one of them once it has waited
+        // AVOID_FALLBACK_AFTER (RFC-0017). Nothing else need happen by
+        // then, so the pass arranges the wake-up for the earliest one.
+        *self.avoid_fallback_due.lock() = parked
+            .queue
+            .iter()
+            .filter(|(_, loaded)| !loaded.avoid.is_empty() || !loaded.avoid_nodes.is_empty())
+            .filter_map(|(_, loaded)| loaded.queued_since.checked_add(AVOID_FALLBACK_AFTER))
+            .min();
+        // The whole queue was read: a held action the pass did not meet
+        // is gone, and a hold past its time is given up.
+        workers
+            .end_pass_holds(hold_pass, unsatisfiable_pass.now)
+            .await;
+        record_parked_dispatched(placement.dispatched);
+        if placement.attempted > 0 || parked.cap_dropped > 0 {
+            debug!(
+                attempted = placement.attempted,
+                dispatched = placement.dispatched,
+                lost_race = placement.lost_race,
+                failed = placement.failed,
+                cap_dropped = parked.cap_dropped,
+                still_parked = parked.queue.len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "Parked actions offered the room that opened mid-pass"
+            );
+        }
+
+        let mut unsatisfiable_queued = self
+            .unsatisfiable_tracker
+            .lock()
+            .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
+        if let Some(tracker) = &self.no_worker_tracker {
+            unsatisfiable_queued += tracker
+                .lock()
+                .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
+        }
+        record_unsatisfiable_queued(unsatisfiable_queued);
+        record_queue_depth(queued_seen);
+        record_queue_ages(&queued_ages);
+        if full_worker_logging {
+            let actions: Vec<_> = oldest_queued
+                .iter()
+                .map(|action| (&action.unique_qualifier, action.insert_timestamp))
+                .collect();
+            info!(?actions, queued_seen, "Oldest actions in the matching pass");
+        }
+        // Remember this pass's backlog so the next pass can size its fail cap:
+        // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
+        self.last_unsatisfiable_backlog.store(
+            usize::try_from(unsatisfiable_queued).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
 
         let total_elapsed = start.elapsed();
         if total_elapsed > Duration::from_secs(5) {
@@ -440,7 +1195,25 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
-        Self::new_with_callback(
+        Self::new_with_resource_sketch(
+            spec,
+            awaited_action_db,
+            task_change_notify,
+            maybe_origin_event_tx,
+            None,
+        )
+    }
+
+    /// `new`, with the sketch a `historical_resource` parent learns from:
+    /// every sampled usage report the workers send goes into it.
+    pub fn new_with_resource_sketch<A: AwaitedActionDb>(
+        spec: &SimpleSpec,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_fleet_exchange_interval(
             spec,
             awaited_action_db,
             || {
@@ -457,6 +1230,8 @@ impl SimpleScheduler {
             task_change_notify,
             SystemTime::now,
             maybe_origin_event_tx,
+            resource_sketch,
+            FLEET_EXCHANGE_INTERVAL,
         )
     }
 
@@ -473,6 +1248,38 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_fleet_exchange_interval(
+            spec,
+            awaited_action_db,
+            on_matching_engine_run,
+            task_change_notify,
+            now_fn,
+            maybe_origin_event_tx,
+            None,
+            FLEET_EXCHANGE_INTERVAL,
+        )
+    }
+
+    /// Same as `new_with_callback`, with the interval at which worker
+    /// capabilities are swapped with peer schedulers, so a test need not wait
+    /// out the real one.
+    #[expect(clippy::too_many_arguments, reason = "the full constructor")]
+    pub fn new_with_fleet_exchange_interval<
+        Fut: Future<Output = ()> + Send,
+        F: Fn() -> Fut + Send + Sync + 'static,
+        A: AwaitedActionDb,
+        I: InstantWrapper,
+        NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+    >(
+        spec: &SimpleSpec,
+        mut awaited_action_db: A,
+        on_matching_engine_run: F,
+        task_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
+        fleet_exchange_interval: Duration,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -505,13 +1312,62 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let mut unacknowledged_kill_timeout_s = spec.unacknowledged_kill_timeout_s;
+        if unacknowledged_kill_timeout_s == 0 {
+            unacknowledged_kill_timeout_s = DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S;
+        }
+
         let worker_change_notify = Arc::new(Notify::new());
 
         // Create shared worker registry for single heartbeat per worker.
         let worker_registry = Arc::new(WorkerRegistry::new());
 
-        let state_manager = SimpleSchedulerStateManager::new(
+        // The db decides on its own whether an executing action was abandoned,
+        // so it needs the same liveness view the state manager uses.
+        awaited_action_db.set_worker_registry(worker_registry.clone());
+
+        let unsatisfiable_action_timeout = match spec.unsatisfiable_action_timeout_s {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        };
+        let no_worker_action_timeout = match spec.no_worker_action_timeout_s {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        };
+        let scheduler_now_fn = {
+            let now_fn = now_fn.clone();
+            Box::new(move || now_fn().now())
+        };
+        // A second SystemTime clock for the fleet-exchange task, cloned before
+        // `now_fn` is moved into the state manager below.
+        let exchange_now_fn: Box<dyn Fn() -> SystemTime + Send + Sync> = {
+            let now_fn = now_fn.clone();
+            Box::new(move || now_fn().now())
+        };
+        // One peer-record TTL: the fleet-exchange record's lifetime and the
+        // census warm-up / staleness bound the worker scheduler applies.
+        let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
+
+        let has_peers = awaited_action_db.shares_state();
+        let retry_limits = RetryLimits {
             max_job_retries,
+            max_timeout_retries: spec
+                .max_timeout_retries
+                .unwrap_or(RetryLimits::DEFAULT_TIMEOUT_RETRIES),
+            max_worker_loss_retries: if spec.max_worker_loss_retries == 0 {
+                RetryLimits::DEFAULT_WORKER_LOSS_RETRIES
+            } else {
+                spec.max_worker_loss_retries
+            },
+            max_escalations: spec.memory_escalation.as_ref().map_or(0, |policy| {
+                usize::try_from(policy.max_steps).unwrap_or(usize::MAX)
+            }),
+            escalate_after_worker_losses: spec.memory_escalation.as_ref().map_or(0, |policy| {
+                usize::try_from(policy.escalate_after_worker_losses).unwrap_or(usize::MAX)
+            }),
+        };
+        let state_manager = SimpleSchedulerStateManager::new(
+            retry_limits,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
             Duration::from_secs(spec.max_action_executing_timeout_s),
@@ -520,17 +1376,227 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
+        // The id this scheduler publishes its fleet to its peers under, and
+        // takes its turn holding workers by.
+        let scheduler_id = Uuid::new_v4().hyphenated().to_string();
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
+            spec.live_memory_veto.clone(),
+            spec.memory_escalation.clone(),
+            spec.reservation_hold,
+            spec.worker_outcome_tripwire,
             worker_change_notify.clone(),
             worker_timeout_s,
+            unacknowledged_kill_timeout_s,
+            spec.dispatch_ack_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
+            resource_sketch,
+            has_peers,
+            record_ttl,
+            scheduler_id.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
+
+        let fallback_match_interval = match spec.fallback_match_interval_s {
+            // Zero or any negative value means disabled.
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
+
+        // Retiring abandoned queued actions is its own task rather than part
+        // of the matching pass. The matching pass is exactly what stops
+        // running when they pile up, so making the cleanup depend on it
+        // means the cleanup stops precisely when it is needed. Sweeping on
+        // the client timeout bounds how long one can sit there to roughly
+        // twice that.
+        let sweep_interval = Duration::from_secs(client_action_timeout_s);
+        let abandoned_sweep: AbandonedSweep = {
+            let state_manager = Arc::downgrade(&state_manager);
+            Arc::new(move || {
+                let state_manager = state_manager.clone();
+                async move {
+                    match state_manager.upgrade() {
+                        Some(state_manager) => state_manager.sweep_abandoned_queued_actions().await,
+                        None => Ok(0),
+                    }
+                }
+                .boxed()
+            })
+        };
+        let sweep_state_manager = Arc::downgrade(&state_manager);
+        let task_abandoned_sweep_spawn =
+            spawn!("simple_scheduler_task_abandoned_sweep", async move {
+                loop {
+                    tokio::time::sleep(sweep_interval).await;
+                    // Weak, so the sweep stops when the scheduler goes away.
+                    let Some(state_manager) = sweep_state_manager.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = state_manager.sweep_abandoned_queued_actions().await {
+                        record_sweep_failure();
+                        error!(?err, "Error while sweeping abandoned queued actions");
+                    }
+                }
+            });
+
+        // Executing actions get their own sweep for the same reason, on the
+        // scheduler's clock rather than a waiting client's.
+        let executing_sweep_interval = match spec.executing_sweep_interval_s {
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
+        // Disabled means no task at all, not a task that returns at once.
+        let task_executing_sweep_spawn = executing_sweep_interval.map(|interval| {
+            let state_manager = Arc::downgrade(&state_manager);
+            let worker_scheduler = Arc::downgrade(&worker_scheduler);
+            spawn!("simple_scheduler_task_executing_sweep", async move {
+                // Long enough that an assignment's store write and the
+                // dispatch behind it are never mistaken for a lost result.
+                let lost_grace = (interval * 2).max(Duration::from_mins(1));
+                let mut lost_since = HashMap::new();
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let (Some(state_manager), Some(worker_scheduler)) =
+                        (state_manager.upgrade(), worker_scheduler.upgrade())
+                    else {
+                        // Only on process shutdown, when the scheduler that
+                        // owned this task is gone; worth a line if it ever
+                        // happens any other way.
+                        info!("Scheduler dropped, stopping the executing sweep");
+                        return;
+                    };
+                    let check_scheduler = worker_scheduler.clone();
+                    let running_on_worker =
+                        move |worker_id: WorkerId, operation_id: OperationId| {
+                            let worker_scheduler = check_scheduler.clone();
+                            async move {
+                                worker_scheduler
+                                    .running_on_worker(&worker_id, &operation_id)
+                                    .await
+                            }
+                            .boxed()
+                        };
+                    match state_manager
+                        .sweep_executing_actions(&running_on_worker, &mut lost_since, lost_grace)
+                        .await
+                    {
+                        Ok(report) => {
+                            record_executing_ages(&report.ages);
+                            for ended in &report.ended {
+                                worker_scheduler
+                                    .report_swept_attempt(
+                                        &ended.worker_id,
+                                        &ended.operation_id,
+                                        ended.reason,
+                                        ended.detail.clone(),
+                                    )
+                                    .await;
+                            }
+                            for (worker_id, operation_id) in &report.results_written {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, true)
+                                    .await;
+                            }
+                            for (worker_id, operation_id) in &report.results_stale {
+                                worker_scheduler
+                                    .settle_held_result(worker_id, operation_id, false)
+                                    .await;
+                            }
+                            if report.retired
+                                + report.requeued
+                                + report.failed
+                                + report.results_written.len() as u64
+                                > 0
+                            {
+                                info!(
+                                    retired = report.retired,
+                                    requeued = report.requeued,
+                                    failed = report.failed,
+                                    results_written = report.results_written.len(),
+                                    "Executing sweep"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            record_sweep_failure();
+                            error!(?err, "Error while sweeping executing actions");
+                        }
+                    }
+                    drop((state_manager, worker_scheduler));
+                }
+            })
+        });
+
+        // Only runs when the state is shared. It runs whatever the timeout,
+        // so that a peer which does fail actions sees these workers even
+        // while this scheduler is still rolling out or has the timeout off.
+        let task_fleet_exchange_spawn = {
+            let state_manager = Arc::downgrade(&state_manager);
+            let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
+            let worker_scheduler = Arc::downgrade(&worker_scheduler);
+            spawn!("simple_scheduler_task_fleet_exchange", async move {
+                if !has_peers {
+                    return;
+                }
+                let mut last_exchange_ok = true;
+                loop {
+                    let (Some(state_manager), Some(worker_scheduler)) =
+                        (state_manager.upgrade(), worker_scheduler.upgrade())
+                    else {
+                        return;
+                    };
+                    let local = worker_scheduler.fleet_shapes().await;
+                    match state_manager
+                        .exchange_fleet_capabilities(&scheduler_id, local, record_ttl)
+                        .await
+                    {
+                        Ok(peer_fleet) => {
+                            if !last_exchange_ok {
+                                info!("Exchanging fleet capabilities with peer schedulers again");
+                            }
+                            last_exchange_ok = true;
+                            // A missing lease means a dead worker only once
+                            // no older peer, which renews none, is running.
+                            worker_scheduler.worker_registry().set_peers_renew_leases(
+                                peer_fleet.iter().all(|peer| peer.renews_worker_leases),
+                            );
+                            worker_scheduler
+                                .set_peer_fleet(Some(peer_fleet), exchange_now_fn())
+                                .await;
+                        }
+                        Err(err) => {
+                            // A peer that cannot be seen might have a worker
+                            // for any action, so no action is judged
+                            // unsatisfiable until the peers can be read again.
+                            if last_exchange_ok {
+                                warn!(
+                                    ?err,
+                                    "Could not exchange fleet capabilities with peer schedulers, no queued action is failed as unsatisfiable until this recovers"
+                                );
+                            }
+                            last_exchange_ok = false;
+                            worker_scheduler
+                                .worker_registry()
+                                .set_peers_renew_leases(false);
+                            worker_scheduler
+                                .set_peer_fleet(None, exchange_now_fn())
+                                .await;
+                        }
+                    }
+                    drop((state_manager, worker_scheduler));
+                    // A worker joining or leaving here is published straight
+                    // away, so peers see it within one of their intervals.
+                    tokio::select! {
+                        () = tokio::time::sleep(fleet_exchange_interval) => {}
+                        () = local_fleet_change_notify.notified() => {}
+                    }
+                }
+            })
+        };
 
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
@@ -546,16 +1612,39 @@ impl SimpleScheduler {
                         tokio::pin!(worker_change_fut);
                         // Wait for either of these futures to be ready.
                         let state_changed = future::select(task_change_fut, worker_change_fut);
-                        if last_match_successful {
-                            let _ = state_changed.await;
+                        let max_wait = if last_match_successful {
+                            // Even on success, periodically re-run the match as a
+                            // fallback for missed notifications and eventually
+                            // consistent backends (e.g. a re-queued operation that
+                            // was not yet visible to the search triggered by its
+                            // own notification). Without this, such an operation
+                            // can stay queued until an unrelated event triggers
+                            // another matching pass.
+                            fallback_match_interval
                         } else {
                             // If the last match failed, then run again after a short sleep.
                             // This resolves issues where we tried to re-schedule a job to
                             // a disconnected worker.  The sleep ensures we don't enter a
                             // hard loop if there's something wrong inside do_try_match.
-                            let sleep_fut = tokio::time::sleep(Duration::from_millis(100));
+                            Some(Duration::from_millis(100))
+                        };
+                        // Wake in time to fail actions no worker can run,
+                        // and to offer an action back to the workers it
+                        // failed on, even when nothing else triggers a pass.
+                        let next_wake = weak_inner.upgrade().and_then(|scheduler| {
+                            let now = (scheduler.now_fn)();
+                            scheduler.next_wake(now)
+                        });
+                        let max_wait = match (max_wait, next_wake) {
+                            (Some(max_wait), Some(deadline)) => Some(max_wait.min(deadline)),
+                            (max_wait, deadline) => max_wait.or(deadline),
+                        };
+                        if let Some(max_wait) = max_wait {
+                            let sleep_fut = tokio::time::sleep(max_wait);
                             tokio::pin!(sleep_fut);
                             let _ = future::select(state_changed, sleep_fut).await;
+                        } else {
+                            let _ = state_changed.await;
                         }
 
                         let result = match weak_inner.upgrade() {
@@ -573,66 +1662,6 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
-                                    let operations_stream = scheduler
-                                        .matching_engine_state_manager
-                                        .filter_operations(OperationFilter::default())
-                                        .await
-                                        .err_tip(|| "In action_scheduler getting filter result");
-
-                                    let mut oldest_actions_in_state: HashMap<
-                                        String,
-                                        BTreeSet<Arc<ActionState>>,
-                                    > = HashMap::new();
-                                    let max_items = 5;
-
-                                    match operations_stream {
-                                        Ok(stream) => {
-                                            let actions = stream
-                                                .filter_map(|item| async move {
-                                                    match item.as_ref().as_state().await {
-                                                        Ok((action_state, _origin_metadata)) => {
-                                                            Some(action_state)
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                ?e,
-                                                                "Failed to get action state!"
-                                                            );
-                                                            None
-                                                        }
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .await;
-                                            for action_state in &actions {
-                                                let name = action_state.stage.name();
-                                                if let Some(values) =
-                                                    oldest_actions_in_state.get_mut(&name)
-                                                {
-                                                    values.insert(action_state.clone());
-                                                    if values.len() > max_items {
-                                                        values.pop_first();
-                                                    }
-                                                } else {
-                                                    let mut values = BTreeSet::new();
-                                                    values.insert(action_state.clone());
-                                                    oldest_actions_in_state.insert(name, values);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(?e, "Failed to get operations list!");
-                                        }
-                                    }
-
-                                    for value in oldest_actions_in_state.values() {
-                                        let mut items = vec![];
-                                        for item in value {
-                                            items.push(item.to_string());
-                                        }
-                                        info!(?items, "Oldest actions in state");
-                                    }
-
                                     worker_match_logging_last.replace(now);
                                 }
                                 res
@@ -673,7 +1702,20 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
+                task_abandoned_sweep_spawn,
+                abandoned_sweep,
+                task_executing_sweep_spawn,
+                task_fleet_exchange_spawn,
                 worker_match_logging_interval,
+                typed_properties: Mutex::new(HashMap::new()),
+                unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
+                    unsatisfiable_action_timeout,
+                )),
+                no_worker_tracker: no_worker_action_timeout
+                    .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
+                avoid_fallback_due: Mutex::new(None),
+                last_unsatisfiable_backlog: AtomicUsize::new(0),
+                now_fn: scheduler_now_fn,
             }
         });
         (action_scheduler, worker_scheduler_clone)
@@ -722,6 +1764,28 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler.add_worker(worker).await
     }
 
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_accepted(worker_id, operation_id)
+            .await
+    }
+
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .await
+    }
+
     async fn update_action(
         &self,
         worker_id: &WorkerId,
@@ -737,14 +1801,71 @@ impl WorkerScheduler for SimpleScheduler {
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         self.worker_scheduler
-            .worker_keep_alive_received(worker_id, timestamp)
+            .worker_keep_alive_received(worker_id, timestamp, load)
             .await
+    }
+
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_running_operations_reported(worker_id, operation_ids)
+            .await
+    }
+
+    async fn worker_operation_memory_reported(
+        &self,
+        worker_id: &WorkerId,
+        peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_operation_memory_reported(worker_id, peaks)
+            .await
+    }
+
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_liveness_refreshed(worker_id, timestamp)
+            .await
+    }
+
+    async fn worker_message_received(&self, worker_id: &WorkerId, timestamp: WorkerTimestamp) {
+        self.worker_scheduler
+            .worker_message_received(worker_id, timestamp)
+            .await;
     }
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
+    }
+
+    async fn worker_result_settled(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_result_settled(worker_id, operation_id)
+            .await
+    }
+
+    async fn worker_disconnected(
+        &self,
+        worker_id: &WorkerId,
+        connection: u64,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_disconnected(worker_id, connection)
+            .await
     }
 
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
@@ -762,6 +1883,48 @@ impl WorkerScheduler for SimpleScheduler {
             .set_drain_worker(worker_id, is_draining)
             .await
     }
+
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary> {
+        self.worker_scheduler.worker_snapshot().await
+    }
+
+    async fn kill_revoked_operations(&self) -> Result<(), Error> {
+        self.worker_scheduler.kill_revoked_operations().await
+    }
 }
 
 impl RootMetricsComponent for SimpleScheduler {}
+
+#[cfg(test)]
+mod unsatisfiable_fail_cap_tests {
+    use super::{
+        MAX_UNSATISFIABLE_FAILS_PER_PASS, UNSATISFIABLE_FAIL_BACKLOG_DIVISOR,
+        unsatisfiable_fail_cap,
+    };
+
+    #[test]
+    fn small_backlog_stays_at_the_floor() {
+        // Zero and any backlog whose fraction is below the floor use the floor.
+        assert_eq!(unsatisfiable_fail_cap(0), MAX_UNSATISFIABLE_FAILS_PER_PASS);
+        assert_eq!(unsatisfiable_fail_cap(20), MAX_UNSATISFIABLE_FAILS_PER_PASS);
+        // Exactly at the boundary (floor * divisor) still yields the floor.
+        let boundary = MAX_UNSATISFIABLE_FAILS_PER_PASS * UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+        assert_eq!(
+            unsatisfiable_fail_cap(boundary),
+            MAX_UNSATISFIABLE_FAILS_PER_PASS
+        );
+    }
+
+    #[test]
+    fn large_backlog_scales_to_drain_in_a_few_passes() {
+        // A big burst drains in ~DIVISOR back-to-back passes.
+        assert_eq!(
+            unsatisfiable_fail_cap(4000),
+            4000 / UNSATISFIABLE_FAIL_BACKLOG_DIVISOR
+        );
+        // Just past the boundary crosses over to the fraction.
+        let over = MAX_UNSATISFIABLE_FAILS_PER_PASS * UNSATISFIABLE_FAIL_BACKLOG_DIVISOR
+            + UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+        assert!(unsatisfiable_fail_cap(over) > MAX_UNSATISFIABLE_FAILS_PER_PASS);
+    }
+}

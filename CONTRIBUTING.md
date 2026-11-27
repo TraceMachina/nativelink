@@ -15,6 +15,42 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
+## AI-assisted contributions
+
+NativeLink builds infrastructure for coding agents, so we won't pretend they
+don't write code. Agents are welcome contributors when a person stands behind
+the change. Four rules, in the spirit of the projects whose contribution
+culture we admire:
+
+1. **You must understand your change.** Using an agent to write code is fine;
+   interrogate it about the codebase until you grasp every edge case and
+   effect of the diff. Submitting code you cannot explain is not fine. A
+   reviewer may ask about any line, and "the agent wrote it" is not an answer.
+2. **Disclose it.** The pull request template has an "AI assistance" section.
+   Say which tools helped and how much: none, autocomplete, an agent drafted
+   it and you reworked it, an agent wrote it and you reviewed every line.
+   "None" is a complete answer. The section is required, and the PR template
+   check asks for it.
+3. **No slop.** Unreviewed generated code, generated issue or discussion text
+   that no person edited, and generated media (artwork, video, audio) are
+   closed without review. Write issues and comments in your own voice;
+   generated prose runs long, sounds confident, and often misses the point.
+   Repeated submissions of this kind cost the ability to contribute.
+4. **Agents follow `AGENTS.md`.** It maps the repository, names the checks,
+   and says which document must follow which change. An agent working here
+   runs the same checks a person would before opening a pull request, and
+   never opens one on its own initiative.
+
+Maintainers use agents at their discretion; the difference is that they have
+already shown they understand the code. None of this is an anti-AI stance.
+Review attention is the scarcest resource an open project has, and generated
+text made it cheap to produce contributions that look finished and are not.
+The rules keep the reviewer's time for changes a person is answerable for.
+
+Everything the repository offers an agent (the `llms.txt` files at the
+repository root and the skills under `.claude/skills/`) is listed at
+https://nativelink.com/agents and in [`AGENTS.md`](AGENTS.md).
+
 ## Git setup
 
 NativeLink has a somewhat specific contribution process to ensure consistent
@@ -69,21 +105,21 @@ please raise an issue so that we can clarify this document.
 6. Finally, configure `git` to sign your commits with the keys you set up
    previously. Create a `.gitconfig` file in your home directory like so:
 
-    ```ini
-    [user]
-         name = Your Full Name
-         email = the-email-you-use-on-github@example.com
-         signingkey = ~/.ssh/your_private_signing_key
+   ```ini
+   [user]
+        name = Your Full Name
+        email = the-email-you-use-on-github@example.com
+        signingkey = ~/.ssh/your_private_signing_key
 
-    [gpg]
-         format = ssh  # Or gpg if you use a GPG key.
+   [gpg]
+        format = ssh  # Or gpg if you use a GPG key.
 
-    [commit]
-         gpgsign = true
+   [commit]
+        gpgsign = true
 
-    [tag]
-         gpgsign = true
-    ```
+   [tag]
+        gpgsign = true
+   ```
 
 ## Local development setup
 
@@ -201,7 +237,7 @@ NativeLink doesn't allow direct commits or human-created side branches in the
    ```
 
 5. Go to https://github.com/TraceMachina/nativelink/pulls where you should see a
-   button that you can click to create to create a new pull request from your
+   button that you can click to create a new pull request from your
    fork to the main repository.
 
 6. Once you opened the pull request, click on the purple `Reviewable` button in
@@ -310,33 +346,33 @@ If you use VS Code, you can configure the following `tasks.json` file to automat
       "command": "bazel",
       "args": ["run", "@rules_rust//tools/rust_analyzer:gen_rust_project"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
       },
       "group": "build",
       "problemMatcher": [],
       "presentation": {
         "reveal": "never",
-        "panel": "dedicated"
+        "panel": "dedicated",
       },
       "runOptions": {
-        "runOn": "folderOpen"
+        "runOn": "folderOpen",
       },
-      "dependsOn": "Build nativelink"
+      "dependsOn": "Build nativelink",
     },
     {
       "label": "Build nativelink",
       "command": "bazel",
       "args": ["build", "//:nativelink"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
       },
       "group": "build",
       "presentation": {
         "reveal": "silent",
-        "panel": "shared"
-      }
-    }
-  ]
+        "panel": "shared",
+      },
+    },
+  ],
 }
 ```
 
@@ -344,7 +380,7 @@ And to configure rust-analyzer to use that project, set this in your `.vscode/se
 
 ```jsonc
 {
-     "rust-analyzer.linkedProjects": ["rust-project.json"]
+  "rust-analyzer.linkedProjects": ["rust-project.json"],
 }
 ```
 
@@ -386,6 +422,47 @@ suggestions invoke it directly:
 vale somefile
 ```
 
+## Contributing to Docs or the Website
+
+The documentation site (docs.nativelink.com) and the marketing site
+(nativelink.com) live in the `web/` directory — a pnpm + Turborepo workspace
+with two Next.js apps: `web/apps/docs` (the docs, built with Fumadocs) and
+`web/apps/web` (the website). This replaces the old `web/platform` layout;
+the `pnpm setup`, `pnpm docs`, and `pnpm preview` commands from that era no
+longer exist.
+
+The `web/` workspace is **not** part of the Bazel build — it's built with
+pnpm only. Install pnpm (https://pnpm.io/, or `pkgs.pnpm` is available in the nix
+dev shell), then:
+
+```bash
+cd web
+pnpm install
+
+# Live dev server for just the docs at http://localhost:3001
+pnpm dev:docs
+
+# Production build + preview of both apps, the successor to the old
+# `rm -r dist && pnpm run build` and `pnpm preview`. DOCS_URL is baked into
+# the marketing app's /docs redirect at build time.
+DOCS_URL=http://localhost:3001 pnpm run build
+pnpm run --filter @nativelink/web start    # nativelink.com build on port 3000
+pnpm run --filter @nativelink/docs start   # docs build on port 3001
+```
+
+Docs content is MDX under `web/apps/docs/content/docs/`. Every page needs
+`title` and `description` frontmatter; sidebar order comes from each
+section's `meta.json` (the top-level `content/docs/meta.json` orders the
+sections themselves). Authoring conventions, available MDX components, and
+style rules are documented on the site itself under
+Contribute → [Working on documentation](https://docs.nativelink.com/contribute/docs)
+— which is also the page to update if this workflow changes.
+
+The configuration reference pages under
+`web/apps/docs/content/docs/reference/nativelink-config/` are autogenerated
+from the Rust config crate — don't edit them by hand; regenerate with
+`pnpm run --filter @nativelink/docs gen:config-reference` from `web/`.
+
 ## Creating releases
 
 To keep the release process in line with best practices for open source
@@ -397,13 +474,42 @@ most automatically generated changelogs provide.
 
    - `MODULE.bazel`
    - `Cargo.toml`
-   - `nativelink-*/Cargo.toml`
+   - The `Cargo.toml` of every `nativelink-*` crate — including nested ones
+     like `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` —
+     and the regenerated lock files (`Cargo.lock`,
+     `nativelink-test/fuzz/Cargo.lock`)
 
-2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
-   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a
-   commit in the right subsection.
+   As a sanity check, a standard release touches 17 files.
 
-3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
+2. Update the changelog by prepending the new release section to the existing
+   `CHANGELOG.md`. Don't regenerate the whole file — that rewrites previous
+   release entries and drops manual curation.
+
+   First make sure your local tags match upstream, since `--unreleased` means
+   "commits not contained in any tag":
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+   Sanity check which commits will form the new release section:
+
+   ```bash
+   git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
+   ```
+
+   Then prepend the new section:
+
+   ```bash
+   git cliff --unreleased --tag=v1.x.y --prepend CHANGELOG.md
+   ```
+
+   Verify with `git diff CHANGELOG.md` that the change is purely additive:
+   only added lines, with all previous release entries untouched. You might
+   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put
+   a commit in the right subsection.
+
+3. Create the commit and PR. Call it `Release NativeLink v1.x.y`.
 
 4. Once the PR is merged, update your local repository and origin:
 
@@ -418,15 +524,15 @@ most automatically generated changelogs provide.
    `v` prefix:
 
    ```bash
-   git tag -s v0.x.y
+   git tag -s v1.x.y
 
-   # tag message should be: v0.x.y
+   # tag message should be: v1.x.y
    ```
 
 6. Push the signed tag to the origin repository:
 
    ```bash
-   git push origin v0.x.y
+   git push origin v1.x.y
    ```
 
 7. Pushing the tag triggers an additional GHA workflow which should create the
@@ -434,10 +540,17 @@ most automatically generated changelogs provide.
    the CI job in your fork passes, push the tag to upstream:
 
    ```bash
-   git push upstream v0.x.y
+   git push upstream v1.x.y
    ```
 
 8. Regenerate the latest config reference docs now that the upstream tag exists.
+   Pushing the tag upstream triggers the
+   [`Regenerate config reference`](.github/workflows/config-reference.yaml)
+   workflow, which regenerates the docs and opens a PR against `main` with
+   auto-merge enabled. Check that the PR appeared and merged; if the workflow
+   failed, either re-run it from `Actions → Regenerate config reference → Run
+workflow` (entering the tag) or fall back to the manual procedure below.
+
    Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
    determines the latest version shown in the docs UI, rewrites
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` from that
@@ -447,14 +560,14 @@ most automatically generated changelogs provide.
    ```bash
    git fetch --tags upstream
    cd web
-   bun --filter @nativelink/docs gen:config-reference v0.x.y
+   pnpm run --filter @nativelink/docs gen:config-reference v1.x.y
    cd ..
    ```
 
-   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v0.x.y` as the
+   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v1.x.y` as the
    latest release and that
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` says it was
-   sourced from `nativelink-config @ v0.x.y`. Then run the docs lint and commit
+   sourced from `nativelink-config @ v1.x.y`. Then run the docs lint and commit
    the generated docs update:
 
    ```bash
@@ -468,13 +581,83 @@ most automatically generated changelogs provide.
    use previous release notes as template by clicking on the "Edit" button on a
    previous release and copy-pasting the contents into the new release notes.
 
+   Attribute every entry to its author. Keep the same category headings as the
+   changelog and write each line as `<summary> by @author in (#PR) - (short-sha)`,
+   then close the notes with a `New Contributors` section and a `Full Changelog`
+   link. To pull the author list and first-time contributors for the range, run:
+
+   ```bash
+   gh api -X POST repos/TraceMachina/nativelink/releases/generate-notes \
+     -f tag_name=v1.x.y -f previous_tag_name=v1.x.z
+   ```
+
+   Fold that output into the categorized notes rather than pasting it verbatim,
+   since the changelog groups commits by type.
+
    Make sure to include migration instructions for all breaking changes.
 
    Explicitly list whatever changes you think are worth mentioning as `Major
-   changes`. This is a fairly free-form section that doesn't have any explicit
+changes`. This is a fairly free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
-10. Once all notes are in line, click `Publish Release`.
+10. Once all notes are in line, and the `Images / SemVer OCI` run for the tag
+    is green, click `Publish Release`. Publishing moves `/releases/latest`,
+    which is what the README and docs quickstart snippets pull, so
+    publishing before the images exist breaks every quickstart until they
+    land.
+
+11. Publishing the release triggers the
+    [`Signed release artifacts`](.github/workflows/release.yaml) workflow. It
+    builds the `nativelink` binary for every supported target, signs each asset
+    with keyless Sigstore cosign, generates an SBOM, and produces SLSA Build
+    Level 3 provenance, attaching all of it to the GitHub Release. These signed
+    assets are what the OpenSSF Scorecard `Signed-Releases` check inspects — the
+    cosign signatures on the GHCR container images are not visible to that check.
+
+    Wait for the workflow to finish, then confirm the release page lists, for
+    each target, a `*.tar.gz` (Unix) or `*.zip` (Windows) plus its `*.sig`/`*.pem`,
+    an `*.spdx.json` SBOM, and a `*.intoto.jsonl` provenance file. You can verify
+    any asset locally:
+
+    ```bash
+    # Verify the SLSA provenance covers the artifact.
+    slsa-verifier verify-artifact nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --provenance-path nativelink-1.x.y.intoto.jsonl \
+      --source-uri github.com/TraceMachina/nativelink \
+      --source-tag v1.x.y
+
+    # Verify the cosign signature.
+    cosign verify-blob nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --signature nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
+      --certificate nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
+      --certificate-identity-regexp '^https://github.com/TraceMachina/nativelink/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    If a release ever ships without signed assets (for example a release created
+    before this workflow existed), re-run the workflow manually against the tag:
+    `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
+    `v1.x.y`). It will rebuild, re-sign, and attach the assets to that existing
+    release.
+
+12. Check that the quickstart snippets still work. The README and docs
+    snippets don't hard-code a version: they look up the newest release when
+    a reader runs them, so publishing the release is what updates them.
+    Publishing also triggers the
+    [`Release references`](.github/workflows/release-refs.yaml) workflow,
+    which fetches every config URL, image tag and nix flake ref those
+    snippets use with the new tag. Confirm that run passed, or run the same
+    check locally:
+
+    ```bash
+    node web/apps/docs/scripts/check-release-refs.mjs --resolve
+    ```
+
+    If it fails because the release moved or renamed an example config the
+    snippets download, fix the snippets on `main`. Don't add a hard-coded
+    version to the README or docs; use the `NATIVELINK_VERSION` lookup the
+    snippets use, or `vX.Y.Z` in prose. Production guidance stays the same:
+    pin an exact tag, never a version resolved at deploy time.
 
 ## Conduct
 

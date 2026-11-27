@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,8 +17,7 @@ use core::time::Duration;
 use std::borrow::Cow;
 
 use bytes::BytesMut;
-use futures::Stream;
-use futures::stream::unfold;
+use futures::{Stream, StreamExt};
 use nativelink_error::{Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{BepEvent, bep_event};
 use nativelink_proto::google::devtools::build::v1::publish_build_event_server::{
@@ -42,6 +41,11 @@ use tracing::{Level, instrument, warn};
 /// (e.g. a Redis Sentinel failover) doesn't drop it — BEP events are the
 /// authoritative build record, the same durability class as origin events.
 const MAX_BEP_UPLOAD_ATTEMPTS: u32 = 5;
+/// Store writes in flight per stream. Bazel waits for every event's ack
+/// before it finishes, so a sequential write per event caps a build's
+/// upload at one store round trip per event; writes overlap up to this
+/// many while the acks still go out in sequence order.
+const MAX_IN_FLIGHT_BEP_EVENTS: usize = 64;
 
 /// Current version of the BEP event. This might be used in the future if
 /// there is a breaking change in the BEP event format.
@@ -67,7 +71,7 @@ impl BepServer {
     ) -> Result<Self, Error> {
         let store = store_manager
             .get_store(&config.store)
-            .err_tip(|| format!("Expected store {} to exist in store manager", &config.store))?;
+            .err_tip(|| format!("Expected store {} to exist in store manager", config.store))?;
 
         Ok(Self { store })
     }
@@ -94,7 +98,7 @@ impl BepServer {
 
         let store_key = StoreKey::Str(Cow::Owned(format!(
             "BepEvent:le:{}:{}:{}",
-            &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+            stream_id.build_id, stream_id.invocation_id, sequence_number,
         )));
 
         let bep_event = BepEvent {
@@ -173,7 +177,7 @@ impl BepServer {
 
             let store_key = StoreKey::Str(Cow::Owned(format!(
                 "BepEvent:be:{}:{}:{}",
-                &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+                stream_id.build_id, stream_id.invocation_id, sequence_number,
             )));
             let data = buf.freeze();
             for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {
@@ -203,42 +207,19 @@ impl BepServer {
             })
         }
 
-        struct State {
-            store: Store,
-            stream: Streaming<PublishBuildToolEventStreamRequest>,
-            identity: String,
-        }
-
-        let response_stream =
-            unfold(
-                Some(State {
-                    store: self.store.clone(),
-                    stream,
-                    identity: identity.unwrap_or_default(),
-                }),
-                move |maybe_state| async move {
-                    let mut state = maybe_state?;
-                    let request =
-                        match state.stream.message().await.err_tip(
-                            || "While receiving message in publish_build_tool_event_stream",
-                        ) {
-                            Ok(Some(request)) => request,
-                            Ok(None) => return None,
-                            Err(e) => return Some((Err(e.into()), None)),
-                        };
-                    process_request(
-                        state.store.as_store_driver_pin(),
-                        request,
-                        state.identity.clone(),
-                    )
-                    .await
-                    .map_or_else(
-                        |e| Some((Err(e), None)),
-                        |response| Some((Ok(response), Some(state))),
-                    )
-                },
-            );
-
+        let store = self.store.clone();
+        let identity = identity.unwrap_or_default();
+        let response_stream = stream
+            .map(move |request| {
+                let store = store.clone();
+                let identity = identity.clone();
+                async move {
+                    let request = request
+                        .err_tip(|| "While receiving message in publish_build_tool_event_stream")?;
+                    process_request(store.as_store_driver_pin(), request, identity).await
+                }
+            })
+            .buffered(MAX_IN_FLIGHT_BEP_EVENTS);
         Ok(Response::new(Box::pin(response_stream)))
     }
 }

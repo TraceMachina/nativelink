@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2024 The NativeLink Authors. All rights reserved.
+# Copyright 2024 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -127,7 +127,10 @@ for pattern in "${TEST_PATTERNS[@]}"; do
         bazel --output_base="$BAZEL_CACHE_DIR" clean
         FILENAME=$(basename "$fullpath")
         echo "Running test $FILENAME"
-        sudo env RUST_LOG=info docker compose up -d
+        # sudo resets the environment, so NATIVELINK_DIR must be passed
+        # through explicitly or docker compose falls back to mounting
+        # root's ~/.cache/nativelink instead of the per-run cache dir.
+        sudo env RUST_LOG=info NATIVELINK_DIR="$NATIVELINK_DIR" docker compose up -d
         if perl -e 'alarm shift; exec @ARGV' 30 bash -c 'until sudo docker compose logs | grep -q "Ready, listening on"; do sleep 1; done'; then
             echo "String 'Ready, listening on' found in the logs."
         else

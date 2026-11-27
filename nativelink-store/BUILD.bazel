@@ -1,3 +1,4 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load(
     "@rules_rust//rust:defs.bzl",
     "rust_doc",
@@ -5,6 +6,20 @@ load(
     "rust_library",
     "rust_test",
     "rust_test_suite",
+)
+
+# Definitions for the glibc-only symbol names AWS-LC ends up referencing when
+# it is linked against musl (see aws_lc_musl_shims.c). Empty everywhere else.
+# Linked into aws-lc-sys through the crate annotation in MODULE.bazel;
+# `alwayslink` keeps the objects wherever the archive lands on the link line.
+cc_library(
+    name = "aws_lc_musl_shims",
+    srcs = select({
+        "@local-remote-execution//libc:musl": ["aws_lc_musl_shims.c"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
+    alwayslink = True,
 )
 
 rust_library(
@@ -33,14 +48,19 @@ rust_library(
         "src/memory_store.rs",
         "src/mongo_store.rs",
         "src/noop_store.rs",
+        "src/oci_store.rs",
         "src/ontap_s3_existence_cache_store.rs",
         "src/ontap_s3_store.rs",
+        "src/oss_store.rs",
         "src/r2_store.rs",
         "src/redis_store.rs",
         "src/redis_utils/aggregate_types.rs",
         "src/redis_utils/ft_aggregate.rs",
         "src/redis_utils/ft_create.rs",
         "src/redis_utils/ft_cursor_read.rs",
+        "src/redis_utils/ft_info.rs",
+        "src/redis_utils/ft_search_count.rs",
+        "src/redis_utils/index_migration.rs",
         "src/redis_utils/mod.rs",
         "src/ref_store.rs",
         "src/s3_store.rs",
@@ -66,8 +86,8 @@ rust_library(
         "@crates//:aws-smithy-runtime-api",
         "@crates//:aws-smithy-types",
         "@crates//:azure_core",
-        "@crates//:azure_storage",
-        "@crates//:azure_storage_blobs",
+        "@crates//:azure_identity",
+        "@crates//:azure_storage_blob",
         "@crates//:base64",
         "@crates//:blake3",
         "@crates//:byteorder",
@@ -80,11 +100,11 @@ rust_library(
         "@crates//:http",
         "@crates//:http-body",
         "@crates//:http-body-util",
-        "@crates//:humantime",
         "@crates//:hyper",
         "@crates//:hyper-rustls",
         "@crates//:hyper-util",
         "@crates//:itertools",
+        "@crates//:jiff",
         "@crates//:lz4_flex",
         "@crates//:mongodb",
         "@crates//:opentelemetry",
@@ -108,17 +128,27 @@ rust_library(
         "@crates//:tracing",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:webpki-roots",
         "@crates//:wincode",
-    ],
+    ] + select({
+        "@platforms//os:macos": ["@crates//:libc"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test_suite(
     name = "integration",
-    timeout = "short",
+    # "moderate" (300s) rather than "short" (60s): the mongo store test spawns
+    # a real mongod per test and downloads the MongoDB archive on a cold cache
+    # (always cold under Bazel's sandboxed $HOME), which straddled the 60s cap.
+    timeout = "moderate",
     srcs = [
         "tests/ac_utils_test.rs",
         "tests/azure_blob_store_test.rs",
+        "tests/azurite_store_test.rs",
+        "tests/cache_metrics_remove_metrics_test.rs",
         "tests/cache_metrics_store_test.rs",
+        "tests/common_s3_utils_test.rs",
         "tests/completeness_checking_store_test.rs",
         "tests/compression_store_test.rs",
         "tests/dedup_store_test.rs",
@@ -127,17 +157,22 @@ rust_test_suite(
         "tests/filesystem_store_test.rs",
         "tests/gcs_client_test.rs",
         "tests/gcs_store_test.rs",
+        "tests/grpc_read_batching_test.rs",
         "tests/grpc_store_test.rs",
         "tests/memory_store_test.rs",
         "tests/mongo_store_test.rs",
+        "tests/oci_store_test.rs",
         "tests/ontap_s3_existence_cache_store_test.rs",
         "tests/ontap_s3_store_test.rs",
+        "tests/oss_store_test.rs",
         "tests/r2_store_test.rs",
         "tests/redis_store_test.rs",
         "tests/ref_store_test.rs",
         "tests/s3_store_test.rs",
         "tests/shard_store_test.rs",
         "tests/size_partitioning_store_test.rs",
+        "tests/store_manager_test.rs",
+        "tests/tls_client_no_roots_test.rs",
         "tests/verify_store_test.rs",
     ],
     compile_data = [
@@ -145,7 +180,14 @@ rust_test_suite(
         "tests/mongo_runner/process.rs",
         "tests/mongo_runner/extractor.rs",
         "tests/mongo_runner/downloader.rs",
+        "tests/azurite_runner/mod.rs",
+        "tests/azurite_runner/process.rs",
+        "tests/azurite_runner/sas.rs",
     ],
+    # FIXME(palfrey): we should be including this in Bazel, but the azurite_runner program makes a
+    # bunch of assumptions about it's environment (mainly regarding programs it can run) that are
+    # currently incompatible with our Bazel setup, so we don't and it skips the relevant tests
+    # data = glob(["tests/azurite_runner/node_modules/**"]),
     proc_macro_deps = [
         "//nativelink-macro",
         "@crates//:async-trait",
@@ -164,16 +206,18 @@ rust_test_suite(
         "@crates//:aws-smithy-runtime-api",
         "@crates//:aws-smithy-types",
         "@crates//:azure_core",
-        "@crates//:azure_storage",
-        "@crates//:azure_storage_blobs",
+        "@crates//:azure_storage_blob",
+        "@crates//:base64",
         "@crates//:bytes",
         "@crates//:dirs",
         "@crates//:flate2",
         "@crates//:fs-set-times",
         "@crates//:futures",
         "@crates//:hex",
+        "@crates//:hmac",
         "@crates//:http",
         "@crates//:http-body",
+        "@crates//:jiff",
         "@crates//:libc",
         "@crates//:memory-stats",
         "@crates//:mock_instant",
@@ -182,11 +226,13 @@ rust_test_suite(
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",
+        "@crates//:rcgen",
         "@crates//:redis",
         "@crates//:redis-test",
         "@crates//:regex",
         "@crates//:reqwest",
         "@crates//:rlimit",
+        "@crates//:rustls",
         "@crates//:serde_json",
         "@crates//:serial_test",
         "@crates//:sha2",
@@ -197,10 +243,17 @@ rust_test_suite(
         "@crates//:tonic",
         "@crates//:tracing",
         "@crates//:tracing-test",
+        "@crates//:url",
         "@crates//:uuid",
+        "@crates//:webpki-roots",
         "@crates//:wincode",
         "@crates//:zip",
-    ],
+    ] + select({
+        # The caps crate only compiles on Linux: capabilities are a Linux
+        # kernel concept, and macOS is also `unix`.
+        "@platforms//os:linux": ["@crates//:caps"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,6 +49,7 @@ pub fn make_buf_channel_pair() -> (DropCloserWriteHalf, DropCloserReadHalf) {
         DropCloserReadHalf {
             rx,
             queued_data: VecDeque::new(),
+            replay_data: VecDeque::new(),
             last_err: None,
             eof_sent,
             bytes_received: 0,
@@ -70,6 +71,30 @@ impl DropCloserWriteHalf {
     /// Sends data over the channel to the receiver.
     pub fn send(&mut self, buf: Bytes) -> impl Future<Output = Result<(), Error>> + '_ {
         self.send_get_bytes_on_error(buf).map_err(|err| err.0)
+    }
+
+    /// Sends data over the channel to the receiver from a blocking thread.
+    pub fn blocking_send(&mut self, buf: Bytes) -> Result<(), Error> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| make_err!(Code::Internal, "Tried to send while stream is closed"))?;
+        let buf_len = u64::try_from(buf.len()).err_tip(|| "Could not convert usize to u64")?;
+        if buf_len == 0 {
+            return Err(make_input_err!(
+                "Cannot send EOF in blocking_send(). Instead use send_eof()"
+            ));
+        }
+        if let Err(err) = tx.blocking_send(buf) {
+            self.tx = None;
+            return Err(make_err!(
+                Code::Internal,
+                "Failed to write to data, receiver disconnected: {} bytes",
+                err.0.len()
+            ));
+        }
+        self.bytes_written += buf_len;
+        Ok(())
     }
 
     /// Sends data over the channel to the receiver.
@@ -195,8 +220,11 @@ pub struct DropCloserReadHalf {
     /// If there was an error in the stream, this will be set to the last error.
     last_err: Option<Error>,
     /// If not empty, this is the data that needs to be sent out before
-    /// data from the underlying channel can should be sent.
+    /// data from the underlying channel can should be sent. Already counted
+    /// in `bytes_received`.
     queued_data: VecDeque<Bytes>,
+    /// Data put back by `try_reset_stream`; counted again as it is read.
+    replay_data: VecDeque<Bytes>,
     /// As data is being read from the stream, this buffer will be filled
     /// with the most recent data. Once `max_recent_data_size` is reached
     /// this buffer will be cleared and no longer be populated.
@@ -217,23 +245,27 @@ impl DropCloserReadHalf {
 
     fn recv_inner(&mut self, chunk: Bytes) -> Result<Bytes, Error> {
         // `queued_data` is allowed to have empty bytes that represent EOF
-        if chunk.is_empty() {
-            if !self.eof_sent.load(Ordering::Acquire) {
-                let err = make_err!(Code::Internal, "Sender dropped before sending EOF");
-                self.queued_data.clear();
-                self.recent_data.clear();
-                self.bytes_received = 0;
-                self.last_err = Some(err.clone());
-                return Err(err);
-            }
-
-            self.maybe_populate_recent_data(&ZERO_DATA);
-            return Ok(ZERO_DATA);
+        if chunk.is_empty() && !self.eof_sent.load(Ordering::Acquire) {
+            let err = make_err!(Code::Internal, "Sender dropped before sending EOF");
+            self.queued_data.clear();
+            self.replay_data.clear();
+            self.recent_data.clear();
+            self.bytes_received = 0;
+            self.last_err = Some(err.clone());
+            return Err(err);
         }
+        Ok(self.count_received(chunk))
+    }
 
+    /// Counts a chunk handed out for the first time since the last reset.
+    fn count_received(&mut self, chunk: Bytes) -> Bytes {
+        if chunk.is_empty() {
+            self.maybe_populate_recent_data(&ZERO_DATA);
+            return ZERO_DATA;
+        }
         self.bytes_received += chunk.len() as u64;
         self.maybe_populate_recent_data(&chunk);
-        Ok(chunk)
+        chunk
     }
 
     /// Try to receive a chunk of data, returning `None` if none is available.
@@ -241,7 +273,11 @@ impl DropCloserReadHalf {
         if let Some(err) = &self.last_err {
             return Some(Err(err.clone()));
         }
-        self.queued_data.pop_front().map(Ok)
+        if let Some(chunk) = self.queued_data.pop_front() {
+            return Some(Ok(chunk));
+        }
+        let chunk = self.replay_data.pop_front()?;
+        Some(Ok(self.count_received(chunk)))
     }
 
     /// Receive a chunk of data, waiting asynchronously until some is available.
@@ -251,6 +287,17 @@ impl DropCloserReadHalf {
         } else {
             // `None` here indicates EOF, which we represent as Zero data
             let data = self.rx.recv().await.unwrap_or(ZERO_DATA);
+            self.recv_inner(data)
+        }
+    }
+
+    /// Receive a chunk of data from a blocking thread.
+    pub fn blocking_recv(&mut self) -> Result<Bytes, Error> {
+        if let Some(result) = self.try_recv() {
+            result
+        } else {
+            // `None` here indicates EOF, which we represent as Zero data
+            let data = self.rx.blocking_recv().unwrap_or(ZERO_DATA);
             self.recv_inner(data)
         }
     }
@@ -287,17 +334,21 @@ impl DropCloserReadHalf {
                 "Cannot reset stream, max_recent_data_size exceeded"
             ));
         }
-        let mut data_sum = 0;
-        for chunk in self.recent_data.drain(..).rev() {
-            data_sum += chunk.len() as u64;
-            self.queued_data.push_front(chunk);
-        }
-        assert!(self.recent_data.is_empty(), "Recent_data should be empty");
+        let data_sum: u64 = self
+            .recent_data
+            .iter()
+            .map(|chunk| chunk.len() as u64)
+            .sum();
         // Ensure the sum of the bytes in recent_data is equal to the bytes_received.
         error_if!(
             data_sum != self.bytes_received,
             "Sum of recent_data bytes does not equal bytes_received"
         );
+        // `queued_data` only holds chunks already in `recent_data`.
+        self.queued_data.clear();
+        for chunk in self.recent_data.drain(..).rev() {
+            self.replay_data.push_front(chunk);
+        }
         self.bytes_received = 0;
         Ok(())
     }

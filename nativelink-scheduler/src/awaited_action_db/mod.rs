@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,15 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::sync::Arc;
 
-pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
+pub use awaited_action::{AwaitedAction, AwaitedActionSortKey, PersistedSortKey};
 use futures::{Future, Stream};
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId};
+use nativelink_util::platform_properties::PlatformProperties;
 use serde::{Deserialize, Serialize};
+
+use crate::worker_registry::SharedWorkerRegistry;
 
 mod awaited_action;
 
@@ -93,7 +96,7 @@ impl core::fmt::Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::write(
             f,
-            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+            format_args!("{}-{}", self.sort_key.as_u128(), self.operation_id),
         )
     }
 }
@@ -188,4 +191,42 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
         action_info: Arc<ActionInfo>,
         no_event_action_timeout: Duration,
     ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send;
+
+    /// Lets an implementation judge worker liveness before deciding an
+    /// executing action was abandoned. Only shared-state implementations
+    /// need it, so the default ignores the registry.
+    fn set_worker_registry(&mut self, _worker_registry: SharedWorkerRegistry) {}
+
+    /// Tells other schedulers on the same state what the workers connected
+    /// here can run, and returns, per peer scheduler, what the workers
+    /// connected to it can run. `local` holds the properties each distinct
+    /// kind of worker registered with, and stays visible to peers for
+    /// `ttl`. Only shared-state implementations need it; the default shares
+    /// nothing and sees nothing.
+    fn exchange_fleet_capabilities(
+        &self,
+        _scheduler_id: &str,
+        _local: Vec<PlatformProperties>,
+        _ttl: Duration,
+    ) -> impl Future<Output = Result<Vec<PeerScheduler>, Error>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
+    /// Whether other schedulers may share this state, and so have workers
+    /// of their own that `exchange_fleet_capabilities` reports.
+    fn shares_state(&self) -> bool {
+        false
+    }
+}
+
+/// What one peer scheduler's workers can run, as it published them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerScheduler {
+    /// The id the peer publishes under, unique to its process.
+    pub scheduler_id: String,
+    /// The properties each distinct kind of worker connected to the peer
+    /// registered with.
+    pub workers: Vec<PlatformProperties>,
+    /// The peer renews its workers' leases; an older one does not.
+    pub renews_worker_leases: bool,
 }

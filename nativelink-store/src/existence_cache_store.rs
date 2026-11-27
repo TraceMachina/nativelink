@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::borrow::Cow;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -21,7 +22,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{Error, ResultExt, error_if};
+use nativelink_error::{Code, Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -29,10 +30,10 @@ use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -60,6 +61,11 @@ pub struct ExistenceCacheStore<I: InstantWrapper> {
     // afterwards. If this is None, we're not pausing; if it's Some it's the location to
     // store them in temporarily
     pause_remove_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
+
+    // Bumped when a presence entry is dropped so an in-flight `has`/`get_part`
+    // that queried the backend before this invalidation cannot put the old
+    // positive back. A later backend lookup may legitimately repopulate it.
+    removal_epoch: AtomicU64,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -76,9 +82,11 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
         debug!(?store_key, "Removing item from cache due to callback");
         let digest = store_key.borrow().into_digest();
         Box::pin(async move {
-            let deleted_key = self.existence_cache.remove(&digest).await;
+            let deleted_key = self.invalidate_presence(&digest).await;
             if !deleted_key {
-                info!(?store_key, "Failed to delete key from cache on callback");
+                // The subscription delivers every key event on the server,
+                // most of them for keys this cache never held.
+                debug!(?store_key, "Key removed below the cache was not cached");
             }
         })
     }
@@ -123,6 +131,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
             pause_remove_callbacks: Mutex::new(None),
+            removal_epoch: AtomicU64::new(0),
         });
         let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
@@ -141,7 +150,14 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
     }
 
     pub async fn remove_from_cache(&self, digest: &DigestInfo) {
-        self.existence_cache.remove(digest).await;
+        let _ = self.invalidate_presence(digest).await;
+    }
+
+    /// Drop the local presence entry and bump `removal_epoch`. Returns whether
+    /// an entry was present. This is metadata only: it does not delete a blob.
+    async fn invalidate_presence(&self, digest: &DigestInfo) -> bool {
+        self.removal_epoch.fetch_add(1, Ordering::SeqCst);
+        self.existence_cache.remove(digest).await
     }
 
     async fn inner_has_with_results(
@@ -166,13 +182,15 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
 
         // Now query only the items not found in the cache.
         let mut inner_results = vec![None; not_cached_keys.len()];
+        let epoch = self.removal_epoch.load(Ordering::SeqCst);
         self.inner_store
             .has_with_results(&not_cached_keys, &mut inner_results)
             .await
             .err_tip(|| "In ExistenceCacheStore::inner_has_with_results")?;
 
-        // Insert found from previous query into our cache.
-        {
+        // Insert found from previous query into our cache, unless a concurrent
+        // removal invalidated presence while this lookup was in flight.
+        if self.removal_epoch.load(Ordering::SeqCst) == epoch {
             // Note: Sadly due to some weird lifetime issues we need to collect here, but
             // in theory we don't actually need to collect.
             let inserts = not_cached_keys
@@ -234,23 +252,16 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        mut reader: DropCloserReadHalf,
+        reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let digest = key.into_digest();
-        let mut exists = [None];
-        self.inner_has_with_results(&[digest], &mut exists)
-            .await
-            .err_tip(|| "In ExistenceCacheStore::update")?;
-        if exists[0].is_some() {
-            // We need to drain the reader to avoid the writer complaining that we dropped
-            // the connection prematurely.
-            let size = reader
-                .drain()
-                .await
-                .err_tip(|| "In ExistenceCacheStore::update")?;
-            return Ok(size);
-        }
+        // Every upload reaches the inner store, whatever this cache believes.
+        // A client only uploads what it was told is missing, so the write is
+        // never wasted in the normal flow; and the one time the cache is
+        // wrong (the tier under it lost the blob and the remove callback did
+        // not arrive), discarding the upload is what turns a stale answer
+        // into a blob nothing holds. The entry is refreshed on success.
         {
             let mut locked_callbacks = self.pause_remove_callbacks.lock();
             if locked_callbacks.is_none() {
@@ -279,6 +290,46 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         result
     }
 
+    /// Drops the local presence entry, then forwards to the inner store.
+    ///
+    /// The existence map is metadata, not a copy of the blob. Invalidating it
+    /// does not by itself make this method return `true`: `removed=true` means
+    /// an eligible copy below this wrapper was dropped, not that a durable
+    /// object was repaired. A failed or no-op inner removal still leaves the
+    /// old positive untrusted; a later backend lookup may repopulate it.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let digest = key.borrow().into_digest();
+        self.invalidate_presence(&digest).await;
+        let result = self.inner_store.as_store_driver_pin().remove(key).await;
+        // A lookup that queried the backend during inner removal may still be
+        // inserting. Drop again when a copy was (or may have been) removed so
+        // that insert cannot restore the entry we just invalidated. A no-op
+        // inner removal (`Ok(false)`) may legitimately repopulate from a
+        // backend that still holds the blob.
+        if !matches!(&result, Ok(false)) {
+            self.existence_cache.remove(&digest).await;
+        }
+        result
+    }
+
+    /// Same metadata invalidation as [`Self::remove`], then
+    /// [`StoreDriver::remove_cached`] on the inner store so only cache tiers
+    /// below this wrapper drop a copy. The durable copy is kept. The returned
+    /// boolean is the inner result; dropping the index does not make it true.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let digest = key.borrow().into_digest();
+        self.invalidate_presence(&digest).await;
+        let result = self
+            .inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await;
+        if !matches!(&result, Ok(false)) {
+            self.existence_cache.remove(&digest).await;
+        }
+        result
+    }
+
     async fn get_part(
         self: Pin<&Self>,
         key: StoreKey<'_>,
@@ -287,15 +338,34 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
+        let epoch = self.removal_epoch.load(Ordering::SeqCst);
         let result = self
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                if self.removal_epoch.load(Ordering::SeqCst) == epoch {
+                    let _ = self
+                        .existence_cache
+                        .insert(digest, ExistenceItem(digest.size_bytes()))
+                        .await;
+                }
+            }
+            // The store below no longer holds a blob we may be vouching
+            // for (deleted from the object store, say, which sends no
+            // removal event). Stop vouching now rather than at the TTL:
+            // a client told the blob is present skips uploading it, and
+            // its retry would ask us again and be told the same.
+            Err(err) if err.code == Code::NotFound => {
+                if self.existence_cache.remove(&digest).await {
+                    debug!(
+                        ?digest,
+                        "Read found no blob; dropped it from the existence cache"
+                    );
+                }
+            }
+            Err(_) => {}
         }
         result
     }
@@ -312,10 +382,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.inner_store.register_remove_callback(callback)
     }
 }

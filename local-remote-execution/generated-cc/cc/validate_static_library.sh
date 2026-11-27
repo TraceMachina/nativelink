@@ -1,4 +1,4 @@
-#!/nix/store/i7hwka78f6i34v4r211ynr6nnafcba7f-bash/bin/bash
+#!/nix/store/qm25hfsk3mmaaibv8y8dmx7is4bph853-bash/bin/bash
 #
 # Copyright 2023 The Bazel Authors. All rights reserved.
 #
@@ -30,11 +30,11 @@ set -euo pipefail
 #    of nm because it is not in POSIX and demangled names may not be unique
 #    (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=35201).
 DUPLICATE_SYMBOLS=$(
-    "/nix/store/lrp069m8jb7gm0xaj8ww4gp37zwczc0z-llvm-binutils-wrapper-22.1.0-rc3/bin/nm" -A -g -P "$1" |
+    "/nix/store/ffjdxdxpph04qlnmym5njj72m4n5v975-llvm-binutils-wrapper-22.1.8/bin/nm" -A -g -P "$1" |
         sed -E -e 's/.*\[([^][]+)\]: (.+) ([A-TX-Z]) [a-f0-9]+ [a-f0-9]+/\1: \3 \2/g' -e t -e d |
         LC_ALL=C sort -k 3 |
         LC_ALL=C uniq -D -f 2 |
-        "/nix/store/lrp069m8jb7gm0xaj8ww4gp37zwczc0z-llvm-binutils-wrapper-22.1.0-rc3/bin/c++filt"
+        "/nix/store/ffjdxdxpph04qlnmym5njj72m4n5v975-llvm-binutils-wrapper-22.1.8/bin/c++filt"
 )
 if [[ -n $DUPLICATE_SYMBOLS ]]; then
     >&2 echo "Duplicate symbols found in $1:"

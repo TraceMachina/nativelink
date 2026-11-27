@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::fastcdc::FastCDC;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::FramedRead;
@@ -215,9 +215,15 @@ impl StoreDriver for DedupStore {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
-        _size_info: UploadSizeInfo,
+        mut reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        if is_zero_digest(key.borrow()) {
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            size_info.validate_size(size)?;
+            return Ok(0);
+        }
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
         let index_entries: Vec<_> = frame_reader
@@ -246,6 +252,7 @@ impl StoreDriver for DedupStore {
             .await?;
 
         let total_size = index_entries.iter().map(DigestInfo::size_bytes).sum();
+        size_info.validate_size(total_size)?;
 
         let serialized_index = wincode::config::serialize(
             &DedupIndex {
@@ -276,6 +283,12 @@ impl StoreDriver for DedupStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        if is_zero_digest(key.borrow()) {
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in dedup store get_part")?;
+            return Ok(());
+        }
         // Special case for if a client tries to read zero bytes.
         if length == Some(0) {
             writer
@@ -396,10 +409,7 @@ impl StoreDriver for DedupStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.index_store
             .register_remove_callback(callback.clone())?;
         self.content_store.register_remove_callback(callback)?;

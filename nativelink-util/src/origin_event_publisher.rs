@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{OriginEve
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use uuid::{Timestamp, Uuid};
 
 use crate::shutdown_guard::{Priority, ShutdownGuard};
@@ -67,7 +67,17 @@ impl OriginEventPublisher {
         loop {
             tokio::select! {
                 biased;
-                _ = self.rx.recv_many(&mut batch, MAX_EVENTS_PER_BATCH) => {
+                received = self.rx.recv_many(&mut batch, MAX_EVENTS_PER_BATCH) => {
+                    // recv_many answers 0 only once every sender is gone and
+                    // the queue is empty: nothing more can arrive. A CAS
+                    // that forwards to a separate scheduler holds no sender
+                    // past startup, so this is reached at once there.
+                    if received == 0 {
+                        info!(
+                            "No scheduler in this process holds an origin event sender, so there is nothing to publish; the origin event publisher is stopping"
+                        );
+                        return;
+                    }
                     self.handle_batch(&mut batch).await;
                 }
                 shutdown_guard_res = &mut shutdown_fut => {
@@ -99,6 +109,10 @@ impl OriginEventPublisher {
         // thus the schedulers feeding it) forever; enough to ride out a
         // Sentinel failover.
         const MAX_UPLOAD_ATTEMPTS: u32 = 5;
+        // An empty batch carries nothing for a reader and costs a store write.
+        if batch.is_empty() {
+            return;
+        }
         // UUID v6 requires a timestamp and node ID
         // Create timestamp from current system time with nanosecond precision
         let now = std::time::SystemTime::now()

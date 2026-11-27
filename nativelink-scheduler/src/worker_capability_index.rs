@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -91,7 +91,7 @@ impl WorkerCapabilityIndex {
                         .insert(worker_id.clone());
                 }
                 PlatformPropertyValue::Minimum(_) | PlatformPropertyValue::Ignore(_) => {
-                    // Minimum properties are tracked via property_presence only.
+                    // Minimum properties are tracked via `property_presence` only.
                     // Their actual values are checked at runtime since they're dynamic.
 
                     // Ignore properties we just drop
@@ -123,7 +123,8 @@ impl WorkerCapabilityIndex {
     /// The caller should apply additional filtering (e.g., worker availability).
     ///
     /// IMPORTANT: This method returns candidates based on STATIC properties only.
-    /// - Exact and Unknown properties are fully matched
+    /// - Exact and Unknown properties are fully matched; Unknown properties
+    ///   additionally match workers that do not declare the key
     /// - Priority properties just require the key to exist
     /// - Minimum properties return workers that HAVE the property (presence check only)
     ///
@@ -157,7 +158,18 @@ impl WorkerCapabilityIndex {
                         value: value.clone(),
                     };
 
-                    let matching = self.exact_index.get(&key).cloned().unwrap_or_default();
+                    let mut matching = self.exact_index.get(&key).cloned().unwrap_or_default();
+
+                    // Unknown properties only restrict workers that declare the
+                    // key, so workers without the key remain candidates.
+                    if matches!(value, PlatformPropertyValue::Unknown(_)) {
+                        match self.property_presence.get(name) {
+                            Some(with_key) => {
+                                matching.extend(self.all_workers.difference(with_key).cloned());
+                            }
+                            None => matching.extend(self.all_workers.iter().cloned()),
+                        }
+                    }
 
                     let internal_candidates = match candidates {
                         Some(existing) => existing.intersection(&matching).cloned().collect(),

@@ -16,15 +16,15 @@
 
 <br />
 
-
 <div id="badges" align="center">
 
-  [![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
-  [![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
-  [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
-  [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
-  [![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
-  [![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+[![Homepage](https://img.shields.io/badge/Homepage-8A2BE2)](https://nativelink.com)
+[![GitHub stars](https://img.shields.io/github/stars/tracemachina/nativelink?style=social)](https://github.com/TraceMachina/nativelink)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/TraceMachina/nativelink/badge)](https://securityscorecards.dev/viewer/?uri=github.com/TraceMachina/nativelink)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8050/badge)](https://www.bestpractices.dev/projects/8050)
+[![Slack](https://img.shields.io/badge/slack--channel-blue?logo=slack)](https://forms.gle/LtaWSixEC6bYi5xF7)
+[![License](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+
 </div>
 
 <a href="https://trendshift.io/repositories/11202" target="_blank"><img src="https://trendshift.io/api/badge/repositories/11202" alt="TraceMachina%2Fnativelink | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -41,6 +41,27 @@ NativeLink is trusted in production environments to reduce costs and developer i
   </a>
 </p>
 
+## 🤖 For AI agents and intelligent collaborators
+
+NativeLink is built to be read by agents as well as people:
+
+- [`llms.txt`](llms.txt), [`llms-small.txt`](llms-small.txt) and
+  [`llms-full.txt`](llms-full.txt) at the repository root are the website, the
+  blog and the documentation at three sizes; they are the files served at
+  [nativelink.com/llms.txt](https://nativelink.com/llms.txt). The docs serve
+  their own three at [docs.nativelink.com/llms.txt](https://docs.nativelink.com/llms.txt),
+  which the root copies fold in.
+- [`AGENTS.md`](AGENTS.md) is the map of the code for an agent changing it.
+- [`.claude/skills/`](.claude/skills) carries installable skills, including
+  [`migrate-to-bazelmod`](.claude/skills/migrate-to-bazelmod).
+- Every page of [nativelink.com](https://nativelink.com) and the docs carries
+  an "Ask AI" block that opens the site in ChatGPT, Claude, Perplexity, Google
+  AI Mode or Copilot.
+- Contributing with an agent is welcome when a person stands behind the
+  change; see [`CONTRIBUTING.md`](CONTRIBUTING.md#ai-assisted-contributions).
+
+The full list is at [nativelink.com/agents](https://nativelink.com/agents).
+
 ## 🔑 Key Features
 
 1. **Advanced Build Cache**:
@@ -53,51 +74,68 @@ NativeLink is trusted in production environments to reduce costs and developer i
    - Utilizes remote resources to offload computational burden from local machines
    - Ensures consistency with a uniform, controlled build environment
 
-NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Reclient](https://github.com/bazelbuild/reclient). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://nativelink.com/docs/rbe/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
+NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://docs.nativelink.com/getting-started/connect-your-build/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
 
 ## 🚀 Quickstart
 
-To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are **production-grade** installations. See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
+To start, you can deploy NativeLink as a Docker image (as shown below). The setups below are for trying NativeLink out; for production, pin an exact release as described under [Prebuilt images](#-prebuilt-images). See the [contribution docs](https://nativelink.com/docs/contribute/nix/) for instructions on how to build from source with [Bazel](https://nativelink.com/docs/contribute/bazel/), [Cargo](https://nativelink.com/docs/contribute/cargo/), and [Nix](https://nativelink.com/docs/contribute/nix/).
 
 You can find a few example deployments in the [Docs](https://nativelink.com/docs/deployment-examples/kubernetes).
 
 ### 📦 Prebuilt images
 
-Fast to spin up, but currently limited to `x86_64` systems. See the [container
+Fast to spin up. The images are multi-arch (`x86_64` and `ARM64`), so they run
+natively on Apple Silicon too. See the [container
 registry](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
 for all image tags and the [contribution docs](https://nativelink.com/docs/contribute/nix)
 for how to build the images yourself.
 
-**Linux x86_64**
+These snippets look up the newest release each time they run, so they never go
+stale. For production, pin an exact release tag instead and upgrade on purpose;
+don't resolve "latest" at deploy time. See
+[pinning a version](https://nativelink.com/docs/getting-started/shared-cache#container-registry).
+
+**Linux and macOS**
+
+Look up the newest release tag, such as `vX.Y.Z`, download the example
+configuration into the current directory, and start the server:
 
 ```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5
-
-# See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
-# to find the latest tag
-docker run \
-    -v $(pwd)/basic_cas.json5:/config \
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5" &&
+docker run --rm -it \
+    -v "$(pwd)/basic_cas.json5:/config:ro" \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v1.4.0 \
-    config
+    "ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION}" \
+    /config
 ```
 
-**Windows x86_64**
+**Windows**
+
+The same steps in PowerShell: look up the newest release tag, download the
+configuration file into the current directory, and run the Docker container
+with that file mounted:
 
 ```powershell
-# Download the configuration file
-Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5" `
-    -OutFile "basic_cas.json5"
+$NATIVELINK_VERSION = (Invoke-RestMethod `
+    "https://api.github.com/repos/TraceMachina/nativelink/releases/latest").tag_name
 
-# Run the Docker container
-# Note: Adjust the path if the script is not run from the directory containing basic_cas.json
-docker run `
-    -v ${PWD}/basic_cas.json5:/config `
-    -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v1.4.0 `
-    config
+if (-not $NATIVELINK_VERSION) {
+    Write-Error "Could not look up the latest release. Set `$NATIVELINK_VERSION to a tag from https://github.com/TraceMachina/nativelink/releases"
+} else {
+    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop `
+        -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/$NATIVELINK_VERSION/nativelink-config/examples/basic_cas.json5" `
+        -OutFile "basic_cas.json5"
+
+    docker run `
+        -v ${PWD}/basic_cas.json5:/config `
+        -p 50051:50051 `
+        "ghcr.io/tracemachina/nativelink:$NATIVELINK_VERSION" `
+        config
+}
 ```
 
 ### ❄️ Raw executable with Nix
@@ -112,13 +150,31 @@ it via the [next-gen nix installer](https://github.com/NixOS/experimental-nix-in
 > Executables built for MacOS are dynamically linked against libraries from Nix
 > and won't work on systems that don't have these libraries present.
 
+> [!TIP]
+> **Common setup gotchas for Nix on macOS / Linux:**
+>
+> - **Active shell environment**: If the installer finishes but your shell doesn't recognize `nix` commands, you need to either restart your terminal session or source the daemon profile manually:
+>   ```bash
+>   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+>   ```
+> - **Enabling experimental features**: If you used the standard Nix installer and get an error saying `experimental Nix feature 'nix-command' is disabled`, enable them by creating or editing `~/.config/nix/nix.conf`:
+>   ```text
+>   experimental-features = nix-command flakes
+>   ```
+> - **Disk Space**: Unpacking and building compilers and dependencies requires significant storage. Make sure you have at least **15–20 GB of free space** on your system volume before running setup commands.
+
 **Linux, MacOS, WSL2**
 
-```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas.json5
+Look up the newest release tag, download the example configuration, and run
+that release from its flake:
 
-nix run github:TraceMachina/nativelink ./basic_cas.json5
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5" &&
+nix run "github:TraceMachina/nativelink/${NATIVELINK_VERSION}" ./basic_cas.json5
 ```
 
 See the [contribution docs](https://nativelink.com/docs/contribute/nix) for further information.
@@ -133,7 +189,7 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 ## 📜 License
 
-Copyright 2020–2025 Trace Machina, Inc.
+Copyright 2020–2026 Trace Machina, Inc.
 
 Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
 SPDX identifier: `FSL-1.1-Apache-2.0`.

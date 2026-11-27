@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use humantime::format_duration;
-use nativelink_error::{Error, ErrorContext, ResultExt, error_if, make_input_err};
+use jiff::Span;
+use nativelink_error::{
+    Error, ErrorContext, ResultExt, error_if, make_input_err, missing_blob_subject,
+};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, publish,
 };
@@ -43,6 +45,26 @@ use uuid::Uuid;
 
 use crate::common::{self, DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
+
+/// Appended to a `NotFound` raised while fetching something the client
+/// referenced by digest (the action, its command, its inputs), so the
+/// worker loop can tell a missing input from any other missing thing
+/// without reading a store's wording. The scheduler reads it back off the
+/// `FAILED_PRECONDITION` result the worker turns that into.
+pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
+
+/// Appended when the worker gave up reading the action or its inputs after
+/// its store retries ran out, so the scheduler can tell a store that was
+/// down from a failure of the action without reading a store's wording or
+/// trusting a bare `Unavailable`, which the scheduler raises itself.
+pub const STORE_UNREACHABLE_ERROR_TIP: &str = "worker could not reach its store";
+
+/// The error the scheduler requeues an executing operation with when its
+/// worker no longer runs it and no result arrived: the worker ran the
+/// action, the result was lost on the way. A retry spends `max_job_retries`
+/// but does not avoid the worker.
+pub const LOST_RESULT_ERROR_TIP: &str =
+    "The worker finished this operation but its result never reached the scheduler";
 
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
@@ -243,7 +265,11 @@ impl Display for ActionUniqueQualifier {
             unique_key.digest.packed_hash(),
             unique_key.digest.size_bytes(),
             if cacheable { 'c' } else { 'u' },
-        ))
+        ))?;
+        if let Some(scope) = &unique_key.execution_scope {
+            write!(f, "_scope_{scope}")?;
+        }
+        Ok(())
     }
 }
 
@@ -251,6 +277,10 @@ impl Display for ActionUniqueQualifier {
 /// `HashMap` without needing to construct an entire `ActionInfo`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionUniqueKey {
+    /// Optional in-flight execution identity. This never changes the action
+    /// digest, instance, or completed action-cache lookup key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_scope: Option<String>,
     /// Name of instance group this action belongs to.
     #[metric(help = "Name of instance group this action belongs to.")]
     pub instance_name: String,
@@ -324,6 +354,7 @@ impl ActionInfo {
         queued_timestamp: SystemTime,
     ) -> Result<Self, Error> {
         let unique_key = ActionUniqueKey {
+            execution_scope: None,
             instance_name: execute_request.instance_name,
             digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
                 .err_tip(|| format!("Could not find digest_function in try_from_action_and_execute_request {:?}", execute_request.digest_function))?,
@@ -387,6 +418,10 @@ impl From<&ActionInfo> for ExecuteRequest {
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
             digest_function: unique_qualifier.digest_function.proto_digest_func().into(),
+            // Hints only (REAPI v2.9), and `ActionInfo` does not carry them.
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         }
     }
 }
@@ -578,6 +613,7 @@ impl From<DirectoryInfo> for OutputDirectory {
             path: val.path,
             tree_digest: Some(val.tree_digest.into()),
             is_topologically_sorted: false,
+            root_directory_digest: None,
         }
     }
 }
@@ -848,13 +884,13 @@ impl From<&ActionStage> for execution_stage::Value {
 ///
 /// This is the worker-side counterpart to `execution_server`'s
 /// `missing_blobs_failed_precondition` — both produce the `REv2`
-/// subject format `blobs/{hash}/{size}` that Bazel auto-retries on.
-fn missing_blob_failed_precondition_status(err: &Error, hash: &str, size: i64) -> Status {
+/// subject format `blobs/{digest_function/}{hash}/{size}` that Bazel
+/// auto-retries on (see [`missing_blob_subject`]).
+fn missing_blob_failed_precondition_status(err: &Error, subject: String) -> Status {
     let pf = PreconditionFailure {
         violations: vec![precondition_failure::Violation {
             r#type: common::VIOLATION_TYPE_MISSING.to_string(),
-            // REv2-mandated subject format for missing-blob violations.
-            subject: format!("blobs/{hash}/{size}"),
+            subject,
             description: err.message_string(),
         }],
     };
@@ -905,9 +941,13 @@ pub fn to_execute_response(action_result: ActionResult) -> ExecuteResponse {
             .error
             .clone()
             .map(|err| match &err.context {
-                ErrorContext::MissingDigest { hash, size } => {
-                    let (hash, size) = (hash.clone(), *size);
-                    missing_blob_failed_precondition_status(&err, &hash, size)
+                ErrorContext::MissingDigest {
+                    hash,
+                    size,
+                    digest_function,
+                } => {
+                    let subject = missing_blob_subject(digest_function.as_deref(), hash, *size);
+                    missing_blob_failed_precondition_status(&err, subject)
                 }
                 ErrorContext::None => err.into(),
             })
@@ -1175,7 +1215,7 @@ impl Display for ActionState {
             self.stage.name(),
             self.last_transition_timestamp.elapsed().map_or_else(
                 |_| "<unknown duration>".to_string(),
-                |d| { format_duration(d).to_string() }
+                |d| { format!("{}", Span::try_from(d).unwrap_or_default()) }
             ),
             self.client_operation_id,
             self.action_digest
@@ -1283,6 +1323,10 @@ impl ActionState {
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,
+            // Left unset, which REAPI allows for the digest functions we
+            // support: the client infers it from the action digest's length
+            // and the capabilities.
+            digest_function: 0,
         };
 
         Operation {

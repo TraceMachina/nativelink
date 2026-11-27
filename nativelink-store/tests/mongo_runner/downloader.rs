@@ -1,3 +1,17 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::env;
 
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -78,10 +92,10 @@ pub(crate) fn get_download_url(version: &str) -> Result<MongoUrl, Error> {
     // Refined logic
     let url = match (&os, &arch) {
         (Os::Linux, Arch::X86_64) => {
-            format!("{base_url}/linux/mongodb-linux-x86_64-ubuntu2204-{version}.tgz",)
+            format!("{base_url}/linux/mongodb-linux-x86_64-ubuntu2204-{version}.tgz")
         }
         (Os::Linux, Arch::Aarch64) => {
-            format!("{base_url}/linux/mongodb-linux-aarch64-ubuntu2204-{version}.tgz",)
+            format!("{base_url}/linux/mongodb-linux-aarch64-ubuntu2204-{version}.tgz")
         }
         (Os::MacOs, Arch::X86_64) => {
             format!("{base_url}/osx/mongodb-macos-x86_64-{version}.tgz")
@@ -121,6 +135,12 @@ where
 {
     use std::fs::File;
     use std::io::Write;
+
+    // reqwest is built with `rustls-no-provider`, so it panics when building a
+    // client unless a rustls crypto provider is installed as the process default.
+    // The server binary installs one at startup; this download runs before any
+    // store does, so install it here too. Idempotent: ignores the already-set case.
+    drop(rustls::crypto::ring::default_provider().install_default());
 
     let response = reqwest::get(url).await?;
     let total = response.content_length();

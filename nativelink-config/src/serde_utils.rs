@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use byte_unit::Byte;
-use humantime::parse_duration;
+use jiff::{Span, SpanTotal, Unit, ZonedDateTime};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, de};
 
@@ -413,12 +413,19 @@ where
             self.visit_u64(v_u64)
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
             let expanded = expanded.as_ref().trim();
-            let duration = parse_duration(expanded).map_err(de::Error::custom)?;
-            let secs = duration.as_secs();
-            self.visit_u64(secs)
+            let duration = expanded.parse::<Span>().map_err(de::Error::custom)?;
+            let secs = duration
+                .total(
+                    SpanTotal::from(Unit::Second)
+                        .days_are_24_hours()
+                        .relative(&ZonedDateTime::now()),
+                )
+                .map_err(de::Error::custom)?;
+            self.visit_u64(secs.round_ties_even() as u64)
         }
     }
 
@@ -468,12 +475,19 @@ where
             self.visit_i64(v_i64)
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
             let expanded = shellexpand::env(v).map_err(de::Error::custom)?;
             let expanded = expanded.as_ref().trim();
-            let duration = parse_duration(expanded).map_err(de::Error::custom)?;
-            let secs = duration.as_secs();
-            self.visit_u64(secs)
+            let duration = expanded.parse::<Span>().map_err(de::Error::custom)?;
+            let secs = duration
+                .total(
+                    SpanTotal::from(Unit::Second)
+                        .days_are_24_hours()
+                        .relative(&ZonedDateTime::now()),
+                )
+                .map_err(de::Error::custom)?;
+            self.visit_u64(secs.round_ties_even() as u64)
         }
     }
 

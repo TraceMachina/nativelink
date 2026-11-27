@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,14 +19,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_lock::Mutex;
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, stream};
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
-use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -35,7 +34,7 @@ use nativelink_util::metrics::{
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
 use tokio::sync::{Notify, mpsc, watch};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, CLIENT_KEEPALIVE_DURATION,
@@ -49,7 +48,7 @@ const MAX_ACTION_EVENTS_RX_PER_CYCLE: usize = 1024;
 /// When the client is dropped, it will send the `AwaitedAction` to the
 /// `event_tx` if there are other cleanups needed.
 #[derive(Debug)]
-struct ClientAwaitedAction {
+pub(crate) struct ClientAwaitedAction {
     /// The `OperationId` that the client is listening to.
     operation_id: OperationId,
 
@@ -100,8 +99,10 @@ impl LenEntry for ClientAwaitedAction {
 /// Actions the `AwaitedActionsDb` needs to process.
 #[derive(Debug)]
 pub(crate) enum ActionEvent {
-    /// A client has sent a keep alive message.
-    ClientKeepAlive(OperationId),
+    /// A client has sent a keep alive message. It carries the client's entry,
+    /// which the subscriber holds, so an entry the map evicted while its
+    /// client was still listening is put back rather than lost.
+    ClientKeepAlive(OperationId, Arc<ClientAwaitedAction>),
     /// A client has dropped and pointed to `OperationId`.
     ClientDroppedOperation(OperationId),
 }
@@ -112,6 +113,10 @@ pub(crate) enum ActionEvent {
 struct ClientInfo<I: InstantWrapper, NowFn: Fn() -> I> {
     /// The client operation id.
     client_operation_id: OperationId,
+    /// The client's entry in `client_operation_to_awaited_action`. Held
+    /// here so the map's time-based eviction cannot drop it, and with it
+    /// the operation, while this client is listening.
+    client_awaited_action: Arc<ClientAwaitedAction>,
     /// The last time a keep alive was sent.
     last_keep_alive: I,
     /// The function to get the current time.
@@ -142,6 +147,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn
     fn new_with_client(
         mut awaited_action_rx: watch::Receiver<AwaitedAction>,
         client_operation_id: OperationId,
+        client_awaited_action: Arc<ClientAwaitedAction>,
         event_tx: mpsc::UnboundedSender<ActionEvent>,
         now_fn: NowFn,
     ) -> Self
@@ -153,6 +159,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I> MemoryAwaitedActionSubscriber<I, NowFn
             awaited_action_rx,
             client_info: Some(ClientInfo {
                 client_operation_id,
+                client_awaited_action,
                 last_keep_alive: I::from_secs(0),
                 now_fn,
                 event_tx,
@@ -185,6 +192,7 @@ where
                     // Failing to send just means our receiver dropped.
                     drop(client_info.event_tx.send(ActionEvent::ClientKeepAlive(
                         client_info.client_operation_id.clone(),
+                        client_info.client_awaited_action.clone(),
                     )));
                 }
                 let sleep_fut = (client_info.now_fn)().sleep(CLIENT_KEEPALIVE_DURATION);
@@ -209,12 +217,12 @@ where
         Ok(awaited_action)
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send {
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
         if let Some(client_info) = self.client_info.as_ref() {
             awaited_action.set_client_operation_id(client_info.client_operation_id.clone());
         }
-        Ok(awaited_action)
+        std::future::ready(Ok(awaited_action))
     }
 }
 
@@ -331,6 +339,31 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
 
     /// The function to get the current time.
     now_fn: NowFn,
+
+    /// Mints the id of each new operation.
+    operation_id_fn: OperationIdFn,
+}
+
+/// Mints operation ids; a random UUID unless a test needs them repeatable.
+#[derive(Clone)]
+pub struct OperationIdFn(Arc<dyn Fn() -> OperationId + Send + Sync>);
+
+impl OperationIdFn {
+    pub fn new(f: impl Fn() -> OperationId + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl Default for OperationIdFn {
+    fn default() -> Self {
+        Self::new(OperationId::default)
+    }
+}
+
+impl core::fmt::Debug for OperationIdFn {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OperationIdFn").finish_non_exhaustive()
+    }
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbImpl<I, NowFn> {
@@ -352,6 +385,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 Some(MemoryAwaitedActionSubscriber::new_with_client(
                     tx.subscribe(),
                     client_operation_id.clone(),
+                    client_awaited_action.clone(),
                     self.action_event_tx.clone(),
                     self.now_fn.clone(),
                 ))
@@ -414,15 +448,31 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                     debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
+                    // A removed operation has no later stage transition to
+                    // decrement its active count. This also covers clients
+                    // that disappear while an action is still executing.
+                    let stage_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_STAGE,
+                        ExecutionStage::from(&awaited_action.state().stage),
+                    )];
+                    EXECUTION_METRICS
+                        .execution_active_count
+                        .add(-1, &stage_attrs);
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            // Once this operation finished, a newer operation for the
+                            // same action key may have claimed the entry; removing it
+                            // unconditionally here would orphan that operation's
+                            // deduplication entry.
+                            let owned_by_this_operation = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .is_some_and(|id| id == &operation_id);
+                            if owned_by_this_operation {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
                                     %operation_id,
                                     ?awaited_action,
@@ -455,26 +505,33 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                         );
                     }
                 }
-                ActionEvent::ClientKeepAlive(client_id) => {
-                    if let Some(client_awaited_action) = self
+                ActionEvent::ClientKeepAlive(client_id, client_awaited_action) => {
+                    // The map evicts by age, so an entry can be gone while its
+                    // client still listens (after a clock step, or past the
+                    // retain window). The subscriber holds the entry, which
+                    // kept the operation alive; put it back.
+                    if self
                         .client_operation_to_awaited_action
                         .get(&client_id)
                         .await
+                        .is_none()
                     {
-                        if let Some(awaited_action_sender) = self
-                            .operation_id_to_awaited_action
-                            .get(&client_awaited_action.operation_id)
-                        {
-                            awaited_action_sender.send_if_modified(|awaited_action| {
-                                awaited_action.update_client_keep_alive((self.now_fn)().now());
-                                false
-                            });
-                        }
-                    } else {
-                        error!(
+                        warn!(
                             ?client_id,
-                            "client_operation_to_awaited_action does not have client_id",
+                            "A listening client's entry had been evicted; restoring it"
                         );
+                        self.client_operation_to_awaited_action
+                            .insert(client_id.clone(), client_awaited_action.clone())
+                            .await;
+                    }
+                    if let Some(awaited_action_sender) = self
+                        .operation_id_to_awaited_action
+                        .get(&client_awaited_action.operation_id)
+                    {
+                        awaited_action_sender.send_if_modified(|awaited_action| {
+                            awaited_action.update_client_keep_alive((self.now_fn)().now());
+                            false
+                        });
                     }
                 }
             }
@@ -550,18 +607,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(owning_operation_id)
+                        if owning_operation_id == new_awaited_action.operation_id() => {}
+                    Some(owning_operation_id) => {
+                        // The entry belongs to a newer operation for the same
+                        // action key; leave it in place.
+                        error!(
+                            ?owning_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+                        );
+                        return;
                     }
                     None => {
                         error!(
@@ -569,8 +627,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
                         );
+                        return;
                     }
                 }
+                action_info_hash_key_to_awaited_action.remove(action_key);
             }
             ActionUniqueQualifier::Uncacheable(_action_key) => {
                 // If we are not cacheable, the action should not be in the
@@ -659,35 +719,27 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 )];
                 metrics.execution_active_count.add(1, &new_stage_attrs);
 
-                // Record completion metrics with action digest for failure tracking
-                let action_digest = old_awaited_action.action_info().digest().to_string();
+                // Record completion metrics. Attributes here must stay bounded:
+                // a per-action value such as the digest takes one of the
+                // OpenTelemetry SDK's attribute-set slots per distinct action
+                // and pushes every later set, including the bounded per-worker
+                // ones, into the single overflow series. Per-action detail
+                // belongs in logs and traces.
                 if let ActionStage::Completed(action_result) = new_stage {
-                    let result_attrs = vec![
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            if action_result.exit_code == 0 {
-                                ExecutionResult::Success
-                            } else {
-                                ExecutionResult::Failure
-                            },
-                        ),
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
-                            action_digest,
-                        ),
-                    ];
+                    let result_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_RESULT,
+                        if action_result.exit_code == 0 {
+                            ExecutionResult::Success
+                        } else {
+                            ExecutionResult::Failure
+                        },
+                    )];
                     metrics.execution_completed_count.add(1, &result_attrs);
                 } else if let ActionStage::CompletedFromCache(_) = new_stage {
-                    let result_attrs = vec![
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_RESULT,
-                            ExecutionResult::CacheHit,
-                        ),
-                        opentelemetry::KeyValue::new(
-                            nativelink_util::metrics::EXECUTION_ACTION_DIGEST,
-                            action_digest,
-                        ),
-                    ];
+                    let result_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_RESULT,
+                        ExecutionResult::CacheHit,
+                    )];
                     metrics.execution_completed_count.add(1, &result_attrs);
                 }
 
@@ -755,7 +807,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Cacheable(unique_key) => Some(unique_key.clone()),
             ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
-        let operation_id = OperationId::default();
+        let operation_id = (self.operation_id_fn.0)();
         let awaited_action = AwaitedAction::new(
             operation_id.clone(),
             action_info.clone(),
@@ -778,7 +830,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         );
 
         self.client_operation_to_awaited_action
-            .insert(client_operation_id.clone(), client_awaited_action)
+            .insert(client_operation_id.clone(), client_awaited_action.clone())
             .await;
 
         // Note: We only put items in the map that are cacheable.
@@ -817,6 +869,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         Ok(MemoryAwaitedActionSubscriber::new_with_client(
             rx,
             client_operation_id,
+            client_awaited_action,
             self.action_event_tx.clone(),
             self.now_fn.clone(),
         ))
@@ -874,20 +927,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             false
         });
         let subscription = tx.subscribe();
+        let client_awaited_action = Arc::new(ClientAwaitedAction::new(
+            operation_id.clone(),
+            self.action_event_tx.clone(),
+        ));
 
         self.client_operation_to_awaited_action
-            .insert(
-                client_operation_id.clone(),
-                Arc::new(ClientAwaitedAction::new(
-                    operation_id.clone(),
-                    self.action_event_tx.clone(),
-                )),
-            )
+            .insert(client_operation_id.clone(), client_awaited_action.clone())
             .await;
 
         Ok(Some(MemoryAwaitedActionSubscriber::new_with_client(
             subscription,
             client_operation_id.clone(),
+            client_awaited_action,
             self.action_event_tx.clone(),
             self.now_fn.clone(),
         )))
@@ -910,6 +962,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         tasks_change_notify: Arc<Notify>,
         now_fn: NowFn,
     ) -> Self {
+        Self::new_with_operation_id_fn(
+            eviction_config,
+            tasks_change_notify,
+            now_fn,
+            OperationIdFn::default(),
+        )
+    }
+
+    /// Same as `new()`, with the source of new operation ids.
+    pub fn new_with_operation_id_fn(
+        eviction_config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+        operation_id_fn: OperationIdFn,
+    ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
             client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
@@ -919,6 +986,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
             connected_clients_for_operation_id: HashMap::new(),
             action_event_tx,
             now_fn,
+            operation_id_fn,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {
@@ -960,27 +1028,25 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
+    /// The listing is read whole, under one hold of the lock taken here,
+    /// before the stream exists, and the stream then only hands out what
+    /// was read. The lock must not be taken inside the stream: a reader
+    /// that prefetches rows (the filter pass reads 64 at a time) would be
+    /// left with a lock wait parked inside the stream while it hands rows
+    /// on, and if the reader then writes, on the same task, it waits for
+    /// the same lock; the release goes to the parked wait, which nothing
+    /// polls, and the scheduler stops for good.
     async fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
-        Ok(ChunkedStream::new(
-            Bound::Unbounded,
-            Bound::Unbounded,
-            move |start, end, mut output| async move {
-                let inner = self.inner.lock().await;
-                let mut maybe_new_start = None;
-
-                for (operation_id, item) in
-                    inner.get_awaited_actions_range(start.as_ref(), end.as_ref())
-                {
-                    output.push_back(item);
-                    maybe_new_start = Some(operation_id);
-                }
-
-                Ok(maybe_new_start
-                    .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
-            },
-        ))
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<Result<Self::Subscriber, Error>> = {
+            let inner = self.inner.lock().await;
+            inner
+                .get_awaited_actions_range(Bound::Unbounded, Bound::Unbounded)
+                .map(|(_, item)| Ok(item))
+                .collect()
+        };
+        Ok(stream::iter(listed))
     }
 
     async fn get_by_operation_id(
@@ -990,6 +1056,8 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         Ok(self.inner.lock().await.get_by_operation_id(operation_id))
     }
 
+    /// Read whole under one hold of the lock, like `get_all_awaited_actions`,
+    /// and for the same reason.
     async fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
@@ -997,44 +1065,23 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         end: Bound<SortedAwaitedAction>,
         desc: bool,
     ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(ChunkedStream::new(
-            start,
-            end,
-            move |start, end, mut output| async move {
-                let inner = self.inner.lock().await;
-                let mut done = true;
-                let mut new_start = start.as_ref();
-                let mut new_end = end.as_ref();
-
-                let iterator = inner
-                    .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
-                    .map(|res| res.err_tip(|| "In AwaitedActionDb::get_range_of_actions"));
-
-                // TODO(palfrey) This should probably use the `.left()/right()` pattern,
-                // but that doesn't exist in the std or any libraries we use.
-                if desc {
-                    for result in iterator.rev() {
-                        let (sorted_awaited_action, item) =
-                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                        output.push_back(item);
-                        new_end = Bound::Excluded(sorted_awaited_action);
-                        done = false;
-                    }
-                } else {
-                    for result in iterator {
-                        let (sorted_awaited_action, item) =
-                            result.err_tip(|| "In AwaitedActionDb::get_range_of_actions")?;
-                        output.push_back(item);
-                        new_start = Bound::Excluded(sorted_awaited_action);
-                        done = false;
-                    }
-                }
-                if done {
-                    return Ok(None);
-                }
-                Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
-            },
-        ))
+        let listed: Vec<Result<Self::Subscriber, Error>> = {
+            let inner = self.inner.lock().await;
+            let iterator = inner
+                .get_range_of_actions(state, (start.as_ref(), end.as_ref()))
+                .map(|res| {
+                    res.map(|(_, item)| item)
+                        .err_tip(|| "In AwaitedActionDb::get_range_of_actions")
+                });
+            // TODO(palfrey) This should probably use the `.left()/right()` pattern,
+            // but that doesn't exist in the std or any libraries we use.
+            if desc {
+                iterator.rev().collect()
+            } else {
+                iterator.collect()
+            }
+        };
+        Ok(stream::iter(listed))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {

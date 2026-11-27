@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ use tokio::sync::mpsc;
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
-    CreateAndAddAction((String, StartExecute)),
-    CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc)>),
+    CreateAndAddAction(Box<(String, StartExecute)>),
+    CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc, bool)>),
 }
 
 enum RunningActionManagerReturns {
@@ -48,6 +48,8 @@ pub(crate) struct MockRunningActionsManager {
     rx_kill_operation: Mutex<mpsc::UnboundedReceiver<OperationId>>,
     tx_kill_operation: mpsc::UnboundedSender<OperationId>,
     metrics: Arc<Metrics>,
+    /// What `memory_peaks` answers, for the keepalive's memory report.
+    pub(crate) memory_peaks: std::sync::Mutex<Vec<(String, u64)>>,
 }
 
 impl Default for MockRunningActionsManager {
@@ -72,6 +74,7 @@ impl MockRunningActionsManager {
             rx_kill_operation: Mutex::new(rx_kill_operation),
             tx_kill_operation,
             metrics: Arc::new(Metrics::default()),
+            memory_peaks: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -93,12 +96,26 @@ impl MockRunningActionsManager {
             .send(RunningActionManagerReturns::CreateAndAddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
-        req
+        *req
+    }
+
+    /// Waits for `create_and_add_action` to be invoked but never replies, so
+    /// the worker-side call stays pending and the action remains in transit.
+    pub(crate) async fn expect_create_and_add_action_no_reply(&self) -> (String, StartExecute) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let RunningActionManagerCalls::CreateAndAddAction(req) = rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for create_and_add_action")
+        };
+        *req
     }
 
     pub(crate) async fn expect_cache_action_result(
         &self,
-    ) -> (DigestInfo, ActionResult, DigestHasherFunc) {
+    ) -> (DigestInfo, ActionResult, DigestHasherFunc, bool) {
         let mut rx_call_lock = self.rx_call.lock().await;
         match rx_call_lock
             .recv()
@@ -138,10 +155,10 @@ impl RunningActionsManager for MockRunningActionsManager {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error> {
         self.tx_call
-            .send(RunningActionManagerCalls::CreateAndAddAction((
+            .send(RunningActionManagerCalls::CreateAndAddAction(Box::new((
                 worker_id,
                 start_execute,
-            )))
+            ))))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock
@@ -158,12 +175,14 @@ impl RunningActionsManager for MockRunningActionsManager {
         action_digest: DigestInfo,
         action_result: &mut ActionResult,
         digest_function: DigestHasherFunc,
+        do_not_cache: bool,
     ) -> Result<(), Error> {
         self.tx_call
             .send(RunningActionManagerCalls::CacheActionResult(Box::new((
                 action_digest,
                 action_result.clone(),
                 digest_function,
+                do_not_cache,
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
@@ -180,6 +199,10 @@ impl RunningActionsManager for MockRunningActionsManager {
         self.tx_kill_all
             .send(())
             .expect("Could not send request to mpsc");
+    }
+
+    fn memory_peaks(&self) -> Vec<(String, u64)> {
+        self.memory_peaks.lock().unwrap().clone()
     }
 
     fn metrics(&self) -> &Arc<Metrics> {
@@ -212,6 +235,8 @@ pub(crate) struct MockRunningAction {
 
     rx_resp: Mutex<mpsc::UnboundedReceiver<RunningActionReturns>>,
     tx_resp: mpsc::UnboundedSender<RunningActionReturns>,
+
+    do_not_cache: bool,
 }
 
 impl Default for MockRunningAction {
@@ -222,6 +247,11 @@ impl Default for MockRunningAction {
 
 impl MockRunningAction {
     pub(crate) fn new() -> Self {
+        Self::with_do_not_cache(false)
+    }
+
+    /// A running action whose `do_not_cache()` returns `do_not_cache`.
+    pub(crate) fn with_do_not_cache(do_not_cache: bool) -> Self {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         Self {
@@ -229,6 +259,7 @@ impl MockRunningAction {
             tx_call,
             rx_resp: Mutex::new(rx_resp),
             tx_resp,
+            do_not_cache,
         }
     }
 
@@ -440,6 +471,10 @@ impl RunningAction for MockRunningAction {
 
     fn resource_usage(&self) -> Option<ActionResourceUsage> {
         None
+    }
+
+    fn do_not_cache(&self) -> bool {
+        self.do_not_cache
     }
 
     fn get_work_directory(&self) -> &String {

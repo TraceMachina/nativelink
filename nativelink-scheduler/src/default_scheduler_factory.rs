@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_config::schedulers::{
-    ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
+    ExperimentalSimpleSchedulerBackend, PropertyType, SchedulerSpec, SimpleSpec,
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -26,13 +27,15 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use redis::aio::ConnectionManager;
 use tokio::sync::{Notify, mpsc};
+use tracing::warn;
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
-use crate::historical_resource_scheduler::HistoricalResourceScheduler;
+use crate::historical_resource_scheduler::{HistoricalResourceScheduler, replica_id, snapshot_key};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
+use crate::resource_sketch::ResourceSketch;
 use crate::simple_scheduler::SimpleScheduler;
 use crate::store_awaited_action_db::StoreAwaitedActionDb;
 use crate::worker_scheduler::WorkerScheduler;
@@ -41,9 +44,13 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 
+/// The action scheduler, the worker scheduler, and the resource sketch of a
+/// `historical_resource` layer when the configuration has one (the admin
+/// API serves it).
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn KnownPlatformPropertyProvider>>,
     Option<Arc<dyn WorkerScheduler>>,
+    Option<Arc<ResourceSketch>>,
 );
 
 pub async fn scheduler_factory(
@@ -51,28 +58,38 @@ pub async fn scheduler_factory(
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx).await
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx, None).await
 }
 
+/// `resource_sketch` is the sketch of the `historical_resource` layer above
+/// this spec, if any, handed down so the worker scheduler feeds it.
 async fn inner_scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    resource_sketch: Option<Arc<ResourceSketch>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::Simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)
-                .await?
+            simple_scheduler_factory(
+                spec,
+                store_manager,
+                SystemTime::now,
+                maybe_origin_event_tx,
+                resource_sketch,
+            )
+            .await?
         }
-        SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
+        SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None, None),
         SchedulerSpec::CacheLookup(spec) => {
             let ac_store = store_manager
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            let (action_scheduler, worker_scheduler, sketch) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                resource_sketch,
             ))
             .await
             .err_tip(|| "In nested CacheLookupScheduler construction")?;
@@ -80,13 +97,14 @@ async fn inner_scheduler_factory(
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             )?);
-            (Some(cache_lookup_scheduler), worker_scheduler)
+            (Some(cache_lookup_scheduler), worker_scheduler, sketch)
         }
         SchedulerSpec::PropertyModifier(spec) => {
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            let (action_scheduler, worker_scheduler, sketch) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                resource_sketch,
             ))
             .await
             .err_tip(|| "In nested PropertyModifierScheduler construction")?;
@@ -94,21 +112,104 @@ async fn inner_scheduler_factory(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             ));
-            (Some(property_modifier_scheduler), worker_scheduler)
+            (Some(property_modifier_scheduler), worker_scheduler, sketch)
         }
         SchedulerSpec::HistoricalResource(spec) => {
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            HistoricalResourceScheduler::validate(spec)?;
+            // A number the scheduler writes into a property the nested
+            // scheduler does not treat as a minimum is matched as an exact
+            // string, and no worker advertises that string.
+            if let SchedulerSpec::Simple(simple) = spec.scheduler.as_ref()
+                && let Some(declared) = &simple.supported_platform_properties
+            {
+                let cold = spec.cold_start.unwrap_or_default();
+                let dimensions = [
+                    (
+                        &spec.cpu_property_name,
+                        spec.classes.iter().any(|c| c.cpu_count > 0) || cold.cpu_count > 0,
+                    ),
+                    (
+                        &spec.memory_property_name,
+                        spec.classes.iter().any(|c| c.memory_kb > 0) || cold.memory_kb > 0,
+                    ),
+                    (
+                        &spec.disk_property_name,
+                        spec.classes.iter().any(|c| c.disk_kb > 0) || cold.disk_kb > 0,
+                    ),
+                ];
+                for (name, used) in dimensions {
+                    if used && declared.get(name) != Some(&PropertyType::Minimum) {
+                        return Err(make_input_err!(
+                            "historical_resource reserves {name} but the nested scheduler does not declare it as a minimum property; add it to supported_platform_properties as minimum"
+                        ));
+                    }
+                }
+            }
+            // When learning is enabled, the worker
+            // scheduler below feeds it, this layer reads it, and the admin
+            // API lists it. A snapshot in the named store is what a restart
+            // starts from; the hints file only seeds an empty sketch.
+            let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(spec));
+            let mut snapshot_store = match (&spec.snapshot_store, spec.learn_from_workers) {
+                (Some(name), true) => {
+                    let store = store_manager.get_store(name);
+                    if store.is_none() {
+                        warn!(
+                            snapshot_store = name,
+                            "Historical resource snapshot store is not defined in this scheduler's stores; continuing with memory-only learning until restart"
+                        );
+                    }
+                    store
+                }
+                _ => None,
+            };
+            let snapshot_key = snapshot_key(&replica_id(&spec.replica_id));
+            if let Some(store) = &snapshot_store {
+                match HistoricalResourceScheduler::probe_snapshot_store(
+                    store,
+                    spec.snapshot_store.as_deref().unwrap_or_default(),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        HistoricalResourceScheduler::load_snapshots(&sketch, store, &snapshot_key)
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(
+                            ?error,
+                            "Historical resource snapshot store probe failed; continuing with memory-only learning until restart"
+                        );
+                        snapshot_store = None;
+                    }
+                }
+            }
+            let (action_scheduler, worker_scheduler, _) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                spec.learn_from_workers.then(|| sketch.clone()),
             ))
             .await
             .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
             let historical_resource_scheduler = Arc::new(HistoricalResourceScheduler::new(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+                sketch.clone(),
             ));
-            (Some(historical_resource_scheduler), worker_scheduler)
+            if spec.learn_from_workers {
+                HistoricalResourceScheduler::spawn_snapshot_writer(
+                    sketch.clone(),
+                    snapshot_store,
+                    Duration::from_secs(spec.snapshot_interval_s),
+                    snapshot_key,
+                );
+            }
+            (
+                Some(historical_resource_scheduler),
+                worker_scheduler,
+                spec.learn_from_workers.then_some(sketch),
+            )
         }
     };
 
@@ -120,7 +221,39 @@ async fn simple_scheduler_factory(
     store_manager: &StoreManager,
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    resource_sketch: Option<Arc<ResourceSketch>>,
 ) -> Result<SchedulerFactoryResults, Error> {
+    if let Some(policy) = &spec.memory_escalation
+        && policy.percent <= 100
+    {
+        return Err(make_input_err!(
+            "memory_escalation.percent must be above 100 to grow the reservation, got {}",
+            policy.percent
+        ));
+    }
+    if let Some(hold) = &spec.reservation_hold
+        && (hold.hold_after_s == 0 || hold.max_hold_s == 0)
+    {
+        return Err(make_input_err!(
+            "reservation_hold.hold_after_s and max_hold_s must be above zero, got {} and {}: a zero wait holds for any action on its first miss, and a zero hold expires in the pass that took it and wakes the next",
+            hold.hold_after_s,
+            hold.max_hold_s
+        ));
+    }
+    if let Some(tripwire) = &spec.worker_outcome_tripwire
+        && (tripwire.min_failures == 0
+            || tripwire.window < tripwire.min_failures
+            || tripwire.failure_percent > 100
+            || tripwire.max_drained_percent > 100)
+    {
+        return Err(make_input_err!(
+            "worker_outcome_tripwire needs min_failures above zero and at most window, and percentages at most 100, got window {}, min_failures {}, failure_percent {}, max_drained_percent {}",
+            tripwire.window,
+            tripwire.min_failures,
+            tripwire.failure_percent,
+            tripwire.max_drained_percent
+        ));
+    }
     match spec
         .experimental_backend
         .as_ref()
@@ -133,13 +266,14 @@ async fn simple_scheduler_factory(
                 &task_change_notify,
                 SystemTime::now,
             );
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_resource_sketch(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                resource_sketch,
             );
-            Ok((Some(action_scheduler), Some(worker_scheduler)))
+            Ok((Some(action_scheduler), Some(worker_scheduler), None))
         }
         ExperimentalSimpleSchedulerBackend::Redis(redis_config) => {
             let store = store_manager
@@ -166,23 +300,55 @@ async fn simple_scheduler_factory(
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
-                spec.retain_completed_for_s,
+                // Passed through as 0, the store wrote every completed
+                // record with no expiry (the Lua update treats 0 as
+                // forever), so the scheduler's Redis kept every action ever
+                // run and the search index grew without bound.
+                retain_completed_for_s(spec.retain_completed_for_s),
+                // Same normalisation SimpleScheduler applies, so the
+                // keepalive stops being kept exactly when the timeout that
+                // reads it comes due.
+                client_action_timeout_s(spec.client_action_timeout_s),
+                spec.enable_active_action_count_metric,
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_resource_sketch(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                resource_sketch,
             );
-            Ok((Some(action_scheduler), Some(worker_scheduler)))
+            Ok((Some(action_scheduler), Some(worker_scheduler), None))
         }
     }
 }
 
+/// How long a completed record is kept, whichever backend holds it: the
+/// configured value, or the same default for both when it is unset.
+#[must_use]
+pub const fn retain_completed_for_s(configured: u32) -> u32 {
+    if configured == 0 {
+        DEFAULT_RETAIN_COMPLETED_FOR_S
+    } else {
+        configured
+    }
+}
+
+/// The client action timeout a configured value means: 0 is the default.
+/// The Redis db takes it as the keepalive key's TTL, where 0 would be an
+/// `EXPIRE 0` that deletes the keepalive as it is written.
+pub const fn client_action_timeout_s(configured: u64) -> u64 {
+    if configured == 0 {
+        crate::simple_scheduler::DEFAULT_CLIENT_ACTION_TIMEOUT_S
+    } else {
+        configured
+    }
+}
+
 pub fn memory_awaited_action_db_factory<I, NowFn>(
-    mut retain_completed_for_s: u32,
+    configured_retain_completed_for_s: u32,
     task_change_notify: &Arc<Notify>,
     now_fn: NowFn,
 ) -> MemoryAwaitedActionDb<I, NowFn>
@@ -190,12 +356,9 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Sync + 'static,
 {
-    if retain_completed_for_s == 0 {
-        retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-    }
     MemoryAwaitedActionDb::new(
         &EvictionPolicy {
-            max_seconds: retain_completed_for_s,
+            max_seconds: retain_completed_for_s(configured_retain_completed_for_s),
             ..Default::default()
         },
         task_change_notify.clone(),

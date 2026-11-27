@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ use core::pin::Pin;
 use futures::future::pending;
 use futures::try_join;
 use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::verify_store::VerifyStore;
@@ -31,6 +31,114 @@ use pretty_assertions::assert_eq;
 use tracing::{Instrument, info_span};
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+#[nativelink_test]
+async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::make_err;
+    use nativelink_metric::MetricsComponent;
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey};
+
+    #[derive(Debug, MetricsComponent)]
+    struct FailingUploadStore {
+        code: Code,
+    }
+
+    #[async_trait]
+    impl StoreDriver for FailingUploadStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        #[allow(clippy::unimplemented)]
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            // Fail after accepting data, while the checker is still forwarding.
+            reader.recv().await?;
+            Err(make_err!(self.code, "inner upload failed"))
+        }
+        #[allow(clippy::unimplemented)]
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(FailingUploadStore);
+
+    for code in [
+        Code::Unavailable,
+        Code::ResourceExhausted,
+        Code::PermissionDenied,
+    ] {
+        let store = VerifyStore::new(
+            &VerifySpec {
+                backend: StoreSpec::Memory(MemorySpec::default()),
+                verify_size: true,
+                verify_hash: false,
+            },
+            Store::new(Arc::new(FailingUploadStore { code })),
+        );
+        let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send_fut = async move {
+            for _ in 0..100 {
+                tx.send("x".into()).await?;
+            }
+            tx.send_eof()
+        };
+        let (_, result) = tokio::time::timeout(core::time::Duration::from_secs(5), async {
+            futures::join!(
+                send_fut,
+                store.update(digest, rx, UploadSizeInfo::ExactSize(100))
+            )
+        })
+        .await
+        .expect("an inner write failure must not hang the verify store");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, code, "{err:?}");
+        assert!(err.to_string().contains("inner upload failed"), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("Failed to write chunk to inner store"),
+            "{err:?}"
+        );
+    }
+    Ok(())
+}
 
 #[nativelink_test]
 async fn verify_size_false_passes_on_update() -> Result<(), Error> {
@@ -87,8 +195,10 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(100))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
-    let err = result.unwrap_err().to_string();
+    assert!(result.is_err(), "Expected error, got: {result:?}");
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument);
+    let err = err.to_string();
     assert!(
         err.contains(EXPECTED_ERR),
         "Error should contain '{EXPECTED_ERR}', got: {err:?}"
@@ -179,7 +289,11 @@ async fn verify_sha256_hash_true_succeeds_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
@@ -207,10 +321,17 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
-    let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument);
+    let err = err.to_string();
+    let expected_err = format!(
+        "Hash verification using SHA256 failed: client declared SHA256:{HASH}, but the server computed SHA256:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -283,8 +404,9 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
     let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let expected_err = format!(
+        "Hash verification using BLAKE3 failed: client declared BLAKE3:{HASH}, but the server computed BLAKE3:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -329,7 +451,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(4))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    assert!(result.is_err(), "Expected error, got: {result:?}");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -360,12 +482,678 @@ async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
         Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
     );
+    Ok(())
+}
+
+// The tier below holds fewer bytes than the digest names: the read fails
+// instead of ending early, so nothing above caches a truncated blob.
+#[nativelink_test]
+async fn verify_size_true_fails_a_short_read() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    // Ten bytes claimed, four stored: the inner store does not check.
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+
+    // A range read that stops before the end is judged against the range,
+    // and passes while the bytes are there.
+    let result = store.get_part_unchunked(digest, 1, Some(3)).await?;
+    assert_eq!(result, "234");
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert!(
+        err.to_string().contains("Read 4 bytes of the 10 expected"),
+        "{err:?}"
+    );
+    // The failed read dropped the copy, so a range past its end now finds
+    // nothing at all.
+    let result = store.get_part_unchunked(digest, 1, Some(5)).await;
+    assert_eq!(result.unwrap_err().code, Code::NotFound);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_size_true_passes_a_whole_read() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, "1234");
+    assert_eq!(store.get_part_unchunked(digest, 2, None).await?, "34");
+    assert_eq!(store.get_part_unchunked(digest, 1, Some(2)).await?, "23");
+    // Past the end there is nothing to read and nothing expected.
+    assert_eq!(store.get_part_unchunked(digest, 4, None).await?, "");
+    Ok(())
+}
+
+/// The tier below sends part of the blob and then fails, as the Redis store
+/// does for a key evicted between two chunks: the read fails with that
+/// error and does not wait for bytes that will never come.
+#[nativelink_test]
+async fn verify_size_true_fails_when_the_inner_read_errors_after_some_data() -> Result<(), Error> {
+    use core::pin::Pin;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::{Code, make_err};
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey};
+
+    #[derive(Debug)]
+    struct PartialThenErrorStore;
+
+    impl MetricsComponent for PartialThenErrorStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for PartialThenErrorStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            results.fill(Some(10));
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            Ok(0)
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send("1234".into()).await?;
+            Err(make_err!(Code::NotFound, "key removed under the read"))
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(PartialThenErrorStore);
+
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(Arc::new(PartialThenErrorStore)),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    let result = tokio::time::timeout(
+        core::time::Duration::from_secs(5),
+        store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("a failed inner read must not hang the verify store");
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert!(
+        err.to_string().contains("key removed under the read"),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+/// The tier below serves more bytes than the digest names: the checker's
+/// `DataLoss` is what the caller sees, not the inner store's failed send
+/// once the checker stops reading.
+#[nativelink_test]
+async fn verify_size_true_reports_data_loss_on_an_over_long_read() -> Result<(), Error> {
+    use core::pin::Pin;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::Code;
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey};
+
+    /// Serves forty bytes for every key, in four chunks, whatever the digest
+    /// says.
+    #[derive(Debug)]
+    struct OverLongStore;
+
+    impl MetricsComponent for OverLongStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for OverLongStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            results.fill(Some(10));
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            Ok(0)
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            for _ in 0..4 {
+                writer.send("0123456789".into()).await?;
+            }
+            writer.send_eof()
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(OverLongStore);
+
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(Arc::new(OverLongStore)),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    let err = tokio::time::timeout(
+        core::time::Duration::from_secs(5),
+        store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("an over-long read must not hang")
+    .unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert!(
+        err.to_string().contains("more than the 10 expected"),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+/// A copy that fails size verification is dropped from the tier that holds
+/// it, so the next read repopulates from below instead of failing the same
+/// way until the cache happens to evict it.
+#[nativelink_test]
+async fn verify_size_true_drops_a_copy_that_fails_verification() -> Result<(), Error> {
+    use nativelink_error::Code;
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    // Ten bytes claimed, four stored: a truncated copy.
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+    assert!(inner_store.has(digest).await?.is_some());
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        inner_store.has(digest).await?,
+        None,
+        "the truncated copy is gone after the failed read"
+    );
+    // And the next read reports NotFound, the signal for a re-upload.
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
+fn filesystem_spec(directory: &std::path::Path, name: &str) -> StoreSpec {
+    StoreSpec::Filesystem(nativelink_config::stores::FilesystemSpec {
+        content_path: directory.join(name).to_string_lossy().into_owned(),
+        temp_path: directory
+            .join(format!("{name}-tmp"))
+            .to_string_lossy()
+            .into_owned(),
+        block_size: 1,
+        ..Default::default()
+    })
+}
+
+fn fast_slow(fast: StoreSpec, slow: StoreSpec) -> StoreSpec {
+    StoreSpec::FastSlow(Box::new(nativelink_config::stores::FastSlowSpec {
+        fast,
+        slow,
+        fast_direction: nativelink_config::stores::StoreDirection::Both,
+        slow_direction: nativelink_config::stores::StoreDirection::Both,
+        bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
+    }))
+}
+
+// No wrapper protects the durable filesystem tier.
+#[nativelink_test]
+async fn verify_repair_keeps_the_durable_copy_under_a_bad_cache() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    for (nested, corrupt) in [(false, "cache"), (true, "memory"), (true, "cache")] {
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(StoreManager::new());
+        let memory =
+            store_factory(&StoreSpec::Memory(MemorySpec::default()), &manager, None).await?;
+        let cache =
+            store_factory(&filesystem_spec(directory.path(), "cache"), &manager, None).await?;
+        let durable = store_factory(
+            &filesystem_spec(directory.path(), "durable"),
+            &manager,
+            None,
+        )
+        .await?;
+        for (name, store) in [
+            ("memory", &memory),
+            ("cache", &cache),
+            ("durable", &durable),
+        ] {
+            manager.add_store(name, store.clone())?;
+        }
+        let tier = |name: &str| StoreSpec::RefStore(RefSpec { name: name.into() });
+        let disk = fast_slow(tier("cache"), tier("durable"));
+        let backend = if nested {
+            fast_slow(tier("memory"), disk)
+        } else {
+            disk
+        };
+        let store = store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: false,
+                backend,
+            })),
+            &manager,
+            None,
+        )
+        .await?;
+        store.clone().into_inner().post_init().await?;
+        durable
+            .update_oneshot(digest, payload.clone().into())
+            .await?;
+        manager
+            .get_store(corrupt)
+            .unwrap()
+            .update_oneshot(digest, "short".into())
+            .await?;
+
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::DataLoss, "{nested} {corrupt}: {err:?}");
+        assert_eq!(
+            manager
+                .get_store(corrupt)
+                .unwrap()
+                .get_part_unchunked(digest, 0, None)
+                .await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the bad cache copy is replaced by the durable one"
+        );
+        assert_eq!(
+            durable.get_part_unchunked(digest, 0, None).await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the durable copy is kept"
+        );
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the next read refills from the durable copy"
+        );
+    }
+    Ok(())
+}
+
+// Either uploaded short, or truncated on disk after a good write, where the
+// filesystem store still indexes the full size.
+#[nativelink_test]
+async fn verify_repair_drops_a_bad_durable_copy_no_cache_holds() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    for truncated_on_disk in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(StoreManager::new());
+        let durable = store_factory(
+            &filesystem_spec(directory.path(), "durable"),
+            &manager,
+            None,
+        )
+        .await?;
+        manager.add_store("durable", durable.clone())?;
+        let store = store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: false,
+                backend: fast_slow(
+                    StoreSpec::Memory(MemorySpec::default()),
+                    StoreSpec::RefStore(RefSpec {
+                        name: "durable".into(),
+                    }),
+                ),
+            })),
+            &manager,
+            None,
+        )
+        .await?;
+        store.clone().into_inner().post_init().await?;
+        if truncated_on_disk {
+            durable
+                .update_oneshot(digest, payload.clone().into())
+                .await?;
+            truncate_files(&directory.path().join("durable"), 5)?;
+            assert_eq!(durable.has(digest).await?, Some(78));
+        } else {
+            durable.update_oneshot(digest, "short".into()).await?;
+        }
+
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::DataLoss, "{truncated_on_disk}: {err:?}");
+        assert_eq!(durable.has(digest).await?, None, "{truncated_on_disk}");
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::NotFound, "{truncated_on_disk}: {err:?}");
+    }
+    Ok(())
+}
+
+mod failing {
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::{Code, Error, make_err};
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{
+        RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    };
+
+    /// Wraps a store; reads or writes can be made to fail with a code other
+    /// than `DataLoss`, as an unreadable disk or a full cache disk would.
+    #[derive(Debug)]
+    pub(super) struct FailingStore {
+        pub(super) inner: Store,
+        pub(super) fail_reads: AtomicBool,
+        pub(super) fail_writes: AtomicBool,
+    }
+
+    impl FailingStore {
+        pub(super) fn new(inner: Store) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                fail_reads: AtomicBool::new(false),
+                fail_writes: AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl MetricsComponent for FailingStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for FailingStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            if self.fail_writes.load(Ordering::Relaxed) {
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "No space left on device"
+                ));
+            }
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if self.fail_reads.load(Ordering::Relaxed) {
+                return Err(make_err!(Code::Internal, "Too many open files"));
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+            self.inner.as_store_driver_pin().remove(key).await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(FailingStore);
+}
+
+/// A bad cache copy over a good durable copy, where the repair's read-back
+/// fails with something other than `DataLoss`: the durable copy is kept.
+async fn repair_with_a_failing_tier(durable_unreadable: bool) -> Result<(), Error> {
+    use core::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    use failing::FailingStore;
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    let manager = Arc::new(StoreManager::new());
+    let memory_spec = StoreSpec::Memory(MemorySpec::default());
+    let memory = || store_factory(&memory_spec, &manager, None);
+    let cache = FailingStore::new(memory().await?);
+    let durable = FailingStore::new(memory().await?);
+    manager.add_store("cache", Store::new(cache.clone()))?;
+    manager.add_store("durable", Store::new(durable.clone()))?;
+    let tier = |name: &str| StoreSpec::RefStore(RefSpec { name: name.into() });
+    let store = store_factory(
+        &StoreSpec::Verify(Box::new(VerifySpec {
+            verify_size: true,
+            verify_hash: false,
+            backend: fast_slow(tier("cache"), tier("durable")),
+        })),
+        &manager,
+        None,
+    )
+    .await?;
+    store.clone().into_inner().post_init().await?;
+    durable
+        .inner
+        .update_oneshot(digest, payload.clone().into())
+        .await?;
+    cache.inner.update_oneshot(digest, "short".into()).await?;
+    if durable_unreadable {
+        durable.fail_reads.store(true, Ordering::Relaxed);
+    } else {
+        cache.fail_writes.store(true, Ordering::Relaxed);
+    }
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        durable.inner.get_part_unchunked(digest, 0, None).await?,
+        payload.as_bytes(),
+        "the durable copy is kept"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_repair_keeps_a_durable_copy_it_cannot_read() -> Result<(), Error> {
+    repair_with_a_failing_tier(true).await
+}
+
+#[nativelink_test]
+async fn verify_repair_keeps_the_durable_copy_when_the_cache_refill_fails() -> Result<(), Error> {
+    repair_with_a_failing_tier(false).await
+}
+
+fn truncate_files(directory: &std::path::Path, len: u64) -> Result<(), Error> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            truncate_files(&path, len)?;
+            continue;
+        }
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(len)?;
+    }
     Ok(())
 }

@@ -1,12 +1,15 @@
 bazel-*
+!tools/bazel-retry.sh
 target/
 nativelink-test/fuzz/target/
+.turbo/
 .vscode/
 .idea/
 .zed
 .cache
 .terraform*
-.config
+.config/*
+!.config/nextest.toml
 terraform.tfstate*
 .update_scheduler_ips.zip
 __pycache__
@@ -27,3 +30,7 @@ user.bazelrc
 buck-out/
 nativelink_config.schema.json
 .gstack/
+.worktrees/
+node_modules/
+
+/ci-metadata.bazelrc

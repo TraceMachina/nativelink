@@ -1,0 +1,239 @@
+---
+title: Architecture deep dive
+description: The crate graph, the startup sequence, and the path an action actually takes through the binary.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone about to read, extend or debug the NativeLink
+source, and anyone who needs to predict what the binary does rather than
+what the protocol says it should. **What you'll have at the end:** the crate
+graph, the order things come up in at startup, and where an action's path
+forks. **Time:** fifteen minutes.
+
+[Architecture](/explanations/architecture) describes four roles (CAS,
+action cache, scheduler, worker) because that is the shape of the *protocol*.
+This page describes the shape of the *program*. They are not the same shape,
+and the difference is where most surprises live: there is one binary, the
+roles are configuration, and two of the four never talk to each other in
+process at all.
+
+## One binary, five decisions [#one-binary-five-decisions]
+
+`nativelink` is a single executable. Which roles it plays is decided entirely
+by the config file it is handed; there are no build features to toggle and
+no separate images per role. Everything below happens inside
+<SourceLink file="src/bin/nativelink.rs" symbol="src/bin/nativelink.rs" />.
+
+<Mermaid>{`graph TD
+  cfg["Parse JSON5 config"] --> stores["Build every store<br/>store_factory + post_init"]
+  stores --> sched["Build every scheduler<br/>scheduler_factory"]
+  sched --> svc["Register gRPC services<br/>in fixed order"]
+  svc --> listen["Bind listeners"]
+  listen --> workers["Start local workers"]
+  workers --> run["Run forever<br/>(any root future failing = panic)"]
+`}</Mermaid>
+
+The ordering is not incidental. Stores are constructed before schedulers
+because schedulers hold store handles; schedulers are constructed before
+services because the execution service holds a scheduler handle; and workers
+are started *after* the listeners are bound, deliberately, so that a worker
+in the same process cannot begin announcing itself before the server it
+would announce to can answer.
+
+The last step is the one worth internalising: the listener accept loops, the
+local workers and the origin-event publisher are joined as root futures with
+`try_join_all`, and if any of them returns an error the process panics rather
+than continuing in a degraded state. A NativeLink whose worker task has died
+does not limp; it dies and lets your supervisor restart it. That is a
+deliberate choice about which failure mode is easier to operate.
+
+<Callout type="warn" title="Only HTTP listeners exist">
+  `ListenerConfig` has exactly one variant, `http`, and the startup path
+  destructures it irrefutably. No other listener kind can be configured;
+  a config naming one fails to parse.
+</Callout>
+
+## The crate graph [#the-crate-graph]
+
+Twelve library crates plus the binary, in strict layers. The diagram shows
+the ten that give the program its shape; the other two are
+`nativelink-metric-macro-derive` (the proc macro behind `nativelink-metric`)
+and `nativelink-redis-tester` (a fake Redis used by the store crate and by
+tests). `nativelink-macro` is a test-only proc macro that no library crate
+depends on. An arrow points from a crate to a crate that depends on it.
+
+<Mermaid>{`graph BT
+  proto["nativelink-proto"] --> error["nativelink-error"]
+  metric["nativelink-metric"] --> error
+  error --> config["nativelink-config"]
+  config --> util["nativelink-util"]
+  util --> store["nativelink-store"]
+  store --> scheduler["nativelink-scheduler"]
+  store --> worker["nativelink-worker"]
+  scheduler --> service["nativelink-service"]
+  service --> bin["src/bin/nativelink.rs"]
+  worker --> bin
+`}</Mermaid>
+
+Two absences carry more information than any of the edges.
+
+**`nativelink-worker` does not depend on `nativelink-scheduler`.** A worker
+reaches its scheduler over gRPC and nothing else, whether that scheduler is
+in the same process or in another datacentre. No in-process
+fast path exists to accidentally rely on, which is why "run everything in one
+process" and "run a worker fleet" are the same code with different config.
+
+**`nativelink-service` does not depend on `nativelink-worker`.** The gRPC
+surface has no notion of a local worker. The root binary is the only place
+where a service and a worker are ever mentioned together.
+
+<Callout type="info" title="nativelink-proto's library root is not under src/">
+  Its `src/` holds vendored Bazel `.proto` files; the crate's library root is
+  checked-in generated code at
+  <SourceLink file="nativelink-proto/genproto/lib.rs" symbol="genproto/lib.rs" />.
+  Editing a `.proto` file does not change the build until that generated tree
+  is regenerated with `bazel run nativelink-proto:update_protos`, which is a
+  manual step, not a build script.
+</Callout>
+
+## Configuration is JSON5, and it is validated early [#configuration-is-json5-and-it-is-validated-early]
+
+Config parsing is JSON5, not JSON: comments and trailing commas are legal,
+which is why every example in these docs uses them. The entry point is
+`CasConfig::try_from_json5_file` in
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasConfig" />.
+
+One cross-field check runs before anything is constructed: `check_store_conflict`
+rejects a config in which the CAS service and the action cache service for
+the same instance name point at the same store. The action cache is keyed by
+the `Action` digest, and the CAS holds the `Action` message itself under that
+same digest, so sharing a store lets an `ActionResult` overwrite the blob it
+describes. Catching it at parse time rather than at first collision is the
+whole reason the check exists.
+
+Everything else about the config file (every field, every default) lives in
+the [configuration reference](/reference/nativelink-config), which is
+generated from these same Rust types rather than transcribed from them.
+
+## Stores are built in two phases [#stores-are-built-in-two-phases]
+
+`store_factory` constructs each configured store, and then a separate
+`run_post_init()` pass runs across all of them. The second pass exists because
+a `ref_store` names another top-level store (possibly one declared later in
+the file), and a single-pass construction would make declaration order
+load-bearing. Wrappers such as `fast_slow` and `verify` do not need it: their
+inner stores are inline specs, built recursively by the same factory call. By
+the time `post_init` runs, every store in the config exists and can be
+resolved.
+
+The consequence for anyone adding a store: work that needs *other* stores
+belongs in `post_init`, not in the constructor. [The store model](/explanations/store-model)
+covers what a store actually is and how composition behaves.
+
+## Services come up in a fixed order [#services-come-up-in-a-fixed-order]
+
+The registration order is: action cache, CAS, execution, `Operations`, Remote
+Asset fetch, Remote Asset push, ByteStream, capabilities, worker API, and the
+experimental Build Event Protocol service. Each is registered only if the
+config asks for it.
+
+Two of those are not gRPC at all. The health endpoint at `/status` and the
+admin endpoint at `/admin` are plain HTTP handlers on the same listener, so
+a health check does not need a gRPC client, and an admin call is not
+discoverable through reflection. [Protocol and API surface](/reference/protocol-api)
+enumerates every RPC, including the ones that are registered but return
+`unimplemented`.
+
+## Where an action's path forks [#where-an-actions-path-forks]
+
+The single most important structural fact about execution is that **a cache
+hit never reaches the scheduler**. Bazel calls `GetActionResult` before it
+calls `Execute`, so on a hit the execution service is never contacted at all.
+
+For clients that skip that step, `CacheLookupScheduler` (the `cache_lookup`
+scheduler type) is a decorator, not a stage. It wraps the real scheduler and
+sits in front of it. On a hit it synthesises an
+`ActionStage::CompletedFromCache` and returns; the action is never queued,
+never assigned a worker, and never appears in any queue-depth metric. On a
+miss it delegates to the wrapped `SimpleScheduler` and the action enters the
+world described in [scheduler internals](/explanations/scheduler-internals).
+None of the shipped example configs use it; the diagram below shows the
+stack with it present.
+
+<Mermaid>{`graph LR
+  ex["Execute RPC"] --> pre["Shallow input check"]
+  pre --> cl["CacheLookupScheduler"]
+  cl -->|hit| done["CompletedFromCache<br/>never queued"]
+  cl -->|miss| ss["SimpleScheduler"]
+  ss --> match["Matching engine"]
+  match --> w["Worker"]
+`}</Mermaid>
+
+This explains a metric shape that otherwise looks broken: on a
+well-cached build, the scheduler's queue metrics stay near zero while the
+execution service is extremely busy. Nothing is wrong. The hits are being
+served in front of the thing that counts.
+
+### The pre-flight check is deliberately racy [#the-pre-flight-check-is-deliberately-racy]
+
+Before an `Execute` is accepted, the execution service does a shallow check
+that the action's inputs are present: the `Action` proto itself, its
+`command_digest` and its `input_root_digest`. It is documented in-source as
+deliberately shallow and deliberately racy: it does not walk the full input
+tree, and a blob can be evicted between the check passing and the worker
+asking for it.
+
+That is the right trade. A complete check would mean walking an entire
+Merkle tree on every submission, and it still would not be a guarantee,
+because eviction can happen at any point afterwards. The check exists to turn
+the common client mistake (submitting an action whose inputs were never
+uploaded) into a fast `FAILED_PRECONDITION` carrying a `PreconditionFailure`
+that lists the missing digests, so Bazel re-uploads and retries, instead of
+a worker-side failure minutes later. It is a courtesy, not an invariant. See
+<SourceLink file="nativelink-service/src/execution_server.rs" symbol="ExecutionServer" />.
+
+## Two details that surprise people reading the wire [#two-details-that-surprise-people-reading-the-wire]
+
+**`GetTree` page tokens are `"{hash}-{size}"`.** They are constructed and
+parsed by splitting on `-`. They are not opaque, and they are not signed,
+though the protocol says clients should treat them as opaque, and clients
+that do will keep working if this ever changes.
+
+**ByteStream resource names are parsed backwards.** A resource name looks
+like `{instance}/blobs/{hash}/{size}`, and the instance name is allowed to
+contain slashes. Parsing left to right therefore cannot tell where the
+instance name ends; parsing from the right can, because the trailing
+components are fixed. See
+<SourceLink file="nativelink-util/src/resource_info.rs" symbol="ResourceInfo" />.
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="If it's one binary, why does the deployment guide use three?" id="why-three-processes">
+    Because the roles have different scaling and failure characteristics, not
+    because the code requires it. A CAS wants durable storage and steady
+    memory; a worker wants CPU and is disposable; a scheduler wants to be
+    restarted freely. Splitting them lets you size and autoscale each one
+    separately. See [production configuration](/operate/production-config).
+  </Accordion>
+  <Accordion title="Can I add a store without touching the scheduler or worker?" id="add-a-store-in-isolation">
+    Yes. `nativelink-store` sits below both, and neither knows about concrete
+    store types, with one exception worth knowing: the worker's fast-CAS
+    path downcasts to a concrete `FilesystemStore` and refuses to start if it
+    is given anything else. That is covered in
+    [worker execution](/explanations/worker-execution).
+  </Accordion>
+  <Accordion title="Why does the process panic instead of retrying?" id="why-panic">
+    Because the alternative is a process that is running, passing its health
+    check, and quietly not doing one of its jobs. Every root future is
+    something the process exists to do; if one ends, the process has nothing
+    useful left to be. Dying is the honest signal, and it is the one your
+    orchestrator already knows how to act on.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/store-model" title="The store model">
+  Stores are the layer everything else is built on, and the one whose
+  composition rules are hardest to see from the config file.
+</NextStep>

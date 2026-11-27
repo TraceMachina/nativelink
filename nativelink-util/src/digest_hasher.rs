@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,6 +53,14 @@ pub fn default_digest_hasher_func() -> DigestHasherFunc {
     *DEFAULT_DIGEST_HASHER_FUNC.get_or_init(|| DigestHasherFunc::Sha256)
 }
 
+/// Get the hasher requested by the client from the active context (set via
+/// [`make_ctx_for_hash_func`]), falling back to the default hasher.
+pub fn digest_hasher_func_from_context() -> DigestHasherFunc {
+    Context::current()
+        .get::<DigestHasherFunc>()
+        .map_or_else(default_digest_hasher_func, |v| *v)
+}
+
 /// Sets the default hasher to use if no hasher was requested by the client.
 pub fn set_default_digest_hasher_func(hasher: DigestHasherFunc) -> Result<(), Error> {
     DEFAULT_DIGEST_HASHER_FUNC
@@ -87,6 +95,18 @@ impl DigestHasherFunc {
         match self {
             Self::Sha256 => ProtoDigestFunction::Sha256,
             Self::Blake3 => ProtoDigestFunction::Blake3,
+        }
+    }
+
+    /// The `{digest_function/}` segment `REv2` puts in blob resource names
+    /// and `MISSING` violation subjects. It MUST be omitted for SHA256 (and
+    /// the other functions identifiable by hash length), and present for
+    /// the rest, which here means BLAKE3.
+    #[must_use]
+    pub const fn resource_name_segment(&self) -> Option<&'static str> {
+        match self {
+            Self::Sha256 => None,
+            Self::Blake3 => Some("blake3"),
         }
     }
 }

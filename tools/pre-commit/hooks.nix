@@ -1,0 +1,285 @@
+{
+  pkgs,
+  nightly-rust,
+  generate-bazel-rc,
+  generate-stores-config,
+  flake-root,
+  pnpm-packages,
+  ...
+}: let
+  excludes = ["nativelink-proto/genproto"];
+in {
+  # Default hooks
+  check-case-conflicts = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
+  };
+  detect-private-keys = {
+    enable = true;
+    excludes =
+      excludes
+      ++ [
+        # Integration testfiles not intended for production.
+        "deployment-examples/docker-compose/example-do-not-use-in-prod-key.pem"
+        "kubernetes/resources/insecure-certs/example-do-not-use-in-prod-key.pem"
+      ];
+    types = ["text"];
+  };
+  end-of-file-fixer = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
+  };
+  fix-byte-order-marker = {
+    enable = true;
+    inherit excludes;
+  };
+  forbid-binary-files = {
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "forbid-binary-files" ''
+        set -eu
+
+        if [ $# -gt 0 ]; then
+          for filename in "''${@}"; do
+            printf "[\033[31mERROR\033[0m] Found binary file: ''${filename}"
+          done
+          exit 1
+        fi
+      '';
+    in "${script}/bin/forbid-binary-files";
+    excludes = [
+      # Testdata for fastcdc.
+      "nativelink-util/tests/data/SekienAkashita.jpg"
+      # Menlo Security case-study figures on the marketing site.
+      "web/apps/web/public/assets/menlo-security-build-time-comparison.jpg"
+      "web/apps/web/public/assets/menlo-security-kubernetes-topology.jpg"
+      # RE API Fellow figures on the marketing site.
+      "web/apps/web/public/assets/re-api-fellow-fig1-action-lifecycle.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
+      # O'Reilly Bazel book cover on the marketing site.
+      "web/apps/web/public/assets/oreilly-bazel-book-cover.png"
+    ];
+    name = "forbid-binary-files";
+    types = ["binary"];
+  };
+  mixed-line-endings = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
+  };
+  trim-trailing-whitespace = {
+    enable = true;
+    inherit excludes;
+    types = ["text"];
+  };
+
+  # Dockerfile
+  hadolint.enable = true;
+
+  # Documentation
+  vale = {
+    enable = true;
+    inherit excludes;
+    settings.configPath = ".vale.ini";
+  };
+
+  # General
+  typos = {
+    enable = true;
+    settings.configPath = "typos.toml";
+  };
+
+  # Nix
+  alejandra.enable = true;
+  deadnix = {
+    inherit excludes;
+    enable = true;
+  };
+  statix.enable = true;
+
+  # Rust
+  rustfmt = {
+    enable = true;
+    packageOverrides.cargo = nightly-rust.cargo;
+    packageOverrides.rustfmt = nightly-rust.rustfmt;
+    pass_filenames = true;
+    inherit excludes;
+  };
+
+  # Taplo fmt
+  taplo = {
+    enable = true;
+    types = ["toml"];
+  };
+
+  # Taplo validate
+  taplo-validate = {
+    enable = true;
+    entry = "${pkgs.taplo}/bin/taplo validate";
+    name = "taplo validate";
+    types = ["toml"];
+  };
+
+  # Shell
+  shellcheck = {
+    enable = true;
+    excludes = [".envrc"] ++ excludes;
+  };
+  shfmt = {
+    args = ["--indent" "4" "--space-redirects"];
+    enable = true;
+    # Messes with COMMANDS formatting
+    excludes = ["toolchain-examples/rbe/cmds.sh"] ++ excludes;
+  };
+
+  # Starlark
+  bazel-buildifier-format = {
+    description = "Format Starlark";
+    enable = true;
+    entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=fix";
+    name = "buildifier format";
+    types = ["bazel"];
+  };
+  bazel-buildifier-lint = {
+    description = "Lint Starlark";
+    enable = true;
+    entry = "${pkgs.bazel-buildtools}/bin/buildifier -lint=warn";
+    excludes = ["local-remote-execution/generated-cc/cc/cc_toolchain_config.bzl"];
+    name = "buildifier lint";
+    types = ["bazel"];
+  };
+
+  # bazelrc
+  generate-bazel-rc = {
+    description = "Generate bazelrc";
+    enable = true;
+    entry = "${generate-bazel-rc}/bin/generate-bazel-rc Cargo.toml .bazelrc";
+    name = "generate-bazel-rc";
+    files = "Cargo.toml|.bazelrc";
+    pass_filenames = false;
+  };
+
+  pretty-format-json = {
+    enable = true;
+    args = ["--autofix" "--top-keys" "name,type"];
+  };
+
+  # json5
+  formatjson5 = {
+    excludes =
+      excludes
+      ++ ["nativelink-config/examples/stores-config.json5"];
+    description = "Format json5 files";
+    enable = true;
+    entry = "${pkgs.formatjson5}/bin/formatjson5";
+    args = ["-r" "--indent" "2"];
+    types = ["json5"];
+  };
+
+  # Renovate config validator
+  renovate = {
+    description = "Validate renovate config";
+    enable = true;
+    entry = "${pkgs.renovate}/bin/renovate-config-validator";
+    args = ["--strict"];
+    files = "renovate.json5";
+  };
+
+  # Detect unused cargo deps
+  machete = {
+    description = "Detect unused cargo deps";
+    enable = true;
+    entry = "${pkgs.cargo-machete}/bin/cargo-machete";
+    args = ["--with-metadata" "."];
+    pass_filenames = false;
+  };
+
+  # Generate demo config to test stores.rs comments
+  generate-stores-config = {
+    description = "Generate stores config";
+    enable = true;
+    entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
+    name = "generate-stores-config";
+    files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
+    pass_filenames = false;
+  };
+
+  # Check licenses
+  check-license = {
+    description = "Check licenses";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "check-license" ''
+        set -eu
+
+        ${pkgs.python3}/bin/python $(${flake-root}/bin/flake-root)/tools/check_license.py $(${flake-root}/bin/flake-root)
+      '';
+    in "${script}/bin/check-license";
+    types = ["rust"];
+    pass_filenames = false;
+  };
+
+  # No new wall-clock sleeps in the scheduler and simulator tests (RFC-0064)
+  check-test-sleeps = {
+    description = "Check tests add no wall-clock sleeps";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "check-test-sleeps" ''
+        set -eu
+
+        ${pkgs.python3}/bin/python $(${flake-root}/bin/flake-root)/tools/check_test_sleeps.py
+      '';
+    in "${script}/bin/check-test-sleeps";
+    files = "^(nativelink-scheduler|nativelink-sim)/tests/.*\\.rs$|^tools/test-sleeps-baseline\\.json$";
+    pass_filenames = false;
+  };
+
+  # Check Github actions for hashes
+  check-hashes = {
+    description = "Check Github action hashes";
+    enable = true;
+    entry = let
+      python-with-yaml = pkgs.python3.withPackages (ps:
+        with ps; [
+          pyyaml
+        ]);
+      script = pkgs.writeShellScriptBin "check-github-hashes" ''
+        set -eu
+
+        ${python-with-yaml}/bin/python $(${flake-root}/bin/flake-root)/tools/github_action_hashes.py
+      '';
+    in "${script}/bin/check-github-hashes";
+    files = "^.github/.*$";
+    pass_filenames = false;
+  };
+
+  prettier = {
+    enable = true;
+    name = "prettier";
+    entry = let
+      script = pkgs.writeShellScript "prettier-with-packages" ''
+        set -euo pipefail
+        FLAKE_ROOT=$(${flake-root}/bin/flake-root)
+        cd ${pnpm-packages}
+        ITEMS=
+        for item in $@; do
+          ITEMS="''${ITEMS} ''${FLAKE_ROOT}/''${item}";
+        done
+
+        PATH=$PATH:${pkgs.nodejs_22}/bin ${pkgs.pnpm_10}/bin/pnpm run prettier ''${ITEMS};
+      '';
+    in
+      builtins.toString script;
+    description = "Format JS(X)/TS(X)/CSS/HTML/Markdown/YAML";
+    files = "\\.(c?jsx?|mjs|tsx?|css|html|md|yaml)$";
+    excludes =
+      excludes
+      ++ [
+        "CHANGELOG.md" # generated by Cliff
+        "pnpm-lock.yaml"
+      ];
+  };
+}

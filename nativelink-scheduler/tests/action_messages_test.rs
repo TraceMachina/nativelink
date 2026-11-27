@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ use pretty_assertions::assert_eq;
 #[nativelink_test]
 async fn action_state_any_url_test() -> Result<(), Error> {
     let unique_qualifier = ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: "foo_instance".to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new([1u8; 32], 5),

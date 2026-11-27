@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,12 +15,15 @@
 use std::env;
 use std::ffi::OsString;
 
-use nativelink_config::stores::MemorySpec;
-use nativelink_error::{Error, ResultExt};
+use nativelink_config::stores::{FastSlowSpec, MemorySpec, StoreDirection, StoreSpec};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_proto::build::bazel::remote::execution::v2::Action;
+use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::{DigestInfo, fs};
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use rand::Rng;
 use tokio::io::AsyncWriteExt;
@@ -81,5 +84,54 @@ async fn upload_file_to_store_with_large_file() -> Result<(), Error> {
         assert_eq!(store_data.len(), expected_data.len());
         assert_eq!(store_data, expected_data);
     }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unexpected_not_found_keeps_error_stack() -> Result<(), Error> {
+    let store = MemoryStore::new(&MemorySpec::default());
+    let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?;
+    let original = store
+        .get_part_unchunked(digest, 0, Some(10 << 20))
+        .await
+        .unwrap_err();
+    assert_eq!(original.context, ErrorContext::None);
+    assert!(original.messages.len() > 1);
+    let err = get_and_decode_digest::<Action>(store.as_ref(), digest.into())
+        .await
+        .unwrap_err();
+    assert_eq!(err, original);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn genuine_missing_digest_keeps_context() -> Result<(), Error> {
+    let store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    );
+    let digest = DigestInfo::try_new(HASH1, HASH1_SIZE)?;
+    let err = get_and_decode_digest::<Action>(store.as_ref(), digest.into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::NotFound);
+    assert_eq!(err.messages.len(), 1);
+    assert_eq!(
+        err.context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: HASH1_SIZE,
+            digest_function: None,
+        }
+    );
     Ok(())
 }

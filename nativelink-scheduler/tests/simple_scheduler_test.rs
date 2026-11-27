@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 use core::future::Future;
 use core::ops::Bound;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,11 +33,14 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event,
+    OriginEvent, event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
+    KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
+use nativelink_redis_tester::{FakeRedisBackend, Fault};
+use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
     SortedAwaitedActionState,
@@ -46,14 +49,16 @@ use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_fa
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::redis_store::RedisSubscriptionManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, DirectoryInfo,
+    ExecutionMetadata, FileInfo, INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath,
+    OperationId, STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
+    ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags, OrderDirection,
     UpdateOperationType,
 };
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
@@ -64,7 +69,10 @@ use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
-use utils::scheduler_utils::{INSTANCE_NAME, make_base_action_info, update_eq};
+use utils::scheduler_utils::{
+    Backend, BackendScheduler, GatedQueueDb, INSTANCE_NAME, gated_scheduler_on,
+    make_base_action_info, scheduler_on, update_eq,
+};
 
 mod utils {
     pub(crate) mod scheduler_utils;
@@ -72,18 +80,21 @@ mod utils {
 
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
-    rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
+    rx: &mut mpsc::Receiver<UpdateForWorker>,
 ) {
-    // Worker should have been sent an execute command.
-    let expected_msg_for_worker = UpdateForWorker {
-        update: Some(update_for_worker::Update::ConnectionResult(
-            ConnectionResult {
-                worker_id: worker_id.into(),
-            },
-        )),
-    };
+    // The first message names the worker and announces the acknowledgement;
+    // the memory property follows each test's own veto setting.
     let msg_for_worker = rx.recv().await.unwrap();
-    assert_eq!(msg_for_worker, expected_msg_for_worker);
+    let Some(update_for_worker::Update::ConnectionResult(ConnectionResult {
+        worker_id: sent_worker_id,
+        dispatch_ack,
+        ..
+    })) = msg_for_worker.update
+    else {
+        panic!("expected a ConnectionResult, got {msg_for_worker:?}");
+    };
+    assert_eq!(sent_worker_id, String::from(worker_id));
+    assert!(dispatch_ack);
 }
 
 const NOW_TIME: u64 = 10000;
@@ -98,8 +109,8 @@ async fn setup_new_worker(
     scheduler: &SimpleScheduler,
     worker_id: WorkerId,
     props: PlatformProperties,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
@@ -157,6 +168,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -344,6 +356,164 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     Ok(())
 }
 
+/// Starts one action on a fresh worker with origin events on, and returns
+/// the worker scheduler, the operation the worker was told to run, the
+/// start event's id, and the event receiver.
+async fn start_one_action_with_origin_events() -> Result<
+    (
+        Arc<SimpleScheduler>,
+        Arc<dyn WorkerScheduler>,
+        WorkerId,
+        OperationId,
+        String,
+        mpsc::Receiver<OriginEvent>,
+        mpsc::Receiver<UpdateForWorker>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        Some(origin_event_tx),
+    );
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let action_info = make_base_action_info(make_system_time(2), DigestInfo::new([43u8; 32], 512));
+    let _listener = scheduler
+        .add_action(OperationId::from("client-op"), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    scheduler.do_try_match_for_test().await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update.unwrap() {
+        update_for_worker::Update::StartAction(start) => {
+            OperationId::from(start.operation_id.as_str())
+        }
+        update => panic!("Unexpected worker update: {update:?}"),
+    };
+    let start_event_id = origin_event_rx.recv().await.unwrap().event_id;
+    Ok((
+        scheduler,
+        worker_scheduler,
+        worker_id,
+        operation_id,
+        start_event_id,
+        origin_event_rx,
+        rx_from_worker,
+    ))
+}
+
+fn attempt_ended(event: OriginEvent) -> ActionAttemptEnded {
+    match event.event.unwrap().event.unwrap() {
+        event::Event::Response(response) => match response.event.unwrap() {
+            response_event::Event::ActionAttemptEnded(ended) => ended,
+            other => panic!("Unexpected response event: {other:?}"),
+        },
+        other => panic!("Unexpected origin event: {other:?}"),
+    }
+}
+
+// An input fetch the worker reports as past its deadline is published as
+// ended for that, as a child of its start event, once the requeue is stored.
+#[nativelink_test]
+async fn attempt_ended_event_names_an_input_fetch_timeout() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::DeadlineExceeded,
+                "ran past its deadline"
+            )),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    let ended = attempt_ended(event);
+    assert_eq!(ended.reason, i32::from(AttemptEndReason::InputFetchTimeout));
+    assert_eq!(ended.operation_id, operation_id.to_string());
+    assert_eq!(ended.worker_id, "worker_id");
+    assert!(
+        ended.detail.contains("ran past its deadline"),
+        "{}",
+        ended.detail
+    );
+    Ok(())
+}
+
+// The worker hands a missing CAS input back as a FAILED_PRECONDITION result,
+// not an error; that result is what names the attempt as missing an input.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_missing_input() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::FailedPrecondition,
+                    "Object not found : {MISSING_INPUT_ERROR_TIP}"
+                )),
+                ..ActionResult::default()
+            })),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::MissingInput)
+    );
+    Ok(())
+}
+
+// Any other NotFound the worker reports is its own error, not a missing input.
+#[nativelink_test]
+async fn attempt_ended_event_names_other_not_found_a_worker_error() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, _start, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "no such directory")),
+        )
+        .await?;
+    assert_eq!(
+        attempt_ended(rx.recv().await.unwrap()).reason,
+        i32::from(AttemptEndReason::WorkerError)
+    );
+    Ok(())
+}
+
+// A worker that goes away ends the attempts it held as worker lost.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_lost_worker() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, _operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler.remove_worker(&worker_id).await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::WorkerLost)
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn bad_worker_match_logging_interval() -> Result<(), Error> {
     let task_change_notify = Arc::new(Notify::new());
@@ -492,6 +662,7 @@ async fn find_executing_action() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -571,6 +742,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     .await?;
 
     let mut expected_start_execute_for_worker1 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest1.into()),
@@ -584,6 +756,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest2.into()),
@@ -871,6 +1044,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -970,6 +1144,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -1017,6 +1192,20 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn overlapping_invocations_use_separate_workers() -> Result<(), Error> {
+    let notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+        || async {},
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    utils::scheduler_utils::verify_overlapping_invocations(&scheduler).await
 }
 
 #[nativelink_test]
@@ -1069,12 +1258,12 @@ impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
         unreachable!();
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
-        Ok(AwaitedAction::new(
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> {
+        std::future::ready(Ok(AwaitedAction::new(
             OperationId::default(),
             make_base_action_info(SystemTime::UNIX_EPOCH, DigestInfo::zero_digest()),
             MockSystemTime::now().into(),
-        ))
+        )))
     }
 }
 
@@ -1131,10 +1320,11 @@ impl AwaitedActionDb for RxMockAwaitedAction {
             .expect("Could not receive msg in mpsc")
     }
 
-    async fn get_all_awaited_actions(
+    fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(futures::stream::empty())
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
+    {
+        std::future::ready(Ok(futures::stream::empty()))
     }
 
     async fn get_by_operation_id(
@@ -1321,6 +1511,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     .await?;
 
     let mut start_execute = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest.into()),
@@ -1370,7 +1561,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     // Keep worker 2 alive.
     scheduler
-        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S, None)
         .await?;
     // This should remove worker 1 (the one executing our job).
     scheduler
@@ -1645,7 +1836,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let rogue_worker_id = WorkerId("rogue_worker_id".to_string());
 
     let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec::default(),
         memory_awaited_action_db_factory(
             0,
@@ -1729,8 +1920,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         // Our request should have sent an error back.
         assert!(
             update_action_result.is_err(),
-            "Expected error, got: {:?}",
-            &update_action_result
+            "Expected error, got: {update_action_result:?}",
         );
         let err = update_action_result.unwrap_err();
         assert!(
@@ -1746,6 +1936,12 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             "Client should not have been notified of event"
         );
     }
+    // The stale result is refused, but the worker stays: evicting it would
+    // requeue everything else it holds for one late message.
+    worker_scheduler
+        .set_drain_worker(&rogue_worker_id, false)
+        .await
+        .expect("worker reporting a stale result must still be in the pool");
 
     Ok(())
 }
@@ -1791,6 +1987,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -1890,6 +2087,132 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
+    Ok(())
+}
+
+/// A worker's `ExecuteComplete` (process exited, upload still running) must
+/// not release the action's `Minimum` budget: the action is still resident and
+/// at its memory peak. Only the final result frees the capacity.
+#[nativelink_test]
+async fn execution_complete_keeps_platform_properties_reserved() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let mut supported_props = HashMap::new();
+    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(supported_props),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut properties = HashMap::new();
+    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    let platform_properties = PlatformProperties {
+        properties: properties.clone(),
+    };
+    let action_props: HashMap<String, String> = properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
+        .collect();
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), platform_properties.clone())
+            .await
+            .unwrap();
+    let mut client1_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([11u8; 32], 512),
+        action_props.clone(),
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let mut client2_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([99u8; 32], 512),
+        action_props,
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let operation_id1 = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            OperationId::from(start_execute.operation_id)
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    {
+        let (state_1, _) = client1_action_listener.changed().await.unwrap();
+        let (state_2, _) = client2_action_listener.changed().await.unwrap();
+        assert_eq!(state_1.stage, ActionStage::Executing);
+        assert_eq!(state_2.stage, ActionStage::Queued);
+    }
+
+    // The worker reports the process finished; the upload is still ahead.
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::ExecutionComplete,
+        )
+        .await
+        .unwrap();
+    tokio::task::yield_now().await; // Let a matching pass run if one was notified.
+
+    // The worker's one unit of `prop1` is still held, so the second action
+    // must not have been dispatched.
+    assert!(
+        rx_from_worker.try_recv().is_err(),
+        "second action was dispatched while the first was still uploading"
+    );
+
+    // The final result releases the budget and the second action goes out.
+    let action_result = ActionResult {
+        output_files: Vec::default(),
+        output_folders: Vec::default(),
+        output_file_symlinks: Vec::default(),
+        output_directory_symlinks: Vec::default(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(action_result)),
+        )
+        .await
+        .unwrap();
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+    let (state_2, _) = client2_action_listener.changed().await.unwrap();
+    assert_eq!(state_2.stage, ActionStage::Executing);
     Ok(())
 }
 
@@ -2199,6 +2522,9 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     }
 
     // Now connect a new worker and it should pickup the action.
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     {
@@ -2268,12 +2594,257 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                         .contains("Job cancelled because it attempted to execute too many times"),
                     "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
+                assert_eq!(
+                    real_err.code,
+                    Code::FailedPrecondition,
+                    "the cap must use a code the client does not retry"
+                );
                 *real_err = err;
             }
         } else {
             panic!("Expected Completed, got : {:?}", action_state.stage);
         }
         assert_eq!(received_state, expected_action_state);
+    }
+
+    Ok(())
+}
+
+/// The error a worker reports once its store retries ran out.
+fn store_unreachable() -> Error {
+    make_err!(Code::Unavailable, "tcp connect error").append(STORE_UNREACHABLE_ERROR_TIP)
+}
+
+/// A worker that cannot reach its store (a CAS pod being replaced) does not
+/// spend the action's `max_job_retries`; three such refusals within one
+/// second used to cancel the build. It spends its own budget, sized like a
+/// lost worker's, so an action whose store never comes back still ends, with
+/// a code the client does not retry.
+#[nativelink_test]
+async fn store_unavailable_errors_spend_the_worker_loss_budget_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // Two store refusals: each requeues the action, neither is an attempt.
+    for _ in 0..2 {
+        drop(
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(store_unreachable()),
+                )
+                .await,
+        );
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+        rx_from_worker =
+            setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => {}
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // The action's own first failure still has its whole retry budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // The third store refusal is over the worker-loss budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(store_unreachable()),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+            assert!(
+                err.to_string().contains(
+                    "could not reach its store 3 times, more than max_worker_loss_retries (2)"
+                ),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
+    }
+
+    Ok(())
+}
+
+/// An `Unavailable` the worker did not mark as a store it could not reach (a
+/// Buck2 capture helper that failed, a result the scheduler lost) is an
+/// attempt like any other error, not a store loss.
+#[nativelink_test]
+async fn unmarked_unavailable_error_spends_max_job_retries_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 5,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([98u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert!(
+                err.to_string()
+                    .contains("attempted to execute too many times 2 > 1"),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
     }
 
     Ok(())
@@ -2286,13 +2857,14 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 /// hiding the cluster-side root cause behind a TIMEOUT/NO STATUS surface.
 /// After the fix, disconnects count as attempts and exceed the cap.
 #[nativelink_test]
-async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Error> {
+async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
 
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
             max_job_retries: 1,
+            max_worker_loss_retries: 1,
             ..Default::default()
         },
         memory_awaited_action_db_factory(
@@ -2325,13 +2897,13 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
         OperationId::from(operation_id.as_str())
     };
 
-    // First disconnect: should requeue (attempts=1, not yet > max_job_retries=1).
+    // First loss: should requeue (worker_losses=1, not yet > max_worker_loss_retries=1).
     drop(
         scheduler
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );
@@ -2359,15 +2931,15 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
         );
     }
 
-    // Second disconnect: now attempts=2 > max_job_retries=1, so the action
-    // must transition to Completed with an error mentioning the disconnect
-    // loop, not silently requeue.
+    // Second loss: now worker_losses=2 > max_worker_loss_retries=1, so the
+    // action must transition to Completed with an error saying the worker
+    // keeps being lost, not silently requeue. max_job_retries is untouched.
     drop(
         scheduler
             .update_action(
                 &worker_id,
                 &operation_id,
-                UpdateOperationType::UpdateWithDisconnect,
+                UpdateOperationType::UpdateWithDisconnect(None),
             )
             .await,
     );
@@ -2385,8 +2957,14 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
             .expect("Completed action from disconnect cap must carry an error");
         assert!(
             err.to_string()
-                .contains("Worker disconnected repeatedly while executing this action"),
+                .contains("was lost 2 times, more than max_worker_loss_retries (1)"),
             "Error message did not mention disconnect loop: {err}",
+        );
+        assert_eq!(
+            err.code,
+            Code::FailedPrecondition,
+            "the cap must use a code the client does not retry, got {:?}",
+            err.code
         );
     }
 
@@ -2401,7 +2979,9 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
 #[nativelink_test]
 async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
     use nativelink_scheduler::awaited_action_db::AwaitedAction;
-    use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+    use nativelink_scheduler::simple_scheduler_state_manager::{
+        SimpleSchedulerStateManager, TimeoutCause,
+    };
 
     // Anchor MockClock so MockInstantWrapped::now() == make_system_time(0).
     MockClock::set_time(Duration::from_secs(NOW_TIME));
@@ -2427,8 +3007,8 @@ async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
     let task_change_notify = Arc::new(Notify::new());
     let state_mgr = SimpleSchedulerStateManager::new(
         /* max_job_retries */ 1,
-        /* no_event_action_timeout */ Duration::from_secs(60),
-        /* client_action_timeout */ Duration::from_secs(60),
+        /* no_event_action_timeout */ Duration::from_mins(1),
+        /* client_action_timeout */ Duration::from_mins(1),
         /* max_executing_timeout */ Duration::ZERO,
         memory_awaited_action_db_factory(
             0,
@@ -2444,12 +3024,25 @@ async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
         "Should not time out before Action.timeout elapses",
     );
 
-    // Advance past the 2s per-action deadline.
+    // Past the 2s per-action deadline, but within the grace a live worker
+    // has to report its own DEADLINE_EXCEEDED result.
     MockClock::advance(Duration::from_secs(5));
 
     assert!(
-        state_mgr.should_timeout_operation(&awaited_action).await,
-        "Scheduler must mark Executing action timed out once Action.timeout has elapsed",
+        !state_mgr.should_timeout_operation(&awaited_action).await,
+        "Should not time out within the grace after Action.timeout",
+    );
+
+    // Past Action.timeout plus the grace (no_event_action_timeout).
+    MockClock::advance(Duration::from_mins(1));
+
+    assert_eq!(
+        state_mgr.timeout_cause(&awaited_action).await,
+        Some(TimeoutCause::ActionTimeout {
+            timeout: Duration::from_secs(2),
+            grace: Duration::from_mins(1),
+        }),
+        "Scheduler must time out an Executing action once Action.timeout plus the grace has elapsed",
     );
 
     Ok(())
@@ -2669,69 +3262,497 @@ async fn client_reconnect_keeps_action_alive() -> Result<(), Error> {
 #[nativelink_test]
 async fn client_timesout_job_then_same_action_requested() -> Result<(), Error> {
     const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
-    let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
-        &SimpleSpec {
-            worker_timeout_s: WORKER_TIMEOUT_S,
-            client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+    for backend in Backend::ALL {
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let action_digest = DigestInfo::new([99u8; 32], 512);
+
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
+
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
+
+            MockClock::advance(Duration::from_secs(2));
+            scheduler.do_try_match_for_test().await?;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
+
+        MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
+
+        {
+            let insert_timestamp = make_system_time(1);
+            let mut action_listener =
+                setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+            // We should get one notification saying it's queued.
+            assert_eq!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Queued,
+                "{backend:?}"
+            );
+
+            let changed_fut = action_listener.changed();
+            tokio::pin!(changed_fut);
+
+            MockClock::advance(Duration::from_secs(2));
+            tokio::task::yield_now().await;
+            assert_eq!(poll!(&mut changed_fut), Poll::Pending, "{backend:?}");
+        }
+    }
+
+    Ok(())
+}
+
+/// TRA-2340: a client that comes back through `WaitExecution` after a gap
+/// longer than `client_action_timeout_s`, before anything has retired its
+/// action, finds the action live, and the action stays live afterwards.
+/// Before the fix, the lookup judged the stale keepalive first, so the
+/// rejoining client's own request retired the action and it got nothing.
+#[nativelink_test]
+async fn wait_execution_rejoin_past_the_client_timeout_finds_the_action_live() -> Result<(), Error>
+{
+    const CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+    // Kept longer than every gap, so the memory backend's client mapping (an
+    // evicting map on this window) outlives the client's absence and the
+    // case isolates the keepalive judgement. The mapping's own expiry is a
+    // separate mechanism (TRA-2341).
+    const RETAIN_COMPLETED_FOR_S: u32 = 3_600;
+    for backend in Backend::ALL {
+        // Inside the timeout (the control), just past it, and well past it.
+        for gap_s in [
+            CLIENT_ACTION_TIMEOUT_S - 1,
+            CLIENT_ACTION_TIMEOUT_S + 1,
+            CLIENT_ACTION_TIMEOUT_S * 10,
+        ] {
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    worker_timeout_s: WORKER_TIMEOUT_S,
+                    client_action_timeout_s: CLIENT_ACTION_TIMEOUT_S,
+                    retain_completed_for_s: RETAIN_COMPLETED_FOR_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([98u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            // The client goes away; no matching pass or listing runs in the
+            // meantime, so nothing has retired the action.
+            drop(action_listener);
+            MockClock::advance(Duration::from_secs(gap_s));
+
+            let Some(mut rejoined) = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await
+            else {
+                panic!("{backend:?}, gap {gap_s} s: the rejoin found nothing");
+            };
+            // A new listener's first change is the state it joined at.
+            let stage = rejoined.changed().await?.0.stage.clone();
+            assert_eq!(
+                stage,
+                ActionStage::Queued,
+                "{backend:?}, gap {gap_s} s: the rejoining client found the action retired"
+            );
+
+            // The rejoin counts as the client being back: a matching pass
+            // and a listing right after it do not retire the action.
+            scheduler.do_try_match_for_test().await?;
+            // Listed the way the matcher lists: highest priority first.
+            let mut queued = scheduler
+                .filter_operations(OperationFilter {
+                    stages: OperationStageFlags::Queued,
+                    order_by_priority_direction: Some(OrderDirection::Desc),
+                    ..Default::default()
+                })
+                .await?;
+            while queued.next().await.is_some() {}
+            let changed = rejoined.changed();
+            tokio::pin!(changed);
+            assert_eq!(
+                poll!(&mut changed),
+                Poll::Pending,
+                "{backend:?}, gap {gap_s} s: the action changed state right after the rejoin"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/05`: once the action
+/// has completed, a `WaitExecution` by the client's id gets the result for
+/// the retention window and nothing after it, the same on both backends.
+#[nativelink_test]
+async fn wait_execution_after_completion_answers_for_the_retention_window() -> Result<(), Error> {
+    const RETAIN_S: u64 = 60;
+    for backend in Backend::ALL {
+        for (after_s, kept) in [
+            (0, true),
+            (RETAIN_S - 1, true),
+            (RETAIN_S + 1, false),
+            (RETAIN_S * 10, false),
+        ] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler { scheduler, .. } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    retain_completed_for_s: u32::try_from(RETAIN_S).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let worker_id = WorkerId("worker_id".to_string());
+            let mut rx_from_worker =
+                setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default())
+                    .await?;
+            let mut action_listener = setup_action(
+                &scheduler,
+                DigestInfo::new([97u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let client_id = action_listener
+                .as_state()
+                .await?
+                .0
+                .client_operation_id
+                .clone();
+            let Some(update_for_worker::Update::StartAction(start_execute)) =
+                rx_from_worker.recv().await.unwrap().update
+            else {
+                panic!("{backend:?}: expected StartAction");
+            };
+            let result = ActionResult {
+                exit_code: 3,
+                ..ActionResult::default()
+            };
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &OperationId::from(start_execute.operation_id),
+                    UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                        result.clone(),
+                    )),
+                )
+                .await?;
+            while !matches!(
+                action_listener.changed().await?.0.stage,
+                ActionStage::Completed(_)
+            ) {}
+            drop(action_listener);
+
+            MockClock::advance(Duration::from_secs(after_s));
+            let found = scheduler
+                .filter_operations(OperationFilter {
+                    client_operation_id: Some(client_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .next()
+                .await;
+            match (found, kept) {
+                (Some(rejoined), true) => {
+                    let stage = rejoined.as_state().await?.0.stage.clone();
+                    assert_eq!(
+                        stage,
+                        ActionStage::Completed(result),
+                        "{backend:?}, {after_s} s after completion"
+                    );
+                }
+                (None, false) => {}
+                (found, kept) => panic!(
+                    "{backend:?}, {after_s} s after completion: expected kept={kept}, found={}",
+                    found.is_some()
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RFC-0064 `action-retention-tied-to-real-listeners/04`: the client
+/// keepalive key carries the client timeout as its TTL and every refresh
+/// renews it, so a keepalive never outlives the decision it informs and a
+/// waiting client's never runs out.
+#[nativelink_test]
+async fn the_client_keepalive_key_expires_with_the_client_timeout() -> Result<(), Error> {
+    for timeout_s in [30, 3_600] {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(
+            Backend::FakeRedis,
+            &SimpleSpec {
+                client_action_timeout_s: timeout_s,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let fake = fake_redis.expect("the fake Redis backend");
+        let mut action_listener = setup_action(
+            &scheduler,
+            DigestInfo::new([96u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let keepalive = || {
+            let (key, seconds) = fake
+                .expiries
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key.starts_with("ck_"))
+                .map(|(key, seconds)| (key.clone(), *seconds))
+                .expect("the client's keepalive was written");
+            let left = fake.time_to_live(&key);
+            (key, seconds, left)
+        };
+
+        // A waiting client refreshes its keepalive once it is ten seconds
+        // old; the listener does that on its way to waiting for a change.
+        let full = Duration::from_secs(timeout_s);
+        for refresh in 0..2 {
+            MockClock::advance(Duration::from_secs(11));
+            drop(tokio::time::timeout(Duration::from_millis(200), action_listener.changed()).await);
+            let (key, seconds, left) = keepalive();
+            assert_eq!(
+                seconds,
+                i64::try_from(timeout_s).unwrap(),
+                "{key}, refresh {refresh}"
+            );
+            assert_eq!(
+                left,
+                Some(full),
+                "{key}: refresh {refresh} renews the whole TTL"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// How many actions a listing of the queued stage returns, read as the
+/// matcher reads it: no client behind it.
+async fn queued_count(scheduler: &SimpleScheduler) -> Result<usize, Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
             ..Default::default()
-        },
-        memory_awaited_action_db_factory(
-            0,
-            &task_change_notify.clone(),
-            MockInstantWrapped::default,
-        ),
-        || async move {},
-        task_change_notify,
-        MockInstantWrapped::default,
-        None,
-    );
-    let action_digest = DigestInfo::new([99u8; 32], 512);
+        })
+        .await?;
+    let mut count = 0;
+    while queued.next().await.is_some() {
+        count += 1;
+    }
+    Ok(count)
+}
 
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
+/// Lists the queued stage with no client behind the listing, as the matcher
+/// and the admin listings do, and waits briefly on each result's change: an
+/// internal subscriber's `changed()` is where a keepalive could be written.
+async fn read_queued_as_the_scheduler_does(scheduler: &SimpleScheduler) -> Result<(), Error> {
+    let mut queued = scheduler
+        .filter_operations(OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        })
+        .await?;
+    while let Some(mut result) = queued.next().await {
+        drop(tokio::time::timeout(Duration::from_millis(5), result.changed()).await);
+    }
+    Ok(())
+}
 
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
+/// A client waiting passively by `WaitExecution` keeps its queued action
+/// for as long as it waits, past the client timeout; an action nobody waits
+/// on is retired one timeout and one sweep after its client left.
+#[nativelink_test]
+async fn a_passive_wait_execution_keeps_its_action_and_an_abandoned_one_goes() -> Result<(), Error>
+{
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler { scheduler, .. } = scheduler_on(
+            backend,
+            &SimpleSpec {
+                client_action_timeout_s: TIMEOUT_S,
+                ..Default::default()
+            },
+        )
+        .await?;
+        // A is submitted and then waited on by name only, as a client does
+        // after its Execute stream broke.
+        let submitted = setup_action(
+            &scheduler,
+            DigestInfo::new([95u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+        let a_id = submitted.as_state().await?.0.client_operation_id.clone();
+        drop(submitted);
+        let mut a = scheduler
+            .filter_operations(OperationFilter {
+                client_operation_id: Some(a_id),
+                ..Default::default()
+            })
+            .await?
+            .next()
+            .await
+            .expect("A is found by name");
+        // B is submitted and abandoned.
+        drop(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([94u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?,
         );
 
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
-
-        MockClock::advance(Duration::from_secs(2));
-        scheduler.do_try_match_for_test().await.unwrap();
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
-    }
-
-    MockClock::advance(Duration::from_secs(CLIENT_ACTION_TIMEOUT_S + 1));
-
-    {
-        let insert_timestamp = make_system_time(1);
-        let mut action_listener =
-            setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp)
-                .await
-                .unwrap();
-
-        // We should get one notification saying it's queued.
-        assert_eq!(
-            action_listener.changed().await.unwrap().0.stage,
-            ActionStage::Queued
+        let mut b_retired_at = None;
+        for second in 1..=120u64 {
+            MockClock::advance(Duration::from_secs(1));
+            // A's listener is polled as the server's response stream polls it.
+            if let Ok(changed) = tokio::time::timeout(Duration::from_millis(20), a.changed()).await
+            {
+                let stage = changed?.0.stage.clone();
+                assert!(
+                    !stage.is_finished(),
+                    "{backend:?}: A ended at {second} s: {stage:?}"
+                );
+            }
+            scheduler.do_try_match_for_test().await?;
+            scheduler.sweep_abandoned_queued_actions_for_test().await?;
+            if b_retired_at.is_none() && queued_count(&scheduler).await? == 1 {
+                b_retired_at = Some(second);
+            }
+        }
+        let retired_at = b_retired_at.expect("B is retired");
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at),
+            "{backend:?}: B retired at {retired_at} s"
         );
-
-        let changed_fut = action_listener.changed();
-        tokio::pin!(changed_fut);
-
-        MockClock::advance(Duration::from_secs(2));
-        tokio::task::yield_now().await;
-        assert_eq!(poll!(&mut changed_fut), Poll::Pending);
+        assert_eq!(
+            queued_count(&scheduler).await?,
+            1,
+            "{backend:?}: A is still queued"
+        );
     }
+    Ok(())
+}
 
+/// The scheduler's own readers (queued listings, matching passes, the
+/// abandoned-queue sweep) never refresh a client's keepalive. An abandoned
+/// action is retired at the same second however often they read it, and on
+/// Redis its keepalive key is never rewritten after the client left.
+#[nativelink_test]
+async fn internal_readers_never_keep_an_abandoned_action_alive() -> Result<(), Error> {
+    const TIMEOUT_S: u64 = 30;
+    for backend in Backend::ALL {
+        let mut retired_at = Vec::new();
+        for reads_per_second in [0, 1, 60] {
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(
+                backend,
+                &SimpleSpec {
+                    client_action_timeout_s: TIMEOUT_S,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            drop(
+                setup_action(
+                    &scheduler,
+                    DigestInfo::new([93u8; 32], 512),
+                    HashMap::new(),
+                    make_system_time(1),
+                )
+                .await?,
+            );
+            let keepalive_key = |fake: &FakeRedisBackend<RedisSubscriptionManager>| {
+                let table = fake.table.lock().unwrap();
+                table
+                    .iter()
+                    .find(|(key, _)| key.starts_with("ck_"))
+                    .map(|(key, value)| (key.clone(), format!("{value:?}")))
+            };
+            let written_when_client_left = fake_redis.as_ref().and_then(keepalive_key);
+
+            let mut retired = None;
+            for second in 1..=60u64 {
+                MockClock::advance(Duration::from_secs(1));
+                for _ in 0..reads_per_second {
+                    read_queued_as_the_scheduler_does(&scheduler).await?;
+                    scheduler.do_try_match_for_test().await?;
+                }
+                if let Some(fake) = &fake_redis {
+                    let now = keepalive_key(fake);
+                    assert!(
+                        now.is_none() || now == written_when_client_left,
+                        "{reads_per_second} reads/s at {second} s: a reader rewrote the keepalive"
+                    );
+                }
+                scheduler.sweep_abandoned_queued_actions_for_test().await?;
+                if retired.is_none() && queued_count(&scheduler).await? == 0 {
+                    retired = Some(second);
+                }
+            }
+            retired_at.push(retired.expect("the abandoned action is retired"));
+        }
+        assert!(
+            retired_at.iter().all(|at| *at == retired_at[0]),
+            "{backend:?}: retired at {retired_at:?} s for 0, 1 and 60 reads a second"
+        );
+        assert!(
+            (TIMEOUT_S..=TIMEOUT_S + 2).contains(&retired_at[0]),
+            "{backend:?}: retired at {} s",
+            retired_at[0]
+        );
+    }
     Ok(())
 }
 
@@ -2785,7 +3806,1944 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     assert!(logs_contain(
         "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
     ));
-    assert!(logs_contain("No workers matched"));
+    assert!(logs_contain("No connected worker can ever run this action"));
 
+    Ok(())
+}
+
+/// Regression test: a finished operation whose client entry is dropped late
+/// (e.g. evicted after the retain window) must not remove the
+/// action-key entry claimed by a newer operation for the same action,
+/// otherwise later requests stop deduplicating onto the live operation.
+#[nativelink_test]
+async fn late_client_drop_does_not_orphan_replacement_operation() -> Result<(), Error> {
+    const NO_EVENT_ACTION_TIMEOUT: Duration = Duration::from_mins(1);
+
+    let task_change_notify = Arc::new(Notify::new());
+    let awaited_action_db = memory_awaited_action_db_factory(
+        0, // Use the default retain_completed_for_s (60s).
+        &task_change_notify,
+        MockInstantWrapped::default,
+    );
+    let action_info = make_base_action_info(make_system_time(0), DigestInfo::new([99u8; 32], 512));
+
+    // Client 1 creates operation A for the action key.
+    let client1_id = OperationId::default();
+    let subscriber1 = awaited_action_db
+        .add_action(
+            client1_id.clone(),
+            action_info.clone(),
+            NO_EVENT_ACTION_TIMEOUT,
+        )
+        .await?;
+    let mut awaited_action_a = subscriber1.borrow().await?;
+    let operation_id_a = awaited_action_a.operation_id().clone();
+
+    // Operation A finishes, releasing its action-key entry.
+    let mut completed_state = awaited_action_a.state().as_ref().clone();
+    completed_state.stage = ActionStage::Completed(ActionResult::default());
+    awaited_action_a.worker_set_state(Arc::new(completed_state), make_system_time(1));
+    awaited_action_db
+        .update_awaited_action(awaited_action_a)
+        .await?;
+
+    // Let the client 1 entry go stale past the retain window without dropping
+    // the subscriber, mimicking a client that vanished without cleanup.
+    MockClock::advance(Duration::from_mins(2));
+
+    // Client 2 requests the same action; the key is free, so a new operation B
+    // claims it. Inserting client 2 also evicts the stale client 1 entry,
+    // queueing the ClientDroppedOperation cleanup for operation A.
+    let client2_id = OperationId::default();
+    let subscriber2 = awaited_action_db
+        .add_action(
+            client2_id.clone(),
+            action_info.clone(),
+            NO_EVENT_ACTION_TIMEOUT,
+        )
+        .await?;
+    let operation_id_b = subscriber2.borrow().await?.operation_id().clone();
+    assert_ne!(operation_id_a, operation_id_b);
+
+    // Let the background event task process client 1's drop. The cleanup of
+    // finished operation A must leave operation B's action-key entry alone.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    // Client 3 requesting the same action must join operation B instead of
+    // creating a third operation.
+    let client3_id = OperationId::default();
+    let subscriber3 = awaited_action_db
+        .add_action(client3_id.clone(), action_info, NO_EVENT_ACTION_TIMEOUT)
+        .await?;
+    let operation_id_c = subscriber3.borrow().await?.operation_id().clone();
+    assert_eq!(operation_id_b, operation_id_c);
+
+    assert!(!logs_contain("out of sync"));
+    assert!(!logs_contain("should have had the unique_key"));
+
+    Ok(())
+}
+
+/// Wraps a real `AwaitedActionDb`, but hides queued actions from
+/// `get_range_of_actions` while `suppress_queued_searches` is set. This
+/// simulates an eventually consistent backend (e.g. Redis), where a
+/// (re-)queued operation may not yet be visible to the search that its own
+/// change notification triggered.
+#[derive(MetricsComponent)]
+struct QueuedSearchSuppressingDb<A: AwaitedActionDb> {
+    inner: A,
+    suppress_queued_searches: Arc<AtomicBool>,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for QueuedSearchSuppressingDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let items = if matches!(state, SortedAwaitedActionState::Queued)
+            && self.suppress_queued_searches.load(Ordering::Acquire)
+        {
+            Vec::new()
+        } else {
+            self.inner
+                .get_range_of_actions(state, start, end, desc)
+                .await?
+                .collect::<Vec<_>>()
+                .await
+        };
+        Ok(futures::stream::iter(items))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+/// Common setup for the fallback match interval tests: a scheduler over a
+/// `QueuedSearchSuppressingDb` with a channel that receives a message after
+/// every completed matching pass.
+type FallbackTestSetup = (
+    Arc<SimpleScheduler>,
+    Arc<Notify>,
+    Arc<AtomicBool>,
+    mpsc::UnboundedReceiver<()>,
+);
+
+fn make_fallback_test_scheduler(fallback_match_interval_s: i64) -> FallbackTestSetup {
+    let task_change_notify = Arc::new(Notify::new());
+    let suppress_queued_searches = Arc::new(AtomicBool::new(false));
+    let (match_tx, match_rx) = mpsc::unbounded_channel();
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            fallback_match_interval_s,
+            ..Default::default()
+        },
+        QueuedSearchSuppressingDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            suppress_queued_searches: suppress_queued_searches.clone(),
+        },
+        move || {
+            let match_tx = match_tx.clone();
+            async move {
+                let _ = match_tx.send(());
+            }
+        },
+        task_change_notify.clone(),
+        MockInstantWrapped::default,
+        None,
+    );
+    (
+        scheduler,
+        task_change_notify,
+        suppress_queued_searches,
+        match_rx,
+    )
+}
+
+/// Waits until no matching pass has completed for a short while, which
+/// guarantees no notification permits are pending and no pass is in flight.
+async fn wait_for_matching_passes_to_settle(match_rx: &mut mpsc::UnboundedReceiver<()>) {
+    while tokio::time::timeout(Duration::from_millis(200), match_rx.recv())
+        .await
+        .is_ok()
+    {}
+}
+
+// Regression test for a queued operation not being visible to the matching
+// engine search that its own change notification triggered (e.g. an OOM-killed
+// worker's operation being re-queued while the Redis search index is stale).
+// The fallback match interval must rescue such an operation.
+#[nativelink_test(start_paused = true)]
+async fn fallback_match_interval_rescues_action_hidden_from_search() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, _task_change_notify, suppress_queued_searches, mut match_rx) =
+        make_fallback_test_scheduler(1 /* fallback_match_interval_s */);
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    // Hide the action from the matching engine's queued searches, then add it.
+    suppress_queued_searches.store(true, Ordering::Release);
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    wait_for_matching_passes_to_settle(&mut match_rx).await;
+
+    // All notification-triggered passes ran while the action was hidden, so
+    // nothing was assigned to the worker.
+    assert_eq!(poll!(Box::pin(rx_from_worker.recv())), Poll::Pending);
+
+    // Make the action visible again. No notification fires for this, so only
+    // the fallback match interval can rescue the action now.
+    suppress_queued_searches.store(false, Ordering::Release);
+
+    let msg_for_worker = tokio::time::timeout(Duration::from_secs(30), rx_from_worker.recv())
+        .await
+        .expect("Fallback matching pass should have assigned the action")
+        .unwrap();
+    match msg_for_worker.update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            assert_eq!(
+                start_execute.execute_request.unwrap().action_digest,
+                Some(action_digest.into())
+            );
+        }
+        other => panic!("Expected StartAction, got: {other:?}"),
+    }
+
+    // Client should see the action executing.
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    assert_eq!(action_state.stage, ActionStage::Executing);
+
+    Ok(())
+}
+
+// With the fallback match interval disabled, the same scenario leaves the
+// action stuck in the queued state until an unrelated event triggers another
+// matching pass. This documents the behavior the fallback interval fixes.
+#[nativelink_test(start_paused = true)]
+async fn fallback_match_interval_disabled_leaves_hidden_action_queued() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, task_change_notify, suppress_queued_searches, mut match_rx) =
+        make_fallback_test_scheduler(-1 /* fallback_match_interval_s */);
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+
+    // Hide the action from the matching engine's queued searches, then add it.
+    suppress_queued_searches.store(true, Ordering::Release);
+    let insert_timestamp = make_system_time(1);
+    let _action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    wait_for_matching_passes_to_settle(&mut match_rx).await;
+    suppress_queued_searches.store(false, Ordering::Release);
+
+    // Without the fallback interval nothing ever rescues the action.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(30), rx_from_worker.recv())
+            .await
+            .is_err(),
+        "Action should stay queued with the fallback match interval disabled"
+    );
+
+    // Only an unrelated task change event triggers another matching pass.
+    task_change_notify.notify_one();
+    let msg_for_worker = tokio::time::timeout(Duration::from_secs(5), rx_from_worker.recv())
+        .await
+        .expect("Task change notification should have assigned the action")
+        .unwrap();
+    assert!(matches!(
+        msg_for_worker.update,
+        Some(update_for_worker::Update::StartAction(_))
+    ));
+
+    Ok(())
+}
+
+/// Regression test: when the worker reports an action finished but the
+/// state-manager update fails because the operation was already completed
+/// (e.g. the client-timeout sweep marked it `DeadlineExceeded` while the
+/// worker was still executing it), the worker's platform properties must
+/// still be restored. They used to leak, permanently shrinking the worker's
+/// capacity until no action could match it.
+#[nativelink_test]
+async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            // Large retain window so the stale client entry is not evicted:
+            // the operation must still exist (as finished) when the worker
+            // reports, since a missing operation is tolerated by the state
+            // manager and would not reproduce the leak.
+            100_000,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    // The worker has a single cpu slot, so one leaked slot is enough to make
+    // it unmatchable.
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(1),
+        )])),
+    )
+    .await?;
+
+    let platform_properties = HashMap::from([("cpu_count".to_string(), "1".to_string())]);
+
+    // Action 1 is assigned to the worker, consuming the only slot.
+    let _action1_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([1u8; 32], 512),
+        platform_properties.clone(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => start_execute.operation_id,
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+
+    // The client stops sending keepalives past client_action_timeout_s, then
+    // a sweep over all operations times the executing operation out, marking
+    // it Completed(DeadlineExceeded) while the worker still runs it.
+    MockClock::advance(Duration::from_mins(2));
+    drop(
+        scheduler
+            .filter_operations(OperationFilter::default())
+            .await?
+            .collect::<Vec<_>>()
+            .await,
+    );
+    assert!(logs_contain(
+        "Operation timed out having no more clients listening"
+    ));
+
+    // Action 2 queues: the worker's only slot is still held by action 1.
+    let _action2_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([2u8; 32], 512),
+        platform_properties,
+        make_system_time(2),
+    )
+    .await?;
+
+    // The worker now reports action 1 finished. The state-manager update
+    // fails ("already completed"), but the worker's slot must still be freed.
+    let update_result = scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(operation_id),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                ActionResult::default(),
+            )),
+        )
+        .await;
+    assert_eq!(
+        update_result
+            .expect_err("state-manager update should fail")
+            .code,
+        Code::Internal
+    );
+
+    // With the slot restored, action 2 must get matched to the worker.
+    scheduler.do_try_match_for_test().await?;
+    match rx_from_worker
+        .try_recv()
+        .expect("worker should have been sent action 2")
+        .update
+    {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+
+    Ok(())
+}
+
+/// Setup shared by the kill tests: a single-slot worker running action 1,
+/// which a client-timeout sweep then finishes server-side while the worker
+/// still holds it. Returns the scheduler, the worker's channel and the
+/// operation id the worker was given.
+async fn setup_worker_holding_a_finished_operation(
+    origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+) -> Result<
+    (
+        Arc<SimpleScheduler>,
+        mpsc::Receiver<UpdateForWorker>,
+        OperationId,
+        Box<dyn ActionStateResult>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            // Keep the finished operation around, so its state can be
+            // inspected after the worker reports.
+            100_000,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        origin_event_tx,
+    );
+
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(1),
+        )])),
+    )
+    .await?;
+
+    let action1_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([1u8; 32], 512),
+        HashMap::from([("cpu_count".to_string(), "1".to_string())]),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => start_execute.operation_id,
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+
+    // Still executing: nothing to kill.
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // The client stops sending keepalives past client_action_timeout_s, then
+    // a sweep over all operations times the executing operation out, marking
+    // it Completed(DeadlineExceeded) while the worker still runs it.
+    MockClock::advance(Duration::from_mins(2));
+    drop(
+        scheduler
+            .filter_operations(OperationFilter::default())
+            .await?
+            .collect::<Vec<_>>()
+            .await,
+    );
+
+    Ok((
+        scheduler,
+        rx_from_worker,
+        OperationId::from(operation_id),
+        action1_listener,
+    ))
+}
+
+#[nativelink_test]
+async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, mut rx_from_worker, operation_id, action1_listener) =
+        setup_worker_holding_a_finished_operation(None).await?;
+    assert!(logs_contain(
+        "Operation timed out having no more clients listening"
+    ));
+
+    // The worker is told to kill it, exactly once.
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv().unwrap(),
+        UpdateForWorker {
+            update: Some(update_for_worker::Update::KillOperationRequest(
+                KillOperationRequest {
+                    operation_id: operation_id.to_string(),
+                }
+            )),
+        }
+    );
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // Action 2 queues: the worker's only slot is still held by action 1
+    // until the worker confirms it stopped.
+    let _action2_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([2u8; 32], 512),
+        HashMap::from([("cpu_count".to_string(), "1".to_string())]),
+        make_system_time(2),
+    )
+    .await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // The killed action reports back with the kill's error. That is not
+    // forwarded to the state manager (it would be "already completed" here,
+    // or a burnt retry had the operation been requeued), so it is not an
+    // error, and the slot is freed.
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::Aborted,
+                "Command was killed by scheduler"
+            )),
+        )
+        .await?;
+    let (action1_state, _) = action1_listener.as_state().await?;
+    match &action1_state.stage {
+        ActionStage::Completed(result) => assert_eq!(
+            result.error.as_ref().map(|err| err.code),
+            Some(Code::DeadlineExceeded)
+        ),
+        stage => panic!("Expected the client timeout result to stand, got : {stage:?}"),
+    }
+
+    scheduler.do_try_match_for_test().await?;
+    match rx_from_worker
+        .try_recv()
+        .expect("worker should have been sent action 2")
+        .update
+    {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), Error> {
+    let (scheduler, rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(None).await?;
+
+    // The worker's connection is gone, so the kill cannot be delivered.
+    drop(rx_from_worker);
+    let err = scheduler
+        .kill_revoked_operations()
+        .await
+        .expect_err("an undeliverable kill should evict the worker");
+    assert_eq!(err.code, Code::Internal);
+    assert!(logs_contain("Evicting worker from pool"));
+
+    Ok(())
+}
+
+// An operation the worker was told to kill was already given up on: evicting
+// the worker for not acknowledging the kill reports no lost attempt.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_kill()
+-> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// The worker can still hold an operation that ended elsewhere before the
+// kill goes out; evicting it then reports no lost attempt either.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_that_ended_elsewhere()
+-> Result<(), Error> {
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, _rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 1_000).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(None).await?;
+
+    // The kill is delivered, but the worker is wedged (nativelink#2672): it
+    // keeps its keepalives up and never reports the operation.
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+
+    // Inside the acknowledgement window the fresh keepalives shield it from
+    // the ordinary worker timeout and nothing is evicted.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 30, None)
+        .await?;
+    scheduler.remove_timedout_workers(NOW_TIME + 30).await?;
+    assert!(!logs_contain("Evicting worker from pool"));
+
+    // Past the window the worker is evicted despite looking alive; its
+    // keepalives are exactly what would otherwise let the dead operation
+    // hold the slot forever.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("did not acknowledge a kill in time"));
+    assert!(logs_contain("Evicting worker from pool"));
+
+    Ok(())
+}
+
+fn start_execute_digest(update: UpdateForWorker) -> (String, DigestInfo) {
+    match update.update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            let digest = start_execute
+                .execute_request
+                .and_then(|request| request.action_digest)
+                .and_then(|digest| DigestInfo::try_from(digest).ok())
+                .expect("StartExecute carries an action digest");
+            (start_execute.operation_id, digest)
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+}
+
+/// A worker that frees up while the pass is past the head of the queue
+/// gets the oldest waiting action, not the one the pass happens to be
+/// reading. Three actions, one worker with one slot: the first takes the
+/// slot; the pass reads the second, which waits; the worker finishes; the
+/// pass reads the third, and the second must be the one dispatched.
+#[nativelink_test]
+async fn freed_capacity_mid_pass_goes_to_the_oldest_waiting_action_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: None,
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::default(),
+        tx,
+        NOW_TIME,
+        1,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    let digests = [
+        DigestInfo::new([1u8; 32], 512),
+        DigestInfo::new([2u8; 32], 512),
+        DigestInfo::new([3u8; 32], 512),
+    ];
+    // The listeners stay alive so the actions keep their clients.
+    let _listener_a =
+        setup_action(&scheduler, digests[0], HashMap::new(), make_system_time(1)).await?;
+    let _listener_b =
+        setup_action(&scheduler, digests[1], HashMap::new(), make_system_time(2)).await?;
+    let _listener_c =
+        setup_action(&scheduler, digests[2], HashMap::new(), make_system_time(3)).await?;
+
+    // The pass reads the first action: it takes the only slot.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (first_operation_id, first_digest) =
+        start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(first_digest, digests[0]);
+
+    // The pass reads the second: the worker is full, so it waits.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "nothing should be dispatched while the worker is full"
+    );
+
+    // The worker finishes the first action while the pass is still running.
+    let action_result = ActionResult {
+        output_files: Vec::new(),
+        output_folders: Vec::new(),
+        output_file_symlinks: Vec::new(),
+        output_directory_symlinks: Vec::new(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(first_operation_id),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(action_result)),
+        )
+        .await?;
+
+    // The pass reads the third action and finds room. The room goes to
+    // the second action, which has waited longer.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (_, dispatched) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        dispatched, digests[1],
+        "the oldest waiting action takes the freed slot"
+    );
+
+    Ok(())
+}
+
+/// A completed result for `worker_id`, for tests that finish an action to
+/// free its slot.
+fn completed_result(worker_id: &WorkerId) -> ActionResult {
+    ActionResult {
+        output_files: Vec::new(),
+        output_folders: Vec::new(),
+        output_file_symlinks: Vec::new(),
+        output_directory_symlinks: Vec::new(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    }
+}
+
+/// Parked actions are offered room in the order the queue listed them, not
+/// shape by shape. Two actions fill a two-slot worker; three more of two
+/// shapes park in listing order A1, B1, A2; both slots free up mid-pass;
+/// A1 and B1 must take them, not A1 and A2.
+#[nativelink_test]
+async fn room_opening_mid_pass_keeps_the_listing_order_across_shapes() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..SimpleSpec::default()
+        },
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: None,
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(8),
+        )])),
+        tx,
+        NOW_TIME,
+        2,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    let cpu = |n: &str| HashMap::from([("cpu_count".to_string(), n.to_string())]);
+    let digests: Vec<DigestInfo> = (1..=6u8).map(|i| DigestInfo::new([i; 32], 512)).collect();
+    // Listing order: two fillers, then A1 (cpu 1), B1 (cpu 2), A2 (cpu 1),
+    // then one more to read after the room opens.
+    let shapes = ["1", "1", "1", "2", "1", "1"];
+    // The listeners stay alive so the actions keep their clients.
+    let _listeners =
+        futures::future::try_join_all(digests.iter().enumerate().map(|(i, digest)| {
+            setup_action(
+                &scheduler,
+                *digest,
+                cpu(shapes[i]),
+                make_system_time(u64::try_from(i).unwrap() + 1),
+            )
+        }))
+        .await?;
+
+    // The two fillers take the two slots.
+    gate.add_permits(2);
+    tokio::task::yield_now().await;
+    let (first_id, first) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    let (second_id, second) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!((first, second), (digests[0], digests[1]));
+
+    // A1, B1 and A2 are read while the worker is full and park.
+    gate.add_permits(3);
+    tokio::task::yield_now().await;
+    assert!(poll!(Box::pin(rx_from_worker.recv())).is_pending());
+
+    // Both fillers finish while the pass is still running.
+    for id in [first_id, second_id] {
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+    }
+
+    // The pass reads the sixth action and sees the room. It goes to A1 then
+    // B1, the two oldest parked, whatever their shapes.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (_, third) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    let (_, fourth) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        (third, fourth),
+        (digests[2], digests[3]),
+        "room goes to the parked actions in listing order, across shapes"
+    );
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "the worker is full again"
+    );
+    Ok(())
+}
+
+/// A keepalive reporting more free memory is room opening, the same as an
+/// action finishing: with the live memory veto on, the older action parked
+/// for lack of reported memory takes it, not the newer one the pass reads
+/// next.
+#[nativelink_test]
+async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        },
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: Some(listing_gate.clone()),
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(100_000),
+        )])),
+        tx,
+        NOW_TIME,
+        1,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+    // The worker says it has almost nothing free.
+    scheduler
+        .worker_keep_alive_received(
+            &worker_id,
+            NOW_TIME + 1,
+            Some(WorkerLoad {
+                free_memory_kb: 1_000,
+            }),
+        )
+        .await?;
+
+    let memory = HashMap::from([("memory_kb".to_string(), "2000".to_string())]);
+    let digests = [
+        DigestInfo::new([1u8; 32], 512),
+        DigestInfo::new([2u8; 32], 512),
+    ];
+    let _listener_a =
+        setup_action(&scheduler, digests[0], memory.clone(), make_system_time(1)).await?;
+    let _listener_b = setup_action(&scheduler, digests[1], memory, make_system_time(2)).await?;
+
+    // Both are queued before the pass lists the queue, so one pass reads
+    // both. It reads the older action first: vetoed for memory, it parks.
+    listing_gate.add_permits(1);
+    gate.add_permits(1);
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(poll!(Box::pin(rx_from_worker.recv())).is_pending());
+
+    // The resident process exits and the next keepalive says so.
+    scheduler
+        .worker_keep_alive_received(
+            &worker_id,
+            NOW_TIME + 2,
+            Some(WorkerLoad {
+                free_memory_kb: 50_000,
+            }),
+        )
+        .await?;
+
+    // The pass reads the newer action and finds room; the room is the
+    // older action's.
+    gate.add_permits(1);
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    let (_, dispatched) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        dispatched, digests[0],
+        "the oldest waiting action takes the room a memory report opened"
+    );
+    Ok(())
+}
+
+/// How the insert times of a burst of actions are spread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spread {
+    /// Every action carries the same timestamp.
+    Identical,
+    NanosApart,
+    MillisApart,
+    /// Evenly over 999 ms.
+    OverASecond,
+}
+
+impl Spread {
+    const ALL: [Self; 4] = [
+        Self::Identical,
+        Self::NanosApart,
+        Self::MillisApart,
+        Self::OverASecond,
+    ];
+
+    /// Nanoseconds after the burst's first insert for action `index` of
+    /// `count`.
+    fn offset_nanos(self, index: usize, count: usize) -> u64 {
+        let index = index as u64;
+        match self {
+            Self::Identical => 0,
+            Self::NanosApart => index,
+            Self::MillisApart => index * 1_000_000,
+            Self::OverASecond => index * 999_000_000 / (count.max(2) as u64 - 1),
+        }
+    }
+}
+
+/// What opens room on the worker while a matching pass is under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// The running action finishes and frees the worker's only slot.
+    SlotFreed,
+    /// A keepalive reports more free memory, with the live memory veto on.
+    MoreMemoryReported,
+}
+
+/// The digest of action `index` of a burst: distinct, so nothing coalesces.
+fn burst_digest(index: usize) -> DigestInfo {
+    let mut hash = [0xb5u8; 32];
+    hash[..8].copy_from_slice(&(index as u64).to_be_bytes());
+    DigestInfo::new(hash, 512)
+}
+
+/// The next action the worker is told to start: its operation id and its
+/// place in the burst.
+async fn next_dispatch(
+    rx_from_worker: &mut mpsc::Receiver<UpdateForWorker>,
+    index_of: &HashMap<DigestInfo, usize>,
+    case: &str,
+) -> (String, usize) {
+    let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{case}: nothing was dispatched within a minute"))
+        .expect("the worker's stream stays open");
+    let (operation_id, digest) = start_execute_digest(update);
+    (operation_id, index_of[&digest])
+}
+
+/// `count` actions of one priority, queued before the pass lists them, on
+/// one worker with one slot. The pass reads `read_before_room` of them, room
+/// opens, and the pass reads on. The room must go to the oldest action
+/// waiting, not to the one the pass reads next; and so must the slot each
+/// time it frees after that.
+async fn check_room_opening_mid_pass(
+    backend: Backend,
+    count: usize,
+    spread: Spread,
+    read_before_room: usize,
+    room: Room,
+) -> Result<(), Error> {
+    let case = format!(
+        "{backend:?}, {count} actions, {spread:?}, room after {read_before_room} read, {room:?}"
+    );
+    let worker_id = WorkerId("worker_id".to_string());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let spec = match room {
+        Room::SlotFreed => SimpleSpec::default(),
+        Room::MoreMemoryReported => SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        },
+    };
+    // Operation ids count up with the burst, so equal timestamps have a
+    // known order: the queue lists equal sort keys highest id first.
+    let next_id = Arc::new(AtomicU64::new(0));
+    let built = gated_scheduler_on(
+        backend,
+        &spec,
+        gate.clone(),
+        Some(listing_gate.clone()),
+        move || OperationId::from(format!("op-{:06}", next_id.fetch_add(1, Ordering::AcqRel))),
+    )
+    .await?;
+    let scheduler = &built.scheduler;
+
+    let (worker_properties, action_properties) = match room {
+        Room::SlotFreed => (PlatformProperties::default(), HashMap::new()),
+        Room::MoreMemoryReported => (
+            PlatformProperties::new(HashMap::from([(
+                "memory_kb".to_string(),
+                PlatformPropertyValue::Minimum(100_000),
+            )])),
+            HashMap::from([("memory_kb".to_string(), "2000".to_string())]),
+        ),
+    };
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            worker_properties,
+            tx,
+            NOW_TIME,
+            1,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+    if room == Room::MoreMemoryReported {
+        // The worker says it has almost nothing free.
+        scheduler
+            .worker_keep_alive_received(
+                &worker_id,
+                NOW_TIME + 1,
+                Some(WorkerLoad {
+                    free_memory_kb: 1_000,
+                }),
+            )
+            .await?;
+    }
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(count);
+    let mut index_of = HashMap::with_capacity(count);
+    let mut insert_times = Vec::with_capacity(count);
+    for index in 0..count {
+        let digest = burst_digest(index);
+        index_of.insert(digest, index);
+        let inserted = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(NOW_TIME)
+            + Duration::from_nanos(spread.offset_nanos(index, count));
+        insert_times.push(inserted);
+        let mut action_info = make_base_action_info(inserted, digest);
+        let action = Arc::make_mut(&mut action_info);
+        action.platform_properties.clone_from(&action_properties);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut oldest_first: Vec<usize> = (0..count).collect();
+    // SystemTime has 100 ns precision on Windows, so distinct offsets can tie.
+    // Order by the timestamps actually submitted, with the same id tie-breaker.
+    oldest_first.sort_by_key(|&index| (insert_times[index], core::cmp::Reverse(index)));
+    let finish = async |operation_id: String| {
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await
+    };
+
+    if let Some(fake_redis) = &built.fake_redis {
+        fake_redis.reset_command_counts();
+    }
+    // One pass lists the whole queue and reads `read_before_room` of it.
+    listing_gate.add_permits(1);
+    let mut waiting = oldest_first.as_slice();
+    let running = if room == Room::SlotFreed {
+        // The first action read takes the slot; the rest read so far wait.
+        gate.add_permits(1);
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, waiting[0],
+            "{case}: the oldest action takes the slot"
+        );
+        waiting = &waiting[1..];
+        gate.add_permits(read_before_room - 1);
+        Some(operation_id)
+    } else {
+        gate.add_permits(read_before_room);
+        None
+    };
+    tokio::time::timeout(Duration::from_mins(1), async {
+        while gate.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{case}: the pass did not read {read_before_room} actions"));
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "{case}: nothing is dispatched while the worker has no room"
+    );
+
+    if let Some(fake_redis) = &built.fake_redis {
+        // The pass listed the queue once and read each record once; the
+        // action it assigned costs a few reads more. A pass that read every
+        // record again for each action it placed would be far over this.
+        const READS_FOR_AN_ASSIGNMENT: u64 = 4;
+        let counts = fake_redis.command_counts();
+        let count_of = |command: &str| counts.get(command).copied().unwrap_or_default();
+        assert_eq!(count_of("FT.AGGREGATE"), 1, "{case}: one listing a pass");
+        assert!(
+            count_of("HMGET") <= read_before_room as u64 + READS_FOR_AN_ASSIGNMENT,
+            "{case}: {} record reads for {read_before_room} actions read",
+            count_of("HMGET")
+        );
+    }
+    match running {
+        Some(operation_id) => finish(operation_id).await?,
+        None => {
+            scheduler
+                .worker_keep_alive_received(
+                    &worker_id,
+                    NOW_TIME + 2,
+                    Some(WorkerLoad {
+                        free_memory_kb: 50_000,
+                    }),
+                )
+                .await?;
+        }
+    }
+    // The rest of this pass, and every pass after it, reads freely.
+    gate.add_permits(1 << 40);
+    listing_gate.add_permits(1 << 40);
+
+    for &oldest_waiting in waiting.iter().take(3) {
+        let (operation_id, index) = next_dispatch(&mut rx_from_worker, &index_of, &case).await;
+        assert_eq!(
+            index, oldest_waiting,
+            "{case}: room goes to the oldest waiting action, in operation {operation_id}"
+        );
+        finish(operation_id).await?;
+    }
+    drop(listeners);
+    Ok(())
+}
+
+/// Where in a pass over `count` actions room opens: after the first read,
+/// half way, one before the end and at the end.
+fn positions_in_a_pass(count: usize) -> Vec<usize> {
+    let mut positions = vec![1, count / 2, count - 1, count];
+    positions.retain(|&position| position >= 1);
+    positions.dedup();
+    positions
+}
+
+/// A burst of equal-priority actions is served oldest first even when room
+/// opens in the middle of the pass that is reading it, on both backends:
+/// the room goes to the oldest action waiting, not to the one under the
+/// pass's cursor. Equal timestamps go in the order the queue lists them.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_burst_oldest_first() -> Result<(), Error> {
+    for backend in Backend::ALL {
+        for count in [1, 2, 16] {
+            for spread in Spread::ALL {
+                for read_before_room in positions_in_a_pass(count) {
+                    for room in [Room::SlotFreed, Room::MoreMemoryReported] {
+                        check_room_opening_mid_pass(backend, count, spread, read_before_room, room)
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The same at the size the order was first seen to break: 1,000 actions
+/// queued inside a second, and 2,000. Every combination runs on the memory
+/// backend at 1,000 and one of each spread and position at 2,000. On the
+/// fake Redis a burst of 1,000 takes seconds to queue, so it runs the one
+/// row: a millisecond apart, the slot freed half way through the pass.
+#[nativelink_test]
+async fn room_opening_mid_pass_serves_a_thousand_actions_oldest_first() -> Result<(), Error> {
+    let rooms = [Room::SlotFreed, Room::MoreMemoryReported];
+    for spread in Spread::ALL {
+        for read_before_room in positions_in_a_pass(1000) {
+            for room in rooms {
+                check_room_opening_mid_pass(Backend::Memory, 1000, spread, read_before_room, room)
+                    .await?;
+            }
+        }
+    }
+    for (nth, (spread, read_before_room)) in Spread::ALL
+        .into_iter()
+        .zip(positions_in_a_pass(2000))
+        .enumerate()
+    {
+        check_room_opening_mid_pass(
+            Backend::Memory,
+            2000,
+            spread,
+            read_before_room,
+            rooms[nth % 2],
+        )
+        .await?;
+    }
+    check_room_opening_mid_pass(
+        Backend::FakeRedis,
+        1000,
+        Spread::MillisApart,
+        500,
+        Room::SlotFreed,
+    )
+    .await
+}
+
+/// Yields until the fake Redis has seen no command for a while, so the
+/// commands counted next are the ones the step under test causes, not the
+/// tail of the work before it.
+async fn until_redis_is_quiet(fake_redis: &FakeRedisBackend<RedisSubscriptionManager>) {
+    let mut seen = fake_redis.commands_total();
+    let mut quiet = 0;
+    for _ in 0..100_000 {
+        tokio::task::yield_now().await;
+        let now = fake_redis.commands_total();
+        if now == seen {
+            quiet += 1;
+            if quiet == 256 {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet = 0;
+        }
+    }
+    panic!("the fake Redis never went quiet");
+}
+
+/// What one keepalive costs: the Redis commands it causes and the messages
+/// it sends the worker, for a worker holding `in_flight` operations. With
+/// `report` it is a keepalive of today's shape, with the worker's load and
+/// the operations it runs; without, an older worker's, with neither.
+async fn one_keepalive(in_flight: usize, report: bool) -> Result<(u64, usize), Error> {
+    let BackendScheduler {
+        scheduler,
+        fake_redis,
+        ..
+    } = scheduler_on(
+        Backend::FakeRedis,
+        &SimpleSpec {
+            worker_timeout_s: WORKER_TIMEOUT_S,
+            ..SimpleSpec::default()
+        },
+    )
+    .await?;
+    let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+    let worker_id = WorkerId("worker_id".to_string());
+    let (tx, mut rx_from_worker) = mpsc::channel(in_flight + 16);
+    scheduler
+        .add_worker(Worker::new(
+            worker_id.clone(),
+            PlatformProperties::default(),
+            tx,
+            NOW_TIME,
+            0,
+        ))
+        .await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    // The listeners stay alive so the actions keep their clients.
+    let mut listeners = Vec::with_capacity(in_flight);
+    for index in 0..in_flight {
+        let mut action_info = make_base_action_info(make_system_time(1), burst_digest(index));
+        let action = Arc::make_mut(&mut action_info);
+        // Uncacheable, so the store backend does not spend its 20 ms
+        // duplicate check on each of them.
+        if let ActionUniqueQualifier::Cacheable(key) = &action.unique_qualifier {
+            action.unique_qualifier = ActionUniqueQualifier::Uncacheable(key.clone());
+        }
+        listeners.push(
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?,
+        );
+    }
+    let mut running = Vec::with_capacity(in_flight);
+    while running.len() < in_flight {
+        let update = tokio::time::timeout(Duration::from_mins(1), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{in_flight} in flight: only {} dispatched", running.len()))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        let operation_id = OperationId::from(operation_id);
+        scheduler
+            .worker_dispatch_accepted(&worker_id, &operation_id)
+            .await?;
+        running.push(operation_id);
+    }
+    until_redis_is_quiet(&fake_redis).await;
+
+    fake_redis.reset_command_counts();
+    let load = report.then_some(WorkerLoad {
+        free_memory_kb: 1_000_000,
+    });
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 1, load)
+        .await?;
+    if report {
+        scheduler
+            .worker_running_operations_reported(&worker_id, running)
+            .await?;
+    }
+    until_redis_is_quiet(&fake_redis).await;
+    // The total counts from the start; the counts by command are the ones a
+    // reset clears.
+    let commands: u64 = fake_redis.command_counts().values().sum();
+    let mut messages = 0;
+    while rx_from_worker.try_recv().is_ok() {
+        messages += 1;
+    }
+
+    // Whatever its shape, the keepalive keeps the worker alive: a timeout
+    // sweep just short of the worker timeout leaves it in the pool, so a
+    // keepalive after it still finds it.
+    drop(
+        scheduler
+            .remove_timedout_workers(NOW_TIME + WORKER_TIMEOUT_S)
+            .await,
+    );
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + WORKER_TIMEOUT_S, None)
+        .await
+        .unwrap_or_else(|err| {
+            panic!("{in_flight} in flight, report {report}: the worker was evicted: {err:?}")
+        });
+    drop(listeners);
+    Ok((commands, messages))
+}
+
+/// One keepalive costs the store the same however many operations the
+/// worker holds: the operations it reports running need no write, so a
+/// worker with hundreds in flight does not make its own keepalive slow
+/// enough to time it out. It sends the worker at most one message, and an
+/// older worker's keepalive, with no load and no report, keeps it alive
+/// all the same.
+#[nativelink_test]
+async fn a_keepalive_costs_the_same_however_many_operations_the_worker_holds() -> Result<(), Error>
+{
+    // A keepalive can start a matching pass, which lists the queue; that is
+    // the whole of its store work.
+    const MOST_COMMANDS: u64 = 4;
+    for report in [true, false] {
+        let mut costs = Vec::new();
+        for in_flight in [0, 1, 100, 500] {
+            let (commands, messages) = one_keepalive(in_flight, report).await?;
+            assert!(
+                messages <= 1,
+                "{in_flight} in flight, report {report}: {messages} messages to the worker"
+            );
+            costs.push((in_flight, commands));
+        }
+        assert!(
+            costs.iter().all(|&(_, commands)| commands <= MOST_COMMANDS),
+            "report {report}: Redis commands for one keepalive by operations held: {costs:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A peer wins exactly one assignment against a real awaited-action DB.
+#[derive(MetricsComponent)]
+struct AssignmentRaceDb<A: AwaitedActionDb> {
+    inner: A,
+    contended_digest: DigestInfo,
+    lose_assignment: AtomicBool,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for AssignmentRaceDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner
+            .get_range_of_actions(state, start, end, desc)
+            .await
+    }
+
+    async fn update_awaited_action(&self, mut action: AwaitedAction) -> Result<(), Error> {
+        if action.state().stage == ActionStage::Executing
+            && action.action_info().digest() == self.contended_digest
+            && self.lose_assignment.swap(false, Ordering::AcqRel)
+        {
+            // A peer commits the assignment before this scheduler's CAS.
+            action.set_worker_id(
+                Some(WorkerId("peer-worker".to_string())),
+                make_system_time(0),
+            );
+            self.inner.update_awaited_action(action).await?;
+            return Err(make_err!(
+                Code::Aborted,
+                "Another scheduler won the assignment"
+            ));
+        }
+        self.inner.update_awaited_action(action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+async fn check_lost_assignment_skips_shape(park_first: bool) -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let notify = Arc::new(Notify::new());
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let digests = [
+        DigestInfo::new([201; 32], 512),
+        DigestInfo::new([202; 32], 512),
+        DigestInfo::new([203; 32], 512),
+    ];
+    let (pass_tx, mut pass_rx) = mpsc::unbounded_channel();
+    let (scheduler, _workers) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            executing_sweep_interval_s: -1,
+            fallback_match_interval_s: -1,
+            worker_match_logging_interval_s: if park_first { -1 } else { 1 },
+            ..Default::default()
+        },
+        GatedQueueDb {
+            inner: AssignmentRaceDb {
+                inner: memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+                contended_digest: digests[0],
+                lose_assignment: AtomicBool::new(true),
+            },
+            gate: gate.clone(),
+            listing_gate: Some(listing_gate.clone()),
+        },
+        move || {
+            let pass_tx = pass_tx.clone();
+            async move {
+                pass_tx.send(()).unwrap();
+            }
+        },
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut worker_rx = setup_new_worker(
+        &scheduler,
+        WorkerId("local-worker".to_string()),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(10),
+        )])),
+    )
+    .await?;
+    let _blocker = if park_first {
+        Some(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([200; 32], 512),
+                HashMap::from([("cpu_count".to_string(), "10".to_string())]),
+                make_system_time(0) - Duration::from_secs(1),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut listeners = Vec::new();
+    for (i, digest) in digests.into_iter().enumerate() {
+        listeners.push(
+            setup_action(
+                &scheduler,
+                digest,
+                HashMap::from([(
+                    "cpu_count".to_string(),
+                    if i == 2 { "2" } else { "1" }.to_string(),
+                )]),
+                make_system_time(i as u64),
+            )
+            .await?,
+        );
+    }
+    listing_gate.add_permits(1);
+    if park_first {
+        gate.add_permits(1);
+        let (operation_id, _) = start_execute_digest(worker_rx.recv().await.unwrap());
+        // The two actions sharing a shape park behind the full worker.
+        gate.add_permits(2);
+        tokio::task::yield_now().await;
+        assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        let worker_id = WorkerId("local-worker".to_string());
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+        // Reading the last action triggers a replay of the parked pair.
+        gate.add_permits(1);
+    } else {
+        gate.add_permits(3);
+    }
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // The first action belongs to the peer. The second has the same shape
+    // and waits; the third uses a different amount of CPU and still runs.
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[2]
+    );
+    assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    assert_eq!(listeners[1].as_state().await?.0.stage, ActionStage::Queued);
+    listing_gate.add_permits(1);
+    gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[1]
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_assignment_skips_only_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(false).await?;
+    // The listing gate allows only one query per pass; enabling diagnostics
+    // must not issue another queue or executing listing before it finishes.
+    assert!(logs_contain("Oldest actions in the matching pass"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(true).await
+}
+
+/// Drives `future` while the mock clock moves forward in 100 ms steps, for
+/// at most `mock_limit` of mock time; `None` if it has not finished by then.
+/// Each step also gives it up to 10 ms of real time, for the work the mock
+/// clock does not move, such as a round trip to the fake Redis: one yield a
+/// step would run a minute of mock time in about a millisecond, and a slow
+/// machine could run out of steps before the reply came.
+async fn on_the_mock_clock<F: Future>(future: F, mock_limit: Duration) -> Option<F::Output> {
+    const STEP: Duration = Duration::from_millis(100);
+    const REAL_TIME_A_STEP: Duration = Duration::from_millis(10);
+    tokio::pin!(future);
+    let mut waited = Duration::ZERO;
+    loop {
+        if let Ok(output) = tokio::time::timeout(REAL_TIME_A_STEP, &mut future).await {
+            return Some(output);
+        }
+        if waited >= mock_limit {
+            return None;
+        }
+        MockClock::advance(STEP);
+        waited += STEP;
+    }
+}
+
+/// A change notice goes out after the write it announces has landed, so a
+/// notice Redis refuses must not undo the write: with every notice refused,
+/// the action still reaches a worker, found by the matcher's fallback pass,
+/// and its result still reaches the client, on the client's next poll.
+#[nativelink_test]
+async fn a_refused_change_notice_loses_neither_the_dispatch_nor_the_result() -> Result<(), Error> {
+    // Production's defaults, with the fallback pass every second rather than
+    // five to keep the test short.
+    let spec = SimpleSpec {
+        fallback_match_interval_s: 1,
+        ..SimpleSpec::from_config_defaults()
+    };
+    for backend in Backend::ALL {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let BackendScheduler {
+            scheduler,
+            fake_redis,
+            ..
+        } = scheduler_on(backend, &spec).await?;
+        if let Some(fake_redis) = &fake_redis {
+            fake_redis.fail_commands("PUBLISH", None, Fault::Error("refused".into()), None);
+        }
+        let worker_id = WorkerId("worker_id".to_string());
+        let (tx, mut rx_from_worker) = mpsc::channel(16);
+        scheduler
+            .add_worker(Worker::new(
+                worker_id.clone(),
+                PlatformProperties::default(),
+                tx,
+                NOW_TIME,
+                1,
+            ))
+            .await?;
+        tokio::task::yield_now().await;
+        verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+        let mut listener = setup_action(
+            &scheduler,
+            DigestInfo::new([1u8; 32], 512),
+            HashMap::new(),
+            make_system_time(1),
+        )
+        .await?;
+
+        let update = tokio::time::timeout(Duration::from_secs(10), rx_from_worker.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{backend:?}: the action was never sent to the worker"))
+            .expect("the worker's stream stays open");
+        let (operation_id, _) = start_execute_digest(update);
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+
+        // The client polls on the mock clock; move it until the result is
+        // read, a minute at most.
+        let completed = async {
+            loop {
+                let (state, _) = listener.changed().await?;
+                if matches!(state.stage, ActionStage::Completed(_)) {
+                    return Ok::<_, Error>(());
+                }
+            }
+        };
+        on_the_mock_clock(completed, Duration::from_mins(1))
+            .await
+            .unwrap_or_else(|| panic!("{backend:?}: the client never read the result"))?;
+    }
+    Ok(())
+}
+
+/// How the record an Execute client listens on goes bad on Redis.
+#[derive(Clone, Copy, Debug)]
+enum RecordFault {
+    /// Every read of it is refused.
+    ReadRefused,
+    /// It is evicted.
+    Evicted,
+}
+
+/// A client whose operation's record can no longer be read is told so with
+/// an error, so it can resubmit, rather than left waiting on a stream that
+/// will never move. Queued or executing, on its next poll.
+#[nativelink_test]
+async fn a_record_that_cannot_be_read_ends_the_client_stream_with_an_error() -> Result<(), Error> {
+    for fault in [RecordFault::ReadRefused, RecordFault::Evicted] {
+        for executing in [false, true] {
+            let case = format!("{fault:?}, executing {executing}");
+            MockClock::set_time(Duration::from_secs(NOW_TIME));
+            let BackendScheduler {
+                scheduler,
+                fake_redis,
+                ..
+            } = scheduler_on(Backend::FakeRedis, &SimpleSpec::default()).await?;
+            let fake_redis = fake_redis.expect("the fake Redis backend has a server");
+            let worker_id = WorkerId("worker_id".to_string());
+            let (tx, mut rx_from_worker) = mpsc::channel(16);
+            if executing {
+                scheduler
+                    .add_worker(Worker::new(
+                        worker_id.clone(),
+                        PlatformProperties::default(),
+                        tx,
+                        NOW_TIME,
+                        1,
+                    ))
+                    .await?;
+                tokio::task::yield_now().await;
+                verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+            }
+            let mut listener = setup_action(
+                &scheduler,
+                DigestInfo::new([1u8; 32], 512),
+                HashMap::new(),
+                make_system_time(1),
+            )
+            .await?;
+            let expected = if executing {
+                ActionStage::Executing
+            } else {
+                ActionStage::Queued
+            };
+            loop {
+                let (state, _) = tokio::time::timeout(Duration::from_secs(10), listener.changed())
+                    .await
+                    .unwrap_or_else(|_| panic!("{case}: the client never saw {expected:?}"))?;
+                if state.stage == expected {
+                    break;
+                }
+            }
+
+            match fault {
+                RecordFault::ReadRefused => fake_redis.fail_commands(
+                    "HMGET",
+                    Some("aa_"),
+                    Fault::Error("refused".into()),
+                    None,
+                ),
+                RecordFault::Evicted => {
+                    fake_redis.evict_prefix("aa_");
+                }
+            }
+
+            // The client polls on the mock clock; give it a minute.
+            match on_the_mock_clock(listener.changed(), Duration::from_mins(1)).await {
+                None => panic!("{case}: the client's stream stayed silent for a minute"),
+                Some(Ok((state, _))) => {
+                    panic!(
+                        "{case}: the client was told {:?}, not an error",
+                        state.stage
+                    )
+                }
+                Some(Err(_)) => {}
+            }
+        }
+    }
     Ok(())
 }

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,20 +20,31 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use mock_instant::thread_local::MockClock;
+use nativelink_config::stores::{
+    CommonObjectSpec, CompressionAlgorithm, CompressionSpec, ExperimentalCloudObjectSpec,
+    ExperimentalGcsSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec, NoopSpec,
+    StoreDirection, StoreSpec,
+};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::compression_store::CompressionStore;
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
+use nativelink_store::gcs_client::mocks::MockGcsOperations;
+use nativelink_store::gcs_client::types::ObjectPath;
+use nativelink_store::gcs_store::GcsStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{
-    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
@@ -54,6 +65,8 @@ fn make_stores_direction(
             fast_direction,
             slow_direction,
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -92,6 +105,118 @@ async fn check_data(
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+#[nativelink_test]
+async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        block_size: 1,
+        ..Default::default()
+    };
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?;
+    let fast = Store::new(filesystem.clone());
+    let slow = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(filesystem_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast.clone(),
+        slow.clone(),
+    ));
+    let content = Bytes::from_static(b"recover the missing fast-tier file");
+    let digest = DigestInfo::try_new(VALID_HASH, content.len())?;
+    store.update_oneshot(digest, content.clone()).await?;
+
+    for recover_by_read in [false, true] {
+        filesystem
+            .get_file_entry_for_digest(&digest)
+            .await?
+            .get_file_path_locked(|path| async move { fs::remove_file(path).await })
+            .await?;
+        assert_eq!(fast.has(digest).await?, Some(content.len() as u64));
+        if recover_by_read {
+            assert_eq!(store.get_part_unchunked(digest, 0, None).await?, content);
+        } else {
+            store.update_oneshot(digest, content.clone()).await?;
+        }
+        assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, content);
+        assert_eq!(slow.get_part_unchunked(digest, 0, None).await?, content);
+    }
+    Ok(())
+}
+
+/// A filesystem slow tier fills the fast tier with the blob's content length,
+/// not its block-rounded size on disk, for CAS digest and string keys alike.
+#[nativelink_test]
+async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        // The default block size (4 KiB): the tier rounds sizes up to it.
+        ..Default::default()
+    };
+    let slow_store = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Filesystem(filesystem_spec),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast_store.clone(),
+        slow_store.clone(),
+    ));
+
+    // 4097 bytes spans a second block: the bug is not limited to small blobs.
+    for (key, size) in [
+        (StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 206)?), 206),
+        (StoreKey::new_str("action_cache_entry"), 538),
+        (
+            StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 4097)?),
+            4097,
+        ),
+    ] {
+        let data = Bytes::from(make_random_data(size));
+        slow_store
+            .update_oneshot(key.borrow(), data.clone())
+            .await?;
+        assert_eq!(
+            fast_store.has(key.borrow()).await?,
+            None,
+            "{key:?}: the blob starts out only in the slow tier"
+        );
+
+        assert_eq!(
+            fast_slow_store
+                .get_part_unchunked(key.borrow(), 0, None)
+                .await?,
+            data,
+            "{key:?}: reading through fast_slow fills the fast tier from the slow tier"
+        );
+        assert_eq!(
+            slow_store.has(key.borrow()).await?,
+            Some(size as u64),
+            "{key:?}: the filesystem tier reports content length, not size on disk"
+        );
+        assert_eq!(
+            fast_store.get_part_unchunked(key.borrow(), 0, None).await?,
+            data,
+            "{key:?}: the fast tier holds the filled copy"
+        );
+    }
+    Ok(())
+}
 
 #[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
@@ -323,7 +448,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -362,6 +487,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store,
@@ -406,6 +533,8 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -432,6 +561,8 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         fast_direction: StoreDirection::default(),
         slow_direction: StoreDirection::default(),
         bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -586,6 +717,13 @@ async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
 }
 
 fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
+    make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())))
+}
+
+/// The object size limit the lazy slow store below advertises.
+const LAZY_SLOW_MAX_UPLOAD_SIZE: u64 = 4 * MEGABYTE_SZ as u64;
+
+fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
     #[derive(MetricsComponent)]
     struct LazyStore {
         inner: Arc<MemoryStore>,
@@ -640,6 +778,10 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             )
         }
 
+        fn max_upload_size(&self) -> u64 {
+            LAZY_SLOW_MAX_UPLOAD_SIZE
+        }
+
         fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
             self
         }
@@ -654,7 +796,7 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -662,7 +804,6 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
     default_health_status_indicator!(LazyStore);
 
-    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(Arc::new(LazyStore {
         inner: MemoryStore::new(&MemorySpec::default()),
     }));
@@ -673,11 +814,63 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
     ));
     (fast_slow_store, fast_store, slow_store)
+}
+
+fn make_compression_store() -> Result<Store, Error> {
+    Ok(Store::new(CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: CompressionAlgorithm::Lz4(Lz4Config {
+                block_size: 10,
+                ..Default::default()
+            }),
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?))
+}
+
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
+}
+
+// An action cache entry's stored length differs from the size in its key.
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier_with_an_ac_entry() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, 10).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
 }
 
 #[nativelink_test]
@@ -725,6 +918,138 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
     Ok(())
 }
 
+/// Fast store that records the size each `update` was announced with.
+#[derive(MetricsComponent)]
+struct SizeRecordingStore {
+    inner: Arc<MemoryStore>,
+    announced_sizes: Arc<Mutex<Vec<UploadSizeInfo>>>,
+}
+
+#[async_trait]
+impl StoreDriver for SizeRecordingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(digests, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        digest: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.announced_sizes.lock().unwrap().push(size_info);
+        Pin::new(self.inner.as_ref())
+            .update(digest, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SizeRecordingStore);
+
+// With the `.has()` skipped the length is unknown, so the fast store is told
+// the most it could receive: the slow store's limit, not `u64::MAX`.
+#[nativelink_test]
+async fn lazy_slow_read_announces_the_slow_store_limit_to_the_fast_store() -> Result<(), Error> {
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let (fast_slow_store, _fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
+    );
+    Ok(())
+}
+
+// A fast_slow store whose slow tier is a lazy fast_slow store announces the
+// innermost slow store's limit too, not `u64::MAX`.
+#[nativelink_test]
+async fn nested_lazy_slow_read_announces_the_slow_store_limit() -> Result<(), Error> {
+    let (inner, _inner_fast, inner_slow) =
+        make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())));
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let outer = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })),
+        inner,
+    ));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    inner_slow
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    assert_eq!(
+        outer.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        original_data.as_slice()
+    );
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
+    );
+    Ok(())
+}
+
 #[derive(MetricsComponent)]
 struct InstrumentedSlowStore {
     digest: DigestInfo,
@@ -732,6 +1057,9 @@ struct InstrumentedSlowStore {
     get_part_count: AtomicU64,
     /// If set, awaited at the start of `get_part` before any data flows.
     gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// If set, awaited at the start of `has_with_results`: a backend that
+    /// wedges the existence check rather than the read.
+    has_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 #[async_trait]
@@ -745,6 +1073,10 @@ impl StoreDriver for InstrumentedSlowStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let has_gate = self.has_gate.lock().unwrap().take();
+        if let Some(rx) = has_gate {
+            let _ = rx.await;
+        }
         for (key, result) in keys.iter().zip(results.iter_mut()) {
             if *key == self.digest.into() {
                 *result = Some(self.digest.size_bytes());
@@ -778,7 +1110,9 @@ impl StoreDriver for InstrumentedSlowStore {
         if let Some(rx) = gate {
             let _ = rx.await;
         }
-        writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        if !self.data.is_empty() {
+            writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        }
         writer.send_eof()
     }
 
@@ -794,10 +1128,7 @@ impl StoreDriver for InstrumentedSlowStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -809,12 +1140,14 @@ fn make_fast_slow_with_instrumented_slow(
     data: Vec<u8>,
     gate: Option<tokio::sync::oneshot::Receiver<()>>,
     bypass_dedup_threshold_bytes: u64,
+    leader_inactivity_timeout_s: usize,
 ) -> (Store, Arc<InstrumentedSlowStore>) {
     let slow = Arc::new(InstrumentedSlowStore {
         digest,
         data,
         get_part_count: AtomicU64::new(0),
         gate: Mutex::new(gate),
+        has_gate: Mutex::new(None),
     });
     let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow = Store::new(FastSlowStore::new(
@@ -824,6 +1157,8 @@ fn make_fast_slow_with_instrumented_slow(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s,
         },
         fast,
         Store::new(slow.clone()),
@@ -841,7 +1176,7 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -896,7 +1231,7 @@ async fn concurrent_reads_bypass_dedup_above_threshold() -> Result<(), Error> {
     // Threshold == blob size, so every read is at-or-above and bypasses
     // dedup. No gate: each reader hits the slow store directly.
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -936,7 +1271,7 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let store_for_a = fast_slow_store.clone();
     let leader_handle =
@@ -1050,7 +1385,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -1072,6 +1407,8 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1144,6 +1481,298 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
     Ok(())
 }
 
+/// A wedged slow write must not hang `has()` with it: past the in-flight
+/// wait timeout the key is reported missing, so `FindMissingBlobs` and
+/// reads of a just-uploaded blob degrade to a re-upload instead of
+/// blocking for as long as the stuck writer lives.
+#[nativelink_test(start_paused = true)]
+async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct WedgedSlowStore {
+        /// Held open for the whole test, so the slow write never finishes.
+        _gate_tx: tokio::sync::oneshot::Sender<()>,
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for WedgedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let started_tx = self.started_tx.lock().unwrap().take();
+            if let Some(tx) = started_tx {
+                let _ = tx.send(());
+            }
+            // Wait on a sender the test never drops or fires: the write is
+            // wedged, holding its in-flight entry's lock.
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(rx) = gate {
+                let _ = rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(WedgedSlowStore);
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(WedgedSlowStore {
+        _gate_tx: gate_tx,
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 30,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    let writer_store = fast_slow.clone();
+    let writer =
+        tokio::spawn(async move { writer_store.update_oneshot(digest, data.into()).await });
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+
+    // The observer must come back on its own, reporting the key missing,
+    // once the in-flight wait timeout elapses (paused time auto-advances).
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        None,
+        "has() must report a key missing once its wedged in-flight write exceeds the wait timeout",
+    );
+
+    // The write is now older than the deadline, so later checks must not
+    // pay the wait again: this resolves without the clock advancing.
+    let second = fast_slow.has(digest);
+    tokio::select! {
+        biased;
+        res = second => assert_eq!(
+            res?,
+            None,
+            "a stale in-flight entry must be reported missing",
+        ),
+        () = tokio::time::sleep(Duration::from_millis(1)) => {
+            panic!("has() on a stale in-flight entry waited on the clock again")
+        }
+    }
+
+    writer.abort();
+    Ok(())
+}
+
+/// The timeout above invites a re-upload while the wedged writer still
+/// exists, so two writers of one key overlap. The first writer's guard must
+/// not remove the second writer's in-flight entry when it is dropped: an
+/// observer that starts after the wedged writer dies must still see the
+/// live writer's result.
+#[nativelink_test(start_paused = true)]
+async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct QueuedGatesSlowStore {
+        /// One (started, gate) pair per expected `update` call, in order.
+        calls: Mutex<
+            Vec<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    }
+
+    #[async_trait]
+    impl StoreDriver for QueuedGatesSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let maybe_call = {
+                let mut calls = self.calls.lock().unwrap();
+                if calls.is_empty() {
+                    None
+                } else {
+                    Some(calls.remove(0))
+                }
+            };
+            if let Some((started_tx, gate_rx)) = maybe_call {
+                let _ = started_tx.send(());
+                let _ = gate_rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(QueuedGatesSlowStore);
+
+    let (started_a_tx, started_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_a_tx, gate_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_b_tx, started_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let (gate_b_tx, gate_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(QueuedGatesSlowStore {
+        calls: Mutex::new(vec![(started_a_tx, gate_a_rx), (started_b_tx, gate_b_rx)]),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Writer A wedges (its gate sender is kept but never fired).
+    let store_a = fast_slow.clone();
+    let data_a = data.clone();
+    let writer_a = tokio::spawn(async move { store_a.update_oneshot(digest, data_a.into()).await });
+    started_a_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer A started signal lost: {e:?}"))?;
+
+    // Writer B re-uploads the same key, replacing A's in-flight entry.
+    let store_b = fast_slow.clone();
+    let data_b = data.clone();
+    let writer_b = tokio::spawn(async move { store_b.update_oneshot(digest, data_b.into()).await });
+    started_b_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B started signal lost: {e:?}"))?;
+
+    // The wedged writer dies. Its guard must leave B's entry alone.
+    writer_a.abort();
+    drop(writer_a.await);
+
+    // An observer must still see B's in-flight write...
+    let observer_store = fast_slow.clone();
+    let observer = tokio::spawn(async move { observer_store.has(digest).await });
+
+    // ...so once B completes, the observer reports the size instead of the
+    // immediate "missing" a removed entry would give.
+    gate_b_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "Failed to release writer B's gate"))?;
+    writer_b
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B join error: {e:?}"))??;
+    let has_result = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+    assert_eq!(
+        has_result,
+        Some(data.len() as u64),
+        "Observer must see writer B's in-flight write after writer A's guard dropped",
+    );
+
+    Ok(())
+}
+
 /// `has()` consults the fast store after the slow store reports `NotFound`.
 /// This is asserted indirectly above by `fast_store_only_value_is_reported_by_has`;
 /// here we additionally assert that when the slow store DOES have the blob,
@@ -1210,7 +1839,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
 
         fn register_remove_callback(
             self: Arc<Self>,
-            _callback: Arc<dyn RemoveItemCallback>,
+            _callback: RemoveCallback,
         ) -> Result<(), Error> {
             Ok(())
         }
@@ -1232,6 +1861,8 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         slow.clone(),
@@ -1316,10 +1947,7 @@ impl StoreDriver for GatedSlowStore2 {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1354,6 +1982,8 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1476,10 +2106,7 @@ impl StoreDriver for MapBackedSlow {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _cb: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _cb: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1524,6 +2151,8 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -1658,10 +2287,7 @@ impl StoreDriver for CountingSlowStore {
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
         self
     }
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1697,6 +2323,8 @@ async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -1762,6 +2390,8 @@ async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -1825,6 +2455,8 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: SIZE as u64,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -1922,10 +2554,7 @@ impl StoreDriver for StaleFastStore {
         self
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1951,6 +2580,8 @@ fn make_stores_with_stale_fast(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store.clone(),
@@ -1987,9 +2618,12 @@ async fn get_part_falls_through_to_slow_on_stale_fast_map_entry() -> Result<(), 
     Ok(())
 }
 
-/// `NotFound` after partial bytes must propagate, not retry (would corrupt).
+/// `NotFound` after partial bytes of a digest is a resume: the bytes the
+/// fast store sent are a correct prefix of an immutable blob, so the slow
+/// store serves the rest from where the fast one stopped and the caller
+/// sees the whole blob.
 #[nativelink_test]
-async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), Error> {
+async fn get_part_resumes_from_slow_after_partial_fast_read() -> Result<(), Error> {
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
     let (fast_slow_store, slow_store, fast_get_part_calls) =
@@ -1999,19 +2633,672 @@ async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), E
         .update_oneshot(digest, original_data.clone().into())
         .await?;
 
-    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await;
+    let served = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .err_tip(|| "a short fast read of a digest must resume from the slow store")?;
 
-    let err = result.expect_err("partial fast read then NotFound must not fall through");
-    assert_eq!(
-        err.code,
-        Code::NotFound,
-        "original NotFound must propagate, got: {err:?}"
-    );
+    // The stale fast store sends sixteen zero bytes and stops; the slow
+    // store has to have served everything after them.
+    assert_eq!(served.len(), original_data.len());
+    assert_eq!(&served[16..], &original_data[16..]);
     assert_eq!(
         fast_get_part_calls.load(Ordering::Acquire),
         1,
         "fast store get_part must be attempted exactly once"
     );
 
+    // A range read resumes within the range.
+    let served = fast_slow_store
+        .get_part_unchunked(digest, 100, Some(1000))
+        .await?;
+    assert_eq!(served.len(), 1000);
+    assert_eq!(&served[16..], &original_data[116..1100]);
+
+    Ok(())
+}
+
+/// A key that is not a digest could hold different content in each tier,
+/// so a short read of one stays an error rather than splicing the tiers.
+#[nativelink_test]
+async fn get_part_propagates_not_found_after_partial_fast_read_of_a_plain_key() -> Result<(), Error>
+{
+    let original_data = make_random_data(MEGABYTE_SZ);
+    let key = StoreKey::new_str("some-action-cache-entry");
+    let (fast_slow_store, slow_store, fast_get_part_calls) =
+        make_stores_with_stale_fast(original_data.len() as u64, 16);
+
+    slow_store
+        .update_oneshot(key.borrow(), original_data.clone().into())
+        .await?;
+
+    let err = fast_slow_store
+        .get_part_unchunked(key.borrow(), 0, None)
+        .await
+        .expect_err("a short fast read of a plain key must not resume");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert_eq!(fast_get_part_calls.load(Ordering::Acquire), 1);
+
+    Ok(())
+}
+
+/// A slow store that sends part of a blob and then loses it, the way an
+/// evicting tier behind a gRPC store does.
+#[derive(MetricsComponent)]
+struct PartialThenGoneStore {
+    bytes_before_error: usize,
+}
+
+#[async_trait]
+impl StoreDriver for PartialThenGoneStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            *result = match key {
+                StoreKey::Digest(d) => Some(d.size_bytes()),
+                StoreKey::Str(_) => None,
+            };
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        reader.drain().await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer
+            .send(Bytes::from(vec![1u8; self.bytes_before_error]))
+            .await?;
+        Err(make_err!(Code::NotFound, "the key is gone under the read"))
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(PartialThenGoneStore);
+
+/// A `NotFound` the slow store raises under the read names the digest, the
+/// way one for a blob that was never there does, so the worker reports the
+/// missing input and the client re-uploads exactly that blob.
+#[nativelink_test]
+async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH, 4096).unwrap();
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(Arc::new(PartialThenGoneStore {
+            bytes_before_error: 1024,
+        })),
+    ));
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("the slow store lost the blob under the read");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert_eq!(
+        err.context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: 4096,
+            digest_function: None,
+        },
+        "{err:?}"
+    );
+
+    Ok(())
+}
+
+/// Both directions that keep uploads out of the slow store take the branch.
+async fn has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(
+    slow_direction: StoreDirection,
+) -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Both, slow_direction);
+
+    // An upload lands in the fast store only: the slow one takes no writes.
+    let uploaded = DigestInfo::try_new(VALID_HASH, 3)?;
+    fast_slow_store
+        .update_oneshot(uploaded, Bytes::from_static(b"new"))
+        .await?;
+    assert_eq!(slow_store.has(uploaded).await?, None, "{slow_direction:?}");
+    assert_eq!(
+        fast_store.has(uploaded).await?,
+        Some(3),
+        "{slow_direction:?}"
+    );
+
+    // A blob that predates the fast tier sits in the slow store alone.
+    let old = DigestInfo::try_new(VALID_HASH_B, 3)?;
+    slow_store
+        .update_oneshot(old, Bytes::from_static(b"old"))
+        .await?;
+
+    let absent = DigestInfo::try_new(VALID_HASH_C, 3)?;
+
+    let mut results = [None, None, None];
+    fast_slow_store
+        .has_with_results(&[uploaded.into(), old.into(), absent.into()], &mut results)
+        .await?;
+    assert_eq!(
+        results,
+        [Some(3), Some(3), None],
+        "{slow_direction:?}: presence covers the fast store, where uploads land, and the slow one, where the old data is"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::ReadOnly).await
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_get_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::Get).await
+}
+
+#[nativelink_test]
+async fn has_still_skips_the_fast_store_when_the_slow_store_is_writable() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, _slow_store) = make_stores();
+    let only_in_fast = DigestInfo::try_new(VALID_HASH, 4)?;
+    fast_store
+        .update_oneshot(only_in_fast, Bytes::from_static(b"fast"))
+        .await?;
+    assert_eq!(
+        fast_slow_store.has(only_in_fast).await?,
+        None,
+        "a blob only the fast store holds is reported missing so the client re-uploads it to the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_preserves_memory_and_filesystem_values() -> Result<(), Error> {
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("upload_integrity_content"),
+        temp_path: make_temp_path("upload_integrity_temp"),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    for store in [
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(filesystem),
+    ] {
+        // AC and encoded values need not match the size in their key.
+        let key = DigestInfo::try_new(VALID_HASH, 999)?;
+        let good = Bytes::from(vec![7; 78]);
+        store.update_oneshot(key, good.clone()).await?;
+        for (size_info, payload) in [
+            (UploadSizeInfo::ExactSize(78), Bytes::new()),
+            (UploadSizeInfo::ExactSize(78), Bytes::from_static(b"short")),
+            (UploadSizeInfo::ExactSize(78), Bytes::from(vec![9; 79])),
+            (UploadSizeInfo::MaxSize(78), Bytes::from(vec![9; 79])),
+        ] {
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(store.update(key, rx, size_info), send);
+            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
+        }
+        // A normal write still uses the payload size rather than the key's size.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async {
+            tx.send(good.clone()).await?;
+            tx.send_eof()
+        };
+        let (result, sent) =
+            tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result?, 78);
+        sent?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(), Error> {
+    for data in [vec![], b"short".to_vec()] {
+        let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("short_read_content"),
+            temp_path: make_temp_path("short_read_temp"),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?;
+        for fast in [
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+            Store::new(filesystem),
+        ] {
+            let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+            let slow = Store::new(Arc::new(InstrumentedSlowStore {
+                digest,
+                data: data.clone(),
+                get_part_count: AtomicU64::new(0),
+                gate: Mutex::new(None),
+                has_gate: Mutex::new(None),
+            }));
+            let store = FastSlowStore::new(
+                &FastSlowSpec {
+                    fast: StoreSpec::Memory(MemorySpec::default()),
+                    slow: StoreSpec::Memory(MemorySpec::default()),
+                    fast_direction: StoreDirection::default(),
+                    slow_direction: StoreDirection::default(),
+                    bypass_dedup_threshold_bytes: 0,
+                    has_slow_write_wait_timeout_s: 0,
+                    leader_inactivity_timeout_s: 0,
+                },
+                fast.clone(),
+                slow,
+            );
+            assert_eq!(
+                store
+                    .get_part_unchunked(digest, 0, None)
+                    .await
+                    .unwrap_err()
+                    .code,
+                Code::DataLoss
+            );
+            assert_eq!(fast.has(digest).await?, None);
+        }
+    }
+    Ok(())
+}
+
+/// A cache fill whose slow store stops producing bytes must fail at the
+/// inactivity timeout instead of pinning the fill (and every follower
+/// waiting on it) to the wedged read forever. Only the stalled fill fails;
+/// its loader entry is removed so the next reader leads a fresh fill.
+#[nativelink_test(start_paused = true)]
+async fn stalled_fill_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // The gate is never released: the slow store accepts the read and then
+    // produces nothing, forever.
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (fast_slow, _slow) =
+        make_fast_slow_with_instrumented_slow(digest, data, Some(gate_rx), 0, 1);
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill that moves no bytes must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+
+    Ok(())
+}
+
+/// A slow store that wedges the sizing `has()` (issued before the transfer
+/// and its watchdog exist) must fail the fill at the inactivity timeout:
+/// without its own bound, a backend that hangs the existence check instead
+/// of the read would pin the fill and its dedup entry until restart.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_sizing_has_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Never released: the existence check hangs forever.
+    let (_has_gate_tx, has_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(Some(has_gate_rx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 1,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill whose sizing has() hangs must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+    Ok(())
+}
+
+/// A fast store that accepts the whole fill and then holds its commit open
+/// until the test releases it, modeling a slow local finalize (fsync under
+/// I/O pressure).
+#[derive(MetricsComponent)]
+struct GatedCommitFastStore {
+    commit_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl StoreDriver for GatedCommitFastStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for result in results.iter_mut() {
+            *result = None;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Receive the entire transfer (data and EOF) first, then stall the
+        // commit until the test releases it.
+        let size = reader.drain().await?;
+        let commit_gate = self.commit_gate.lock().unwrap().take();
+        if let Some(rx) = commit_gate {
+            let _ = rx.await;
+        }
+        Ok(size)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer.send_eof()
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedCommitFastStore);
+
+fn make_fast_slow_with_gated_commit(
+    digest: DigestInfo,
+    data: Vec<u8>,
+    commit_gate: tokio::sync::oneshot::Receiver<()>,
+) -> Store {
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(None),
+    });
+    let fast = Arc::new(GatedCommitFastStore {
+        commit_gate: Mutex::new(Some(commit_gate)),
+    });
+    Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 1,
+        },
+        Store::new(fast),
+        Store::new(slow),
+    ))
+}
+
+/// Once the transfer has fully moved (the slow stream delivered EOF and the
+/// reader took every in-range byte), the fast tier's commit gets a grace
+/// window instead of tripping the watchdog at the first expiry: a slow
+/// local sync is not a wedged transfer, and killing the fill there would
+/// discard completed work. The zero-length case also pins that a blob
+/// which never ticks the activity clock gets the same grace.
+#[nativelink_test(start_paused = true)]
+async fn a_slow_commit_within_the_grace_window_survives() -> Result<(), Error> {
+    for data_len in [0usize, 2048] {
+        let data = make_random_data(data_len);
+        let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+        let (commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let fast_slow = make_fast_slow_with_gated_commit(digest, data.clone(), commit_gate_rx);
+
+        let fill_store = fast_slow.clone();
+        let fill =
+            tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+        // Paused time: the transfer completes instantly, the watchdog's
+        // first window expires at 1s (entering the commit grace, deadline
+        // 2s), and this sleep releases the commit at 1.5s — inside the
+        // grace. Pre-grace code killed the fill at the first expiry.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        commit_gate_tx
+            .send(())
+            .expect("the fill must still be holding its commit gate");
+        let read_back = fill
+            .await
+            .expect("fill task must not panic")
+            .err_tip(|| "fill must succeed once the commit completes within the grace")?;
+        assert_eq!(read_back, data, "fill of len {data_len} must round-trip");
+    }
+    Ok(())
+}
+
+/// A commit that never finishes must not hold the fill (and its dedup
+/// entry) forever just because the transfer completed first: the fast tier
+/// can be a remote store, and a wedged remote commit is the same pinned-key
+/// failure the watchdog exists to bound. Past the grace window the fill
+/// fails, naming the commit phase.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_commit_fails_at_the_grace_deadline() -> Result<(), Error> {
+    let data = make_random_data(2048);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+    // Held open for the whole test: the commit wedges forever.
+    let (_commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let fast_slow = make_fast_slow_with_gated_commit(digest, data, commit_gate_rx);
+
+    let fill_store = fast_slow.clone();
+    let fill = tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+    // Bounded: the fill must fail on its own at the grace deadline (~2
+    // virtual seconds), well inside this wait, rather than hang forever.
+    let err = tokio::time::timeout(Duration::from_mins(10), fill)
+        .await
+        .expect("a wedged commit must fail at the grace deadline, not pin the fill")
+        .expect("fill task must not panic")
+        .expect_err("the fill must fail once the commit exceeds its grace window");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the grace deadline, got: {err:?}",
+    );
+    assert!(
+        err.to_string().contains("the fast tier's commit"),
+        "the error must name the commit phase, got: {err:?}",
+    );
+    Ok(())
+}
+
+/// The sizing `has()` returns `None` both for a missing object and for one
+/// the slow store considers expired, so the error names both.
+#[nativelink_test]
+async fn missing_object_error_names_expiry() -> Result<(), Error> {
+    let (fast_slow_store, _fast_store, _slow_store) = make_stores();
+    let digest = DigestInfo::try_new(VALID_HASH, 100)?;
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("an object in neither tier is not found");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("not found in either fast or slow store"),
+        "{message}"
+    );
+    assert!(
+        message.contains("or the slow store considers it expired"),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// `consider_expired_after_s` makes the object store's `has()` report an old
+/// object as missing so clients upload it again, while the object stays
+/// readable. A `FastSlowStore` directly over the object store skips its sizing
+/// `has()` (`LazyExistenceOnSync`) and reads it. Nesting that store as the slow
+/// tier of another `FastSlowStore` must read it as well.
+#[nativelink_test]
+async fn nested_fast_slow_reads_object_expired_for_has() -> Result<(), Error> {
+    const EXPIRE_AFTER_S: u64 = 7 * 24 * 60 * 60;
+    const UPDATED_AT_S: u64 = 1_000;
+    const BUCKET: &str = "bucket";
+
+    let data = Bytes::from(make_random_data(100));
+    let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+    let ops = Arc::new(MockGcsOperations::new());
+    ops.add_object_with_timestamp(
+        &ObjectPath::new(BUCKET.to_string(), &StoreKey::from(digest).as_str()),
+        data.to_vec(),
+        UPDATED_AT_S,
+    )
+    .await;
+    let gcs_spec = ExperimentalGcsSpec {
+        bucket: BUCKET.to_string(),
+        common: CommonObjectSpec {
+            consider_expired_after_s: u32::try_from(EXPIRE_AFTER_S).unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let object_store = Store::new(GcsStore::new_with_ops(
+        &gcs_spec,
+        ops,
+        MockInstantWrapped::default,
+    )?);
+    MockClock::set_time(Duration::from_secs(UPDATED_AT_S + EXPIRE_AFTER_S + 1));
+
+    let fast_slow_spec = |slow| FastSlowSpec {
+        fast: StoreSpec::Memory(MemorySpec::default()),
+        slow,
+        fast_direction: StoreDirection::default(),
+        slow_direction: StoreDirection::default(),
+        bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
+    };
+    let inner = Store::new(FastSlowStore::new(
+        &fast_slow_spec(StoreSpec::ExperimentalCloudObjectStore(
+            ExperimentalCloudObjectSpec::Gcs(gcs_spec),
+        )),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        object_store.clone(),
+    ));
+    let outer = Store::new(FastSlowStore::new(
+        &fast_slow_spec(StoreSpec::Memory(MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        inner.clone(),
+    ));
+
+    assert_eq!(
+        object_store.has(digest).await?,
+        None,
+        "the object store reports the object as expired"
+    );
+    assert_eq!(
+        outer.get_part_unchunked(digest, 0, None).await?,
+        data,
+        "the nested fast_slow store reads the expired object"
+    );
+    assert_eq!(
+        inner.get_part_unchunked(digest, 0, None).await?,
+        data,
+        "the inner fast_slow store reads the expired object"
+    );
+
+    let missing = DigestInfo::try_new(VALID_HASH, data.len() + 1)?;
+    assert_eq!(
+        outer
+            .get_part_unchunked(missing, 0, None)
+            .await
+            .expect_err("an object that does not exist is not found")
+            .code,
+        Code::NotFound,
+    );
     Ok(())
 }

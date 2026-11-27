@@ -35,15 +35,26 @@ writeShellScriptBin "publish-ghcr" ''
       --password-stdin \
       ghcr.io
 
-    ${cosign}/bin/cosign \
-      sign \
-      --yes \
-      ''${GHCR_REGISTRY,,}/''${IMAGE_NAME}@$( \
-        ${skopeo}/bin/skopeo \
-          inspect \
-          --format "{{ .Digest }}" \
-          docker://''${TAGGED_IMAGE} \
+    DIGEST_IMAGE=''${GHCR_REGISTRY,,}/''${IMAGE_NAME}@$( \
+      ${skopeo}/bin/skopeo \
+        inspect \
+        --format "{{ .Digest }}" \
+        docker://''${TAGGED_IMAGE} \
     )
+
+    # A duplicated transparency-log POST fails the whole publish with a 409
+    # conflict even though the entry landed. A fresh attempt signs with a
+    # new ephemeral key, which the log accepts, so retry instead of failing.
+    for attempt in 1 2 3; do
+      if ${cosign}/bin/cosign sign --yes "''${DIGEST_IMAGE}"; then
+        break
+      elif [ "''${attempt}" = 3 ]; then
+        echo "Signing failed after ''${attempt} attempts"
+        exit 1
+      fi
+      echo "Signing attempt ''${attempt} failed; retrying"
+      sleep 10
+    done
   else
     echo "Skipping cosign signing (SKIP_SIGNING=true)"
   fi

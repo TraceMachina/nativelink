@@ -1,4 +1,4 @@
-# Copyright 2024 The NativeLink Authors. All rights reserved.
+# Copyright 2024 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,12 +30,6 @@ constraint_value(
 )
 
 constraint_value(
-    name = "x86_64-darwin",
-    constraint_setting = ":nix-system",
-    visibility = ["//visibility:public"],
-)
-
-constraint_value(
     name = "x86_64-linux",
     constraint_setting = ":nix-system",
     visibility = ["//visibility:public"],
@@ -46,7 +40,6 @@ selects.config_setting_group(
     match_any = [
         ":aarch64-darwin",
         ":aarch64-linux",
-        ":x86_64-darwin",
         ":x86_64-linux",
     ],
     visibility = ["//visibility:public"],

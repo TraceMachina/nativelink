@@ -1,0 +1,244 @@
+---
+title: Why NativeLink
+description: What NativeLink is, what a remote cache and remote execution actually do, and a 30-second check for whether your build is one that benefits.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone deciding whether to put a remote cache and
+execution layer in front of their build, including people meeting the idea for
+the first time. **What you'll have at the end:** a working mental model of what
+NativeLink does, and a clear yes or no for your own situation. **Time:** about
+ten minutes.
+
+## What NativeLink is [#what-nativelink-is]
+
+NativeLink is a **remote build cache** and a **remote execution** service in one
+program. Your build tool asks it "have you already built this?" and, when the
+answer is no, "can you build it for me over there?" Nothing about your source
+code changes. You point your build tool at a URL, and work that used to happen
+on your machine stops happening on your machine.
+
+It's written in Rust, ships as a single binary that plays every role, and
+speaks the [Remote Execution API](https://github.com/bazelbuild/remote-apis),
+an open protocol, not a NativeLink invention, which is why the build tool you
+already use can talk to it without a plugin.
+
+## The problem it exists to solve [#the-problem-it-exists-to-solve]
+
+Every build system computes the same thing twice. Once on your laptop, once in
+CI. Once for you, once for the colleague who pulled the same commit. Once
+before lunch, once after you reverted the change that broke it. The work is
+deterministic, the inputs are identical, and the machine does it again anyway.
+
+That waste has two different shapes, and they need two different fixes.
+
+Some work is *redundant*: somebody, somewhere, already produced exactly this
+output from exactly these inputs. The fix is a cache.
+
+Some work is *genuinely new* but badly placed: it has to run, but it doesn't
+have to run on the laptop you're typing on, one action at a time. The fix is to
+run it somewhere else, in parallel, on hardware that suits it.
+
+NativeLink is both fixes.
+
+## What a remote cache is [#what-a-remote-cache-is]
+
+A build is a graph of actions. Each action has inputs (source files, compiler
+flags, the compiler itself) and produces outputs. A **remote cache** stores
+those outputs on a server keyed by a hash of all of the inputs.
+
+Before running an action, your build tool hashes the inputs and asks the server
+whether it has a result for that hash. A hit means the output is downloaded
+instead of computed. A miss means the action runs and the result is uploaded so
+that nobody else has to run it.
+
+The key property is that the key *is* the content. This is called
+**content-addressed storage**, and it has a consequence worth pausing on:
+entries can never be stale. A cache keyed on file paths and timestamps needs
+invalidation logic, and invalidation logic is where build caches go wrong. A
+cache keyed on the hash of the inputs cannot return the wrong answer for a
+question, because a different question has a different key.
+
+<Callout type="info" title="Two caches, one idea">
+  NativeLink stores these separately. The **CAS** (content-addressable storage)
+  holds the bytes of files. The **action cache** maps "this action, with these
+  inputs" to "these output files." Most sentences about "the cache" mean both
+  at once.
+</Callout>
+
+The direct consequence: the more people and machines share one cache, the more
+often any given action has already been run by somebody. A cache used by one
+laptop is a modest optimization. A cache shared by a team and its CI is a
+different kind of thing.
+
+## What remote execution is [#what-remote-execution-is]
+
+Caching only helps with work that has already been done once. Remote execution
+is what happens on the miss.
+
+Instead of running the action locally, your build tool sends the action's
+description and its inputs to a **scheduler**, which hands it to a **worker**,
+a machine in a pool that does the work and returns the outputs. Because the
+pool has many machines, hundreds of actions can be in flight at once, which is
+the part your laptop cannot do no matter how new it is.
+
+<Mermaid>
+{`flowchart LR
+  C["your build tool"] -->|"1 · already built?"| AC["action cache"]
+  AC -->|"hit: outputs"| C
+  AC -->|"miss"| S["scheduler"]
+  S -->|"2 · run this"| W1["worker"]
+  S --> W2["worker"]
+  S --> W3["worker"]
+  W1 -->|"3 · outputs"| CAS["CAS"]
+  CAS --> C
+  W1 -.->|"inputs"| CAS
+  W2 -.-> CAS
+  W3 -.-> CAS`}
+</Mermaid>
+
+Four roles, CAS, action cache, scheduler and worker, and in NativeLink all four
+are the same binary started with different configuration.
+
+Remote execution asks something of you that caching does not: the action has to
+be **hermetic**. Everything it needs must be declared as an input, because a
+worker in another datacenter does not have your `/usr/local`, your environment
+variables, or your home directory. Builds that quietly depend on the machine
+they run on work locally and fail remotely, and that is the honest cost of the
+feature. [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+is the page about earning it.
+
+## Why NativeLink specifically [#why-nativelink-specifically]
+
+The protocol is open and there are other implementations. What's particular
+here:
+
+**It's one binary.** CAS, action cache, scheduler and worker are the same
+executable with different config. No separate control plane needs operating,
+and the thing you run locally is the thing you run in production.
+
+**It's Rust, with no garbage collector.** Build caches are latency-sensitive at
+the tail: a lookup that usually takes a millisecond and occasionally takes two
+hundred is felt by every action in the graph. Predictable memory behaviour is
+the reason for the language choice.
+
+**Storage is composable rather than fixed.** A store is declared, named, and
+wrapped by other stores: a fast local tier in front of a durable object store, a
+compression layer, a shard across several backends. You describe the shape you
+want instead of choosing from a menu.
+[Storage backends](/how-to/stores) is that vocabulary.
+
+**You can read all of it.** The source is public, and the code that runs your
+builds is code you can audit. On licensing, use the precise words rather than
+the loose ones: most of the repository is under the Functional Source License
+(`FSL-1.1-Apache-2.0`), which is source-available and converts to Apache 2.0
+over time, and two modules, metrics and persistent workers, are under the
+Business Source License and require an enterprise agreement for production
+use.
+
+## Is this for you? [#is-this-for-you]
+
+You will get something out of NativeLink if any of these are true:
+
+- Your build takes long enough that people context-switch while waiting.
+- CI rebuilds artifacts that a developer already built minutes earlier.
+- Your team shares a codebase, so you share cache hits by construction.
+- Some of your actions want hardware your laptop is not: many cores, much
+  memory, a GPU, a specific OS.
+- You run coding agents against the repo, and their edit-build-test loop is
+  bounded by build time rather than by model latency.
+
+You will get less out of it if your build is already seconds long, if every
+action is genuinely unique (some ML training and fuzzing workloads are), or if
+your build tool doesn't speak the Remote Execution API and you aren't willing to
+change that.
+
+Build tools with a real setup path in these docs are Bazel, Buck2, Siso, Pants,
+BuildStream and CMake via recc.
+[Connect your build](/getting-started/connect-your-build) has the specifics,
+including which of them are documented for caching only.
+
+## The three cases worth their own page [#the-three-cases-worth-their-own-page]
+
+Most people arrive with one of three problems. Each of these is the long-form
+version of a bullet above; read the one that's yours and skip the others.
+
+**[AI coding agents](/use-cases/ai-coding-agents)**: an agent's loop is
+edit, build, test, repeat, and it runs that loop far more often than a person
+does. Build time is the loop's wall clock and a large share of its token cost.
+
+**[Autonomous operation](/use-cases/autonomous-operation)**: the case for a
+build farm that grows and shrinks with demand instead of being sized for the
+worst Tuesday of the quarter, and an honest account of how much of that
+NativeLink hands you versus how much you assemble.
+
+**[Silicon and large builds](/use-cases/silicon-and-large-builds)**: EDA
+flows, big C++ and LLVM trees, and ML graphs: thousands of actions, hardware
+that differs from action to action, and a long tail that decides the wall
+clock. This is the workload remote execution was invented for.
+
+## Common questions [#common-questions]
+
+<Accordions>
+
+<Accordion title="Is this the same thing as ccache or sccache?" id="is-this-the-same-thing-as-ccache-or-sccache">
+
+Same instinct, different scope. `ccache` caches compiler invocations on one
+machine, and `sccache` extends that to a shared bucket. NativeLink caches every
+action in the build graph rather than just compiles, and it can also *run* the
+actions that miss. If a shared compile cache is all you need, you may not need
+this.
+
+</Accordion>
+
+<Accordion title="Do I have to adopt remote execution to get value?" id="do-i-have-to-adopt-remote-execution-to-get-value">
+
+No, and you shouldn't start there. Caching is the whole of Getting started and it works
+without hermetic toolchains, without a worker pool, and without changing how
+your actions are written. Remote execution is the next section and it is a bigger
+commitment. Most of the win, for most teams, is in the cache.
+
+</Accordion>
+
+<Accordion title="Does my build have to be Bazel?" id="does-my-build-have-to-be-bazel">
+
+No. Anything speaking the Remote Execution API can use NativeLink, and the
+docs cover Buck2, Siso, Pants, BuildStream and CMake via recc alongside Bazel.
+What matters is whether your build tool can describe an action's inputs
+precisely enough to hash them.
+
+</Accordion>
+
+<Accordion title="What does it cost to run?" id="what-does-it-cost-to-run">
+
+The software is free to run and the bill is infrastructure: a machine for the
+cache, storage for the blobs, and worker machines if you adopt remote
+execution. The trade to weigh is that storage and machines are cheaper than
+engineer-hours spent waiting, which is a real argument but not an automatic
+one: it depends on how much waiting there actually is.
+
+</Accordion>
+
+<Accordion title="Is it open source?" id="is-it-open-source">
+
+"Source-available" is the accurate phrase. Most of the repository is under the
+Functional Source License, which lets you read, modify and use the code with a
+restriction on offering it as a competing service, and converts to Apache 2.0
+on a schedule. Two modules, metrics and persistent workers, are
+Business Source Licensed and need an enterprise agreement for production use.
+Everything in these docs is runnable without one unless the page says otherwise.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/getting-started" title="Getting started">
+  The fastest way to find out is to run one. Getting started gets a cache serving hits
+  to your build, and it's the foundation everything else here stands on.
+</NextStep>
+
+<NextStep href="/explanations/architecture" kind="aside" title="How it actually works">
+  Prefer to understand the machine before you run it? The architecture page
+  covers the four roles and how a request moves through them.
+</NextStep>

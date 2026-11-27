@@ -1,19 +1,28 @@
 ---
-name: Sanitizers
+name: CI / Sanitizers
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  # AddressSanitizer is expensive and does not gate merge. Ordinary pull
+  # requests stay on the Nix Bazel lane. A release pull request
+  # (head branch `release/vX.Y.Z`, as in #3028) runs it, as do the nightly
+  # run of main, a published release, and a manual dispatch.
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
+  release:
+    types: [published]
   pull_request:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - "web/**"
+      - ".github/styles/**"
+  workflow_dispatch:
 
-permissions: read-all
+# Jobs without their own permissions block only need checkout. ci-metadata
+# degrades to a notice when the token cannot list this run's jobs, and a
+# pull-request build's token is capped at contents:read when it is minted
+# from a GitHub App installation.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,6 +30,12 @@ concurrency:
 
 jobs:
   sanitized-tests:
+    # `branches` above filters the base. The head check keeps this off
+    # ordinary pull requests. Other events always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/') ||
+      startsWith(github.event.pull_request.title, 'Release NativeLink')
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +49,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Free disk space
         uses: ./.github/actions/free-disk
 
@@ -44,5 +62,22 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
 
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          # Only the nightly run of main writes the shared cache. A release
+          # pull request, a published tag, and any other ref stay read-only.
+          api-key: >-
+            ${{ github.ref == 'refs/heads/main'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.ref == 'refs/heads/main' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+
       - name: Run Bazel tests
-        run: bazel test --config=${{ matrix.sanitizer }} --lockfile_mode=error --verbose_failures //...
+        run: bazel test --config=${{ matrix.sanitizer }} --config=nl-quiet --lockfile_mode=error --verbose_failures //...

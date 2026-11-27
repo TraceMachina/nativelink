@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,24 +15,44 @@
 // The utils is used by multiple tests and some the code is dead on.
 #![allow(dead_code)]
 
+use core::ops::Bound;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use futures::{Stream, StreamExt};
+use mock_instant::thread_local::MockClock;
+use nativelink_config::schedulers::SimpleSpec;
+use nativelink_config::stores::{EvictionPolicy, RedisSpec};
 use nativelink_error::{Code, Error};
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     UpdateForWorker, update_for_worker,
 };
+use nativelink_redis_tester::FakeRedisBackend;
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, SortedAwaitedAction, SortedAwaitedActionState,
+};
+use nativelink_scheduler::default_scheduler_factory::{
+    client_action_timeout_s, memory_awaited_action_db_factory, retain_completed_for_s,
+};
+use nativelink_scheduler::memory_awaited_action_db::{MemoryAwaitedActionDb, OperationIdFn};
+use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
+use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
 use nativelink_util::action_messages::{
     ActionInfo, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::ActionStateResult;
 use nativelink_util::origin_event::OriginMetadata;
-use tokio::sync::watch;
+use nativelink_util::store_trait::SchedulerStore;
+use tokio::sync::{Notify, Semaphore, watch};
 
 pub(crate) const INSTANCE_NAME: &str = "foobar_instance_name";
 
@@ -49,11 +69,96 @@ pub(crate) fn make_base_action_info(
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
         }),
     })
+}
+
+/// Exercise the same overlapping-build contract against both scheduler databases.
+pub(crate) async fn verify_overlapping_invocations(
+    scheduler: &SimpleScheduler,
+) -> Result<(), Error> {
+    use nativelink_scheduler::worker::Worker;
+    use nativelink_util::action_messages::{ActionStage, WorkerId};
+    use nativelink_util::operation_state_manager::ClientStateManager;
+    use nativelink_util::platform_properties::PlatformProperties;
+    use tokio::sync::mpsc;
+
+    let digest = DigestInfo::new([51; 32], 123);
+    let mut listeners = Vec::new();
+    let mut receivers = Vec::new();
+    let mut assignments = Vec::new();
+    for (invocation, scope) in [
+        ("build-one", Some("1".repeat(64))),
+        ("build-two", Some("2".repeat(64))),
+        ("unscoped", None),
+    ] {
+        let worker_id = WorkerId(format!("fresh-worker-{invocation}"));
+        let (tx, mut rx) = mpsc::channel(64);
+        // One in-flight action per worker, matching the single-use deployment.
+        scheduler
+            .add_worker(Worker::new(
+                worker_id.clone(),
+                PlatformProperties::default(),
+                tx,
+                10_000,
+                1,
+            ))
+            .await?;
+        assert!(matches!(
+            rx.recv().await.unwrap().update,
+            Some(update_for_worker::Update::ConnectionResult(_))
+        ));
+        let mut info = make_base_action_info(UNIX_EPOCH, digest);
+        let ActionUniqueQualifier::Cacheable(key) = &mut Arc::make_mut(&mut info).unique_qualifier
+        else {
+            panic!("Expected cacheable action");
+        };
+        key.execution_scope = scope;
+        let listener = scheduler
+            .add_action(OperationId::from(invocation), info.clone())
+            .await?;
+        scheduler.do_try_match_for_test().await?;
+        let update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect(
+                "Second invocation must receive a fresh worker while the first is still executing",
+            )
+            .expect("Worker must remain connected");
+        let Some(update_for_worker::Update::StartAction(assignment)) = update.update else {
+            panic!("Expected action assignment");
+        };
+        assert_eq!(assignment.worker_id, worker_id.to_string());
+        assert_eq!(
+            assignment.execute_request.as_ref().unwrap().action_digest,
+            Some(digest.into())
+        );
+        assert_eq!(listener.as_state().await?.0.stage, ActionStage::Executing);
+        // A reconnect within this invocation still follows the same execution.
+        let reconnect = scheduler
+            .add_action(OperationId::from(format!("{invocation}-reconnect")), info)
+            .await?;
+        assert_eq!(reconnect.as_state().await?.0.stage, ActionStage::Executing);
+        assignments.push(assignment);
+        listeners.push((listener, reconnect));
+        receivers.push(rx);
+    }
+    assert_ne!(assignments[0].operation_id, assignments[1].operation_id);
+    assert_ne!(assignments[0].worker_id, assignments[1].worker_id);
+    assert_ne!(assignments[0].operation_id, assignments[2].operation_id);
+    assert_ne!(assignments[1].operation_id, assignments[2].operation_id);
+    for (listener, reconnect) in &listeners {
+        assert_eq!(listener.as_state().await?.0.stage, ActionStage::Executing);
+        assert_eq!(reconnect.as_state().await?.0.stage, ActionStage::Executing);
+    }
+    scheduler.do_try_match_for_test().await?;
+    for rx in &mut receivers {
+        assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+    Ok(())
 }
 
 pub(crate) struct TokioWatchActionStateResult {
@@ -135,6 +240,12 @@ pub(crate) fn update_eq(
             }
             _ => false,
         },
+        update_for_worker::Update::ExecuteResultAccepted(actual_update) => match expected_update {
+            update_for_worker::Update::ExecuteResultAccepted(expected_update) => {
+                expected_update == actual_update
+            }
+            _ => false,
+        },
         update_for_worker::Update::ConnectionResult(actual_update) => match expected_update {
             update_for_worker::Update::ConnectionResult(expected_update) => {
                 expected_update == actual_update
@@ -142,4 +253,264 @@ pub(crate) fn update_eq(
             _ => false,
         },
     }
+}
+
+/// The two awaited-action backends a scheduler can run on. Until the journal
+/// replaces the store backend (SCHEDULER-PLAN M5), every scheduler case runs
+/// on both, so the two cannot disagree without a test failing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    /// `MemoryAwaitedActionDb`, the backend the journal will keep.
+    Memory,
+    /// `StoreAwaitedActionDb` over a Redis store talking to the fake Redis.
+    FakeRedis,
+}
+
+impl Backend {
+    pub(crate) const ALL: [Self; 2] = [Self::Memory, Self::FakeRedis];
+}
+
+/// A scheduler on one backend, with what keeps that backend alive.
+pub(crate) struct BackendScheduler {
+    pub(crate) backend: Backend,
+    pub(crate) scheduler: Arc<SimpleScheduler>,
+    pub(crate) worker_scheduler: Arc<dyn WorkerScheduler>,
+    pub(crate) task_change_notify: Arc<Notify>,
+    /// The fake Redis server for `Backend::FakeRedis`, kept so the test can
+    /// reach it (fault policies, inspection) and so it outlives the store.
+    pub(crate) fake_redis: Option<FakeRedisBackend<RedisSubscriptionManager>>,
+}
+
+/// Builds a `SimpleScheduler` from `spec` on `backend`, with the mock clock
+/// (`MockInstantWrapped`) as its time source on both, so one test body drives
+/// either backend the same way. `retain_completed_for_s` and
+/// `client_action_timeout_s` come from the spec, as the factory takes them.
+pub(crate) async fn scheduler_on(
+    backend: Backend,
+    spec: &SimpleSpec,
+) -> Result<BackendScheduler, Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, worker_scheduler, fake_redis) = match backend {
+        Backend::Memory => {
+            let db = memory_awaited_action_db_factory(
+                spec.retain_completed_for_s,
+                &task_change_notify,
+                MockInstantWrapped::default,
+            );
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                db,
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, None)
+        }
+        Backend::FakeRedis => {
+            let (store, fake_redis) = fake_redis_store().await?;
+            let db = StoreAwaitedActionDb::new(
+                store,
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                OperationId::default,
+                retain_completed_for_s(spec.retain_completed_for_s),
+                client_action_timeout_s(spec.client_action_timeout_s),
+                false,
+            )
+            .await?;
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                db,
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, Some(fake_redis))
+        }
+    };
+    Ok(BackendScheduler {
+        backend,
+        scheduler,
+        worker_scheduler,
+        task_change_notify,
+        fake_redis,
+    })
+}
+
+/// A Redis store on a fake Redis of its own, whose keys expire on the test's
+/// clock, as records do on the memory backend.
+async fn fake_redis_store() -> Result<
+    (
+        Arc<impl SchedulerStore>,
+        FakeRedisBackend<RedisSubscriptionManager>,
+    ),
+    Error,
+> {
+    let fake_redis: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    fake_redis.set_clock(MockClock::time);
+    let port = fake_redis.clone().run().await;
+    let store = RedisStore::new_standard(RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{port}")],
+        experimental_pub_sub_channel: Some("scheduler_utils_channel".to_string()),
+        ..Default::default()
+    })
+    .await?;
+    fake_redis.set_subscription_manager(store.subscription_manager().await?);
+    Ok((store, fake_redis))
+}
+
+/// Wraps a real `AwaitedActionDb` and makes the matching pass read the
+/// queue one action per permit on `gate`, so a test can do things between
+/// two actions of the same pass. Only queued-range reads are gated.
+#[derive(MetricsComponent)]
+pub(crate) struct GatedQueueDb<A: AwaitedActionDb> {
+    pub(crate) inner: A,
+    pub(crate) gate: Arc<Semaphore>,
+    /// When set, a queued listing also waits for one permit here before it
+    /// reads the queue at all, so a test can queue several actions and be
+    /// sure one pass lists them all.
+    pub(crate) listing_gate: Option<Arc<Semaphore>>,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for GatedQueueDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        if let (Some(listing_gate), SortedAwaitedActionState::Queued) = (&self.listing_gate, state)
+        {
+            listing_gate.acquire().await.expect("gate closed").forget();
+        }
+        let items = self
+            .inner
+            .get_range_of_actions(state, start, end, desc)
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        let gate = matches!(state, SortedAwaitedActionState::Queued).then(|| self.gate.clone());
+        Ok(futures::stream::iter(items).then(move |item| {
+            let gate = gate.clone();
+            async move {
+                if let Some(gate) = gate {
+                    gate.acquire_owned().await.expect("gate closed").forget();
+                }
+                item
+            }
+        }))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+/// `scheduler_on` with the backend behind a `GatedQueueDb`, and operation
+/// ids from `operation_ids` so a test knows the order of equal sort keys.
+pub(crate) async fn gated_scheduler_on(
+    backend: Backend,
+    spec: &SimpleSpec,
+    gate: Arc<Semaphore>,
+    listing_gate: Option<Arc<Semaphore>>,
+    operation_ids: impl Fn() -> OperationId + Send + Sync + Unpin + 'static,
+) -> Result<BackendScheduler, Error> {
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, worker_scheduler, fake_redis) = match backend {
+        Backend::Memory => {
+            let inner = MemoryAwaitedActionDb::new_with_operation_id_fn(
+                &EvictionPolicy {
+                    max_seconds: retain_completed_for_s(spec.retain_completed_for_s),
+                    ..Default::default()
+                },
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                OperationIdFn::new(operation_ids),
+            );
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                GatedQueueDb {
+                    inner,
+                    gate,
+                    listing_gate,
+                },
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, None)
+        }
+        Backend::FakeRedis => {
+            let (store, fake_redis) = fake_redis_store().await?;
+            let inner = StoreAwaitedActionDb::new(
+                store,
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                operation_ids,
+                retain_completed_for_s(spec.retain_completed_for_s),
+                client_action_timeout_s(spec.client_action_timeout_s),
+                false,
+            )
+            .await?;
+            let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+                spec,
+                GatedQueueDb {
+                    inner,
+                    gate,
+                    listing_gate,
+                },
+                || async move {},
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            (scheduler, worker_scheduler, Some(fake_redis))
+        }
+    };
+    Ok(BackendScheduler {
+        backend,
+        scheduler,
+        worker_scheduler,
+        task_change_notify,
+        fake_redis,
+    })
 }

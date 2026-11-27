@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -216,7 +216,7 @@ impl GcsClient {
     /// Convert GCS object to our internal representation
     fn convert_to_gcs_object(&self, obj: Object) -> GcsObject {
         let update_time = obj.updated.map(|dt| Timestamp {
-            seconds: dt.unix_timestamp(),
+            seconds: dt.unix_timestamp() as u64,
             nanos: 0,
         });
 

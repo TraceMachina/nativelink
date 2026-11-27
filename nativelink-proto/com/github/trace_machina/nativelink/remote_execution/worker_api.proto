@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -41,14 +41,67 @@ service WorkerApi {
     rpc ConnectWorker(stream UpdateForScheduler) returns (stream UpdateForWorker);
 }
 
+/// What a worker has to spare, sent with every keepalive so the scheduler
+/// can veto a placement the admission ledger would allow. Absent from
+/// older workers.
+message WorkerLoad {
+    /// Memory the worker could still give an action, in KiB: the cgroup
+    /// limit less its working set (current usage less the page cache the
+    /// kernel can drop at once), or MemAvailable without a limit.
+    uint64 free_memory_kb = 1;
+
+    reserved 2; // NextId.
+}
+
 /// Request object for keep alive requests.
 message KeepAliveRequest {
-    reserved 1; // NextId.
+    /// The worker's spare capacity as of this keepalive.
+    WorkerLoad load = 1;
+
+    /// The operations the worker is running as of this keepalive. A worker
+    /// that reports them lets the scheduler tell an operation the worker
+    /// still runs from one whose result never arrived. Absent from workers
+    /// that do not report.
+    RunningOperations running_operations = 2;
+
+    reserved 3; // NextId.
+}
+
+/// The operations a worker is running, by operation id.
+message RunningOperations {
+    repeated string operation_ids = 1;
+
+    /// The most memory the worker has sampled for each running operation
+    /// so far, in KiB. Lets the scheduler tell, if the worker is lost, which
+    /// of its actions grew past its reservation: one reported above it is
+    /// given a larger reservation on that loss. The report is only as fresh
+    /// as the keepalive, sent every half of the worker API timeout (2.5 s by
+    /// default); growth that outruns it, or a worker that does not report,
+    /// leaves the scheduler to its repeated-loss rule instead. Only sampled
+    /// operations appear.
+    repeated OperationMemory memory = 2;
+
+    reserved 3; // NextId.
+}
+
+/// One running operation's sampled memory.
+message OperationMemory {
+    string operation_id = 1;
+
+    /// The highest figure the sampler has read for the operation so far.
+    uint64 peak_memory_kb = 2;
+
+    reserved 3; // NextId.
 }
 
 /// Request object for going away requests.
 message GoingAwayRequest {
-    reserved 1; // NextId.
+    reserved 1;
+    /// The worker is shutting down but still running actions: stop
+    /// dispatching to it and let those finish. It leaves the pool when its
+    /// stream closes. Without this the scheduler removes the worker at
+    /// once and requeues everything it holds.
+    bool drain = 2; // NextId: 3.
 }
 
 /// Represents the initial request sent to the scheduler informing the
@@ -67,21 +120,32 @@ message ConnectWorkerRequest {
     repeated build.bazel.remote.execution.v2.Platform.Property properties = 1;
 
     /// Prefix to use for worker IDs. This is primarily used for debugging
-    /// or for other systems to identify workers. The scheduler will always
-    /// append this prefix to the assigned worker_id followed by a UUIDv6.
+    /// or for other systems to identify workers. When `worker_id` is empty,
+    /// the scheduler names the worker this prefix followed by a UUIDv6.
     string worker_id_prefix = 2;
 
     /// Maximum number of inflight tasks this worker can cope with at one time
     /// The default (0) means unlimited.
     uint64 max_inflight_tasks = 3;
 
-    reserved 4; // NextId.
+    /// The worker admits any action while it holds nothing else, whatever
+    /// it reads free, rather than declining it for load. A scheduler can
+    /// then read a decline for load as coming from a busy worker. Absent
+    /// (false) from older workers.
+    bool admits_when_idle = 4;
+
+    /// The id the worker chose for itself, kept across reconnects for the
+    /// life of the process. The scheduler uses it as given; empty (an older
+    /// worker) and the scheduler names the worker from `worker_id_prefix`.
+    string worker_id = 5;
+
+    reserved 6; // NextId.
 }
 
 /// The result of an ExecutionRequest.
 message ExecuteResult {
     /// The `instance_name` this task was initially assigned to. This is set by the client
-    /// that initially sent the job as part of the BRE protocol.
+    /// that initially sent the job as part of the RBE protocol.
     string instance_name = 1;
 
     /// The operation ID that was executed.
@@ -111,6 +175,32 @@ message ExecuteComplete {
     string operation_id = 1;
 }
 
+/// How an action ended, as the worker saw it. Separate from the exit code:
+/// a kill by the worker or the kernel is a sizing fact, not a tool failure.
+enum ResourceOutcome {
+    RESOURCE_OUTCOME_UNKNOWN = 0;
+    /// The process exited on its own, whatever its exit code.
+    COMPLETED = 1;
+    /// Killed for memory: by the worker's reservation enforcement, or by
+    /// the kernel with the last sample within 10% of the memory limit.
+    KILLED_MEMORY = 2;
+    /// Killed for disk. Reserved for disk enforcement.
+    KILLED_DISK = 3;
+    /// Killed by the action timeout.
+    KILLED_TIMEOUT = 4;
+    /// Killed from outside: a scheduler cancel, or a signal nobody here sent.
+    KILLED_EXTERNAL = 5;
+}
+
+/// The reservation an action was admitted under, echoed by the worker so
+/// the measurement and the number it was measured against travel together.
+message Reservation {
+    uint64 cpu_count = 1;
+    uint64 memory_kb = 2;
+    uint64 disk_kb = 3;
+    reserved 4; // NextId.
+}
+
 /// Resource usage observed by the worker while running one action.
 message ActionResourceUsage {
     /// Peak resident memory observed for the action process tree.
@@ -125,6 +215,114 @@ message ActionResourceUsage {
     /// The worker ID that observed the resource usage.
     string worker_id = 4;
 
+    /// Total CPU time consumed by the action process tree, in milliseconds.
+    /// User and system time combined, summed across every process in the
+    /// action's process group.
+    uint64 cpu_time_ms = 5;
+
+    /// Wall time from spawn to exit, in milliseconds; cores used is
+    /// cpu_time_ms / wall_time_ms.
+    uint64 wall_time_ms = 6;
+
+    /// Peak bytes under the action's work directory, in KiB. Not yet
+    /// measured; zero.
+    uint64 peak_disk_kb = 7;
+
+    /// How the action ended.
+    ResourceOutcome outcome = 8;
+
+    /// True when a worker-side limit, not the kernel or a timeout, ended
+    /// the action.
+    bool enforced = 9;
+
+    /// What the action was admitted with, from its platform properties.
+    Reservation reserved = 10;
+
+    /// Time from the start of the input fetch to its end, in milliseconds:
+    /// `input_fetch_completed_timestamp - input_fetch_start_timestamp` of
+    /// the action result's `ExecutedActionMetadata`.
+    uint64 input_fetch_ms = 11;
+
+    /// Time spent uploading outputs, in milliseconds, from the same
+    /// metadata. Zero when the action failed before uploading.
+    uint64 output_upload_ms = 12;
+
+    /// Bytes of the input files hardlinked into the action's directory.
+    /// Subtrees served whole by the worker's directory cache are not
+    /// walked, so they are not counted.
+    uint64 input_bytes = 13;
+
+    /// Of `input_bytes`, the bytes the worker's local store already held;
+    /// the rest were fetched from the CAS for this action. Files a failed
+    /// fetch attempt downloaded count as fetched, not cached, on the retry.
+    uint64 input_cached_bytes = 14;
+
+    /// Bytes of the output files, stdout and stderr in the action result.
+    /// An output directory counts its tree digest, not its contents.
+    uint64 output_bytes = 15;
+
+    /// Peak device memory the action held on its GPU, in KiB, as measured
+    /// by whatever wraps the action and reported through the side channel
+    /// file. The worker does not read a device itself. Zero when nothing
+    /// measured it, which is every action on a worker without a wrapper
+    /// that does.
+    uint64 peak_gpu_memory_kb = 16;
+
+    reserved 17; // NextId.
+}
+
+/// Why one attempt at an action ended without the result it was run for.
+/// The action was requeued, failed for having been tried too often, or, for
+/// a missing input, handed back to the client to upload and ask again;
+/// either way the attempt cost time a build waited for.
+enum AttemptEndReason {
+    ATTEMPT_END_REASON_UNKNOWN = 0;
+    /// The worker running it went away: disconnected, evicted, OOM-killed
+    /// as a whole, or stopped answering keepalives.
+    WORKER_LOST = 1;
+    /// The scheduler's executing sweep timed it out: past `Action.timeout`
+    /// plus the grace a live worker has to report, or no update from the
+    /// worker for too long. A command past its timeout on a live worker
+    /// comes back as a result and is not an ended attempt.
+    TIMEOUT = 2;
+    /// Killed for memory and requeued with a larger reservation.
+    OUT_OF_MEMORY = 3;
+    /// An input it needed was missing from the CAS. The worker returns this
+    /// as a `FAILED_PRECONDITION` result, so the client uploads the input
+    /// and runs the action again.
+    MISSING_INPUT = 4;
+    /// The worker had no room for it; not counted as an attempt.
+    BACKPRESSURE = 5;
+    /// The worker declined it before starting.
+    DECLINED = 6;
+    /// Any other error the worker reported for it.
+    WORKER_ERROR = 7;
+    /// The input fetch ran past the worker's `max_download_timeout`.
+    INPUT_FETCH_TIMEOUT = 8;
+    /// The worker finished it but the scheduler could not store the result,
+    /// so the executing sweep requeued it.
+    LOST_RESULT = 9;
+}
+
+/// One attempt at an action ended without the result it was run for.
+/// Published as an origin event whose parent is the attempt's
+/// `scheduler_start_execute` event, once the scheduler has recorded the
+/// end; an update it rejects publishes nothing. The event does not say
+/// whether the action was requeued: a later `scheduler_start_execute` for
+/// the same operation is the retry, and an action with none failed.
+message ActionAttemptEnded {
+    /// The operation the attempt belonged to.
+    string operation_id = 1;
+
+    /// The worker the attempt ran on.
+    string worker_id = 2;
+
+    /// Why it ended.
+    AttemptEndReason reason = 3;
+
+    /// The error the scheduler acted on, when there was one.
+    string detail = 4;
+
     reserved 5; // NextId.
 }
 
@@ -133,6 +331,64 @@ message ConnectionResult {
     /// The worker ID to place in the action results generated by this worker.
     string worker_id = 1;
 
+    /// The scheduler understands ExecuteAccepted and ExecuteDeclined. A
+    /// worker sends them only to a scheduler that says so: an older
+    /// scheduler would drop them, and a declined action would then wait on
+    /// a worker that never runs it.
+    bool dispatch_ack = 2;
+
+    /// The platform property the scheduler reads an action's memory
+    /// reservation from, when it vetoes placement on the worker's reported
+    /// free memory (`live_memory_veto`). The worker declines a dispatch for
+    /// load against the same property, so the two sides cannot disagree.
+    /// Empty when the scheduler does not veto; the worker then never
+    /// declines for load.
+    string memory_property = 3;
+
+    reserved 4; // NextId.
+}
+
+/// The worker took the action it was sent and is about to run it. Until
+/// this arrives the scheduler has only charged its ledger on the send.
+message ExecuteAccepted {
+    string operation_id = 1;
+    reserved 2; // NextId.
+}
+
+/// The worker will not run the action it was sent. The scheduler restores
+/// its ledger and requeues the action without counting an attempt, and
+/// pauses the worker until it reports room again.
+message ExecuteDeclined {
+    string operation_id = 1;
+
+    enum Reason {
+        REASON_UNSPECIFIED = 0;
+        /// The worker already has `max_inflight_tasks` actions.
+        AT_CAPACITY = 1;
+        /// The action's memory reservation is more than the worker has free.
+        LOAD = 2;
+        /// The worker is shutting down, or is single-use and already took
+        /// its action.
+        SHUTTING_DOWN = 3;
+    }
+    Reason reason = 2;
+
+    /// Free text for the log.
+    string detail = 3;
+
+    /// For LOAD: what the action asked for and what the worker had, in KiB.
+    uint64 needed_kb = 4;
+    uint64 free_kb = 5;
+
+    reserved 6; // NextId.
+}
+
+/// The scheduler has the result the worker sent for this operation: it
+/// applied it, or the operation is no longer the worker's. The worker need
+/// not send it again. Sent only to a worker that named itself
+/// (`ConnectWorkerRequest.worker_id`); an older worker does not know it.
+message ExecuteResultAccepted {
+    string operation_id = 1;
     reserved 2; // NextId.
 }
 
@@ -166,8 +422,11 @@ message UpdateForWorker {
 
         /// Instructs the worker to kill a specific running operation.
         KillOperationRequest kill_operation_request = 5;
+
+        /// The scheduler has the result of an operation.
+        ExecuteResultAccepted execute_result_accepted = 6;
     }
-    reserved 6; // NextId.
+    reserved 7; // NextId.
 }
 
 /// Communication from the worker to the scheduler.
@@ -202,8 +461,14 @@ message UpdateForScheduler {
 
         /// Notify that the execution has completed, but result is uploading.
         ExecuteComplete execute_complete = 5;
+
+        /// The worker took the action.
+        ExecuteAccepted execute_accepted = 6;
+
+        /// The worker will not run the action.
+        ExecuteDeclined execute_declined = 7;
     }
-    reserved 6; // NextId.
+    reserved 8; // NextId.
 }
 
 message StartExecute {
@@ -225,10 +490,14 @@ message StartExecute {
     string worker_id = 6;
 
     reserved 7; // NextId.
+
+    /// Original execution metadata, including the build tool and invocation.
+    /// Workers must not infer a Buck2 file session from an action digest alone.
+    build.bazel.remote.execution.v2.RequestMetadata request_metadata = 8;
 }
 
 /// This is a special message used to save actions into the CAS that can be used
-/// by programs like bb_browswer to inspect the history of a build.
+/// by programs like bb_browser to inspect the history of a build.
 /// Note: Ensure this is always compatible with:
 /// https://github.com/buildbarn/bb-remote-execution/blob/e95e066eb624dc9099682394ec18c12e218e8fc4/pkg/proto/cas/cas.proto#L23
 message HistoricalExecuteResponse {

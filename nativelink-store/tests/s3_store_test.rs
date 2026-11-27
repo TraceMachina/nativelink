@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -244,42 +244,24 @@ async fn simple_update_ac() -> Result<(), Error> {
             .await
     });
 
-    // Extract out the body stream sent by the s3 store.
-    let body_stream = {
-        // We need to poll here to get the request sent, but future
-        // wont be done until we send all the data (which we do later).
-        assert_eq!(Poll::Pending, futures::poll!(&mut update_fut));
-        let sent_request = request_receiver.expect_request();
-        assert_eq!(sent_request.method(), "PUT");
-        assert_eq!(
-            sent_request.uri(),
-            format!(
-                "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
-            )
-        );
-        ByteStream::from_body_0_4(sent_request.into_body())
-    };
-
+    // A small PUT is issued only after the complete payload has been validated.
+    assert_eq!(Poll::Pending, futures::poll!(&mut update_fut));
     let send_data_copy = send_data.clone();
-    // Create spawn that is responsible for sending the stream of data
-    // to the S3Store and processing/forwarding to the S3 backend.
-    let spawn_fut = spawn!("simple_update_ac", async move {
-        tokio::try_join!(update_fut, async move {
-            for i in 0..CONTENT_LENGTH {
-                tx.send(send_data_copy.slice(i..=i)).await?;
-            }
-            tx.send_eof()
-        })
-        .or_else(
-            #[expect(clippy::use_debug)]
-            |e| {
-                // Printing error to make it easier to debug, since ordering
-                // of futures is not guaranteed.
-                eprintln!("Error updating or sending in spawn: {e:?}");
-                Err(e)
-            },
+    tokio::try_join!(update_fut, async move {
+        for i in 0..CONTENT_LENGTH {
+            tx.send(send_data_copy.slice(i..=i)).await?;
+        }
+        tx.send_eof()
+    })?;
+    let sent_request = request_receiver.expect_request();
+    assert_eq!(sent_request.method(), "PUT");
+    assert_eq!(
+        sent_request.uri(),
+        format!(
+            "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
         )
-    });
+    );
+    let body_stream = ByteStream::from_body_0_4(sent_request.into_body());
 
     // Wait for all the data to be received by the s3 backend server.
     let data_sent_to_s3 = body_stream
@@ -292,11 +274,6 @@ async fn simple_update_ac() -> Result<(), Error> {
 
     assert_eq!(send_data, actual_payload, "Expected data to match");
 
-    // Collect our spawn future to ensure it completes without error.
-    spawn_fut
-        .await
-        .err_tip(|| "Failed to launch spawn")?
-        .err_tip(|| "In spawn")?;
     Ok(())
 }
 
@@ -349,7 +326,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH))
+                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -587,7 +564,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{CAS_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE))
+                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -905,7 +882,7 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
             ),
         ]);
     let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::v2026_01_12())
+        .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(REGION))
         .http_client(mock_client.clone())
         .build();
@@ -924,5 +901,248 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
         .await
         .unwrap();
     mock_client.assert_requests_match(&[]);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint, addressing style and checksum behavior. These drive the store
+// through `new_with_http_clients` so the SDK client is built from the spec,
+// rather than handed in ready-made as the tests above do.
+// ---------------------------------------------------------------------------
+
+const CUSTOM_ENDPOINT: &str = "https://s3.example.com";
+
+// Coerces the function item to a plain fn pointer matching the store type.
+const NOW_FN: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+
+fn compatible_endpoint_spec(force_path_style: bool) -> ExperimentalAwsSpec {
+    ExperimentalAwsSpec {
+        region: REGION.to_string(),
+        bucket: BUCKET_NAME.to_string(),
+        endpoint: Some(CUSTOM_ENDPOINT.to_string()),
+        force_path_style,
+        access_key_id: Some("AKIDTEST".to_string()),
+        secret_access_key: Some("SECRETTEST".to_string()),
+        ..Default::default()
+    }
+}
+
+async fn store_with(
+    spec: &ExperimentalAwsSpec,
+    mock: StaticReplayClient,
+) -> Result<Arc<S3Store<fn() -> MockInstantWrapped>>, Error> {
+    S3Store::new_with_http_clients(spec, mock.clone(), mock, NOW_FN).await
+}
+
+fn ok_replay_client() -> StaticReplayClient {
+    StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder().body(SdkBody::empty()).unwrap(),
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .body(SdkBody::empty())
+            .unwrap(),
+    )])
+}
+
+#[nativelink_test]
+async fn force_path_style_puts_the_bucket_in_the_path() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-path-style";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let want_prefix = format!(
+        "{CUSTOM_ENDPOINT}/{BUCKET_NAME}/{VALID_HASH1}-{}",
+        DATA.len()
+    );
+    assert!(
+        reqs[0].uri().starts_with(&want_prefix),
+        "expected path-style URL starting with {want_prefix}, got {}",
+        reqs[0].uri()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn endpoint_defaults_to_virtual_hosted_addressing() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-virtual-hosted";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(false), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let want_prefix = format!(
+        "https://{BUCKET_NAME}.s3.example.com/{VALID_HASH1}-{}",
+        DATA.len()
+    );
+    assert!(
+        reqs[0].uri().starts_with(&want_prefix),
+        "expected virtual-hosted URL starting with {want_prefix}, got {}",
+        reqs[0].uri()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn single_put_lets_the_sdk_own_the_checksum() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-checksum";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let headers = reqs[0].headers();
+
+    assert!(
+        headers.get("x-amz-sdk-checksum-algorithm").is_some(),
+        "expected the SDK to select a checksum algorithm"
+    );
+    let trailer = headers.get("x-amz-trailer").unwrap_or_default();
+    assert!(
+        trailer.starts_with("x-amz-checksum-"),
+        "expected the SDK to append a checksum trailer, got {trailer:?}"
+    );
+    assert!(
+        headers
+            .iter()
+            .all(|(name, _)| !name.starts_with("x-amz-checksum-")),
+        "the store must not write a checksum header itself"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_small_upload_never_sends_s3_put() -> Result<(), Error> {
+    for payload in [
+        Bytes::new(),
+        Bytes::from_static(b"short"),
+        Bytes::from(vec![9; 79]),
+    ] {
+        let mock = StaticReplayClient::new(vec![]);
+        let store = store_with(&compatible_endpoint_spec(true), mock).await?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let key = DigestInfo::try_new(VALID_HASH1, 78)?;
+        let (result, _) = tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn empty_cas_upload_never_sends_s3_put() -> Result<(), Error> {
+    for key in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
+        let store = store_with(
+            &compatible_endpoint_spec(true),
+            StaticReplayClient::new(vec![]),
+        )
+        .await?;
+        store.update_oneshot(key, Bytes::new()).await?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_multipart_upload_aborts_before_s3_commit() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::from(
+                "<InitiateMultipartUploadResult><UploadId>incomplete-upload</UploadId></InitiateMultipartUploadResult>"
+            )).unwrap()),
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::NO_CONTENT).body(SdkBody::empty()).unwrap()),
+    ]);
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send_eof()?;
+    let result = store
+        .update(
+            DigestInfo::try_new(VALID_HASH1, 8 * 1024 * 1024)?,
+            rx,
+            UploadSizeInfo::ExactSize(8 * 1024 * 1024),
+        )
+        .await;
+    assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    let methods: Vec<_> = mock
+        .actual_requests()
+        .map(|request| request.method().to_string())
+        .collect();
+    assert_eq!(methods, vec!["POST", "DELETE"]);
+    Ok(())
+}
+
+// A caller that does not know an upload's length announces the most it could
+// be. The store's own advertised limit must be accepted, where `u64::MAX` is
+// refused before any request is sent.
+#[nativelink_test]
+async fn update_accepts_its_advertised_max_upload_size() -> Result<(), Error> {
+    const DATA: &[u8] = b"unknown-length";
+    let digest = DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?;
+
+    let refusing = store_with(
+        &compatible_endpoint_spec(true),
+        StaticReplayClient::new(vec![]),
+    )
+    .await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send(DATA.into()).await?;
+    tx.send_eof()?;
+    let result = refusing
+        .update(digest, rx, UploadSizeInfo::MaxSize(u64::MAX))
+        .await;
+    assert_eq!(result.unwrap_err().code, Code::FailedPrecondition);
+
+    let mock = StaticReplayClient::new(vec![
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::from(
+                "<InitiateMultipartUploadResult><UploadId>advertised-max</UploadId></InitiateMultipartUploadResult>"
+            )).unwrap()),
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()),
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::from(
+                "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>"
+            )).unwrap()),
+    ]);
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send(DATA.into()).await?;
+    tx.send_eof()?;
+    let uploaded = store
+        .update(digest, rx, UploadSizeInfo::MaxSize(store.max_upload_size()))
+        .await?;
+    assert_eq!(uploaded, DATA.len() as u64);
+    let methods: Vec<_> = mock
+        .actual_requests()
+        .map(|request| request.method().to_string())
+        .collect();
+    assert_eq!(methods, vec!["POST", "PUT", "POST"]);
     Ok(())
 }

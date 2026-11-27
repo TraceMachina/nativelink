@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
-    BoolValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
     SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
 };
@@ -486,14 +486,16 @@ impl StoreDriver for ExperimentalMongoStore {
 
         // Read all data into memory with proper EOF handling
         let mut data = Vec::new();
-        while let Ok(chunk) = reader.recv().await {
+        loop {
+            let chunk = reader.recv().await?;
             if chunk.is_empty() {
                 break; // Empty chunk signals EOF
             }
             data.extend_from_slice(&chunk);
         }
 
-        let size = data.len() as i64;
+        let size = data.len().try_into().unwrap_or(i64::MAX);
+        upload_size.validate_size(data.len() as u64)?;
 
         // Create document
         let doc = doc! {
@@ -627,10 +629,7 @@ impl StoreDriver for ExperimentalMongoStore {
         registry.register_indicator(self);
     }
 
-    fn register_remove_callback(
-        self: Arc<Self>,
-        _callback: Arc<dyn RemoveItemCallback>,
-    ) -> Result<(), Error> {
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
         // drop because we don't remove anything from Mongo
         Ok(())
     }
@@ -891,19 +890,13 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
 impl SchedulerStore for ExperimentalMongoStore {
     type SubscriptionManager = ExperimentalMongoSubscriptionManager;
 
-    async fn subscription_manager(
+    fn subscription_manager(
         &self,
-    ) -> Result<Arc<ExperimentalMongoSubscriptionManager>, Error> {
+    ) -> impl Future<Output = Result<Arc<ExperimentalMongoSubscriptionManager>, Error>> {
         let mut subscription_manager = self.subscription_manager.lock();
-        if let Some(subscription_manager) = &*subscription_manager {
+        std::future::ready(if let Some(subscription_manager) = &*subscription_manager {
             Ok(subscription_manager.clone())
-        } else {
-            if !self.enable_change_streams {
-                return Err(make_input_err!(
-                    "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
-                ));
-            }
-
+        } else if self.enable_change_streams {
             let sub = Arc::new(ExperimentalMongoSubscriptionManager::new(
                 self.database.clone(),
                 self.scheduler_collection.name().to_string(),
@@ -911,7 +904,11 @@ impl SchedulerStore for ExperimentalMongoStore {
             ));
             *subscription_manager = Some(sub.clone());
             Ok(sub)
-        }
+        } else {
+            Err(make_input_err!(
+                "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
+            ))
+        })
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
@@ -1070,7 +1067,10 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         // Add sort if specified
         let find_options = if let Some(sort_key) = K::MAYBE_SORT_KEY {
-            FindOptions::builder().sort(doc! { sort_key: 1 }).build()
+            let direction = if K::SORT_DESCENDING { -1 } else { 1 };
+            FindOptions::builder()
+                .sort(doc! { sort_key: direction })
+                .build()
         } else {
             FindOptions::default()
         };
@@ -1118,6 +1118,29 @@ impl SchedulerStore for ExperimentalMongoStore {
                 )
             })
         }))
+    }
+
+    async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        let index_value = index.index_value();
+        let filter = doc! {
+            K::INDEX_NAME: {
+                "$regex": format!("^{}", regex::escape(index_value.as_ref())),
+            }
+        };
+        // Counting is a read-only observer, so unlike search_by_index_prefix it
+        // does not create the index.
+        self.scheduler_collection
+            .count_documents(filter)
+            .await
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to count in count_by_index_prefix: {e}"
+                )
+            })
     }
 
     async fn get_and_decode<K>(

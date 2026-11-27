@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::fmt;
+use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex};
@@ -21,23 +22,153 @@ use nativelink_util::background_spawn;
 use redis::Value;
 use redis_protocol::resp2::decode::decode;
 use redis_protocol::resp2::types::{OwnedFrame, Resp2Frame};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot::{self, Sender};
 use tracing::{debug, info, trace};
 
-use crate::fake_redis::{arg_as_string, fake_redis_internal};
+use crate::fake_redis::arg_as_string;
+
+/// The error a command answers with instead of running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// `-ERR <message>`.
+    Error(String),
+    /// `-READONLY`, what a replica answers a write with after a failover.
+    ReadOnly,
+    /// `-OOM`, what a full server with `noeviction` answers a write with.
+    Oom,
+    /// The command runs, then the client reads `-ERR <message>`: a reply
+    /// lost after the write landed, as a timeout loses it.
+    AppliedThenError(String),
+}
+
+impl Fault {
+    fn reply(&self) -> String {
+        match self {
+            Self::Error(message) | Self::AppliedThenError(message) => {
+                format!("-ERR {message}\r\n")
+            }
+            Self::ReadOnly => "-READONLY You can't write against a read only replica.\r\n".into(),
+            Self::Oom => "-OOM command not allowed when used memory > 'maxmemory'.\r\n".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FaultRule {
+    /// Upper-case command name, or `*` for any.
+    command: String,
+    /// Matches commands whose first argument starts with this.
+    key_prefix: Option<String>,
+    fault: Fault,
+    /// How many more commands it fails; `None` is until cleared.
+    remaining: Option<u64>,
+}
+
+/// What the fake does wrong, consulted on every command and connection.
+/// The default does nothing wrong.
+#[derive(Debug, Default)]
+struct FaultPolicy {
+    rules: Vec<FaultRule>,
+    /// Commands received, by upper-case name, faulted ones included.
+    counts: HashMap<String, u64>,
+    /// Commands received since the start; never reset.
+    total: u64,
+    /// Connections are closed and new ones refused while set.
+    partitioned: bool,
+    /// Bumped to close every open connection once.
+    generation: u64,
+    /// Held before each reply is written.
+    latency: Option<Duration>,
+    /// Ports whose listener is gone: its connections close and it accepts
+    /// no more, as when the process that held them dies.
+    retired: std::collections::HashSet<u16>,
+}
+
+impl FaultPolicy {
+    /// The reply that replaces the command's, and whether the command
+    /// still runs.
+    fn on_command(&mut self, command: &str, key: Option<&str>) -> Option<(String, bool)> {
+        *self.counts.entry(command.to_string()).or_default() += 1;
+        self.total += 1;
+        let index = self.rules.iter().position(|rule| {
+            (rule.command == "*" || rule.command == command)
+                && rule
+                    .key_prefix
+                    .as_ref()
+                    .is_none_or(|prefix| key.is_some_and(|key| key.starts_with(prefix.as_str())))
+        })?;
+        let rule = &mut self.rules[index];
+        let reply = (
+            rule.fault.reply(),
+            matches!(rule.fault, Fault::AppliedThenError(_)),
+        );
+        if let Some(remaining) = &mut rule.remaining {
+            *remaining -= 1;
+            if *remaining == 0 {
+                self.rules.remove(index);
+            }
+        }
+        Some(reply)
+    }
+}
+
+/// How many leading bytes of `buf` are whole RESP frames.
+fn complete_frames_len(buf: &[u8]) -> usize {
+    let mut index = 0;
+    while index < buf.len() {
+        match decode(&buf[index..]) {
+            Ok(Some((_, amt))) => index += amt,
+            _ => break,
+        }
+    }
+    index
+}
+
+type FakeClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
+/// Tokio's clock, as time since the fake was made.
+fn tokio_clock() -> FakeClock {
+    let start = tokio::time::Instant::now();
+    Arc::new(move || start.elapsed())
+}
+
+/// Commands that write, for faults aimed at writes only.
+pub const WRITE_COMMANDS: &[&str] = &["EVALSHA", "HMSET", "EXPIRE", "PUBLISH"];
 
 pub trait SubscriptionManagerNotify {
     fn notify_for_test(&self, value: String);
 }
 
-#[derive(Clone)]
 pub struct FakeRedisBackend<S: SubscriptionManagerNotify> {
     /// Contains a list of all of the Redis keys -> fields.
     pub table: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
-    /// TTL (seconds) attached to each key via `EXPIRE`, so tests can
-    /// assert a key was given a bounded lifetime.
+    /// TTL (seconds) attached to each key via `EXPIRE` or the versioned
+    /// write, so tests can assert a key was given a bounded lifetime.
     pub expiries: Arc<Mutex<HashMap<String, i64>>>,
+    /// When each key with a TTL goes, on `clock`. Every command first
+    /// removes the keys past theirs, as Redis would have.
+    deadlines: Arc<Mutex<HashMap<String, Duration>>>,
+    /// The time keys expire by. Tokio's clock unless a test sets its own,
+    /// so a paused runtime (the simulator's) expires keys as it advances.
+    clock: Arc<Mutex<FakeClock>>,
     subscription_manager: Arc<Mutex<Option<Arc<S>>>>,
+    faults: Arc<Mutex<FaultPolicy>>,
+}
+
+// By hand: every field is shared, so a clone needs no `S: Clone`.
+impl<S: SubscriptionManagerNotify> Clone for FakeRedisBackend<S> {
+    fn clone(&self) -> Self {
+        Self {
+            table: self.table.clone(),
+            expiries: self.expiries.clone(),
+            deadlines: self.deadlines.clone(),
+            clock: self.clock.clone(),
+            subscription_manager: self.subscription_manager.clone(),
+            faults: self.faults.clone(),
+        }
+    }
 }
 
 impl<S: SubscriptionManagerNotify + Send + 'static + Sync> Default for FakeRedisBackend<S> {
@@ -52,15 +183,167 @@ impl<S: SubscriptionManagerNotify> fmt::Debug for FakeRedisBackend<S> {
     }
 }
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
     pub fn new() -> Self {
         Self {
             table: Arc::new(Mutex::new(HashMap::new())),
             expiries: Arc::new(Mutex::new(HashMap::new())),
+            deadlines: Arc::new(Mutex::new(HashMap::new())),
+            clock: Arc::new(Mutex::new(tokio_clock())),
             subscription_manager: Arc::new(Mutex::new(None)),
+            faults: Arc::new(Mutex::new(FaultPolicy::default())),
         }
+    }
+
+    /// Answers the next `times` commands named `command` (`*` for any)
+    /// whose key starts with `key_prefix` with `fault`; `None` is until
+    /// `clear_faults`.
+    pub fn fail_commands(
+        &self,
+        command: &str,
+        key_prefix: Option<&str>,
+        fault: Fault,
+        times: Option<u64>,
+    ) {
+        if times == Some(0) {
+            return;
+        }
+        self.faults.lock().unwrap().rules.push(FaultRule {
+            command: command.to_ascii_uppercase(),
+            key_prefix: key_prefix.map(str::to_string),
+            fault,
+            remaining: times,
+        });
+    }
+
+    /// Expires keys by `clock` (a time that only moves forward) instead of
+    /// tokio's, for a test that drives its own, such as `MockClock`.
+    pub fn set_clock(&self, clock: impl Fn() -> Duration + Send + Sync + 'static) {
+        *self.clock.lock().unwrap() = Arc::new(clock);
+    }
+
+    fn now(&self) -> Duration {
+        let clock = self.clock.lock().unwrap().clone();
+        clock()
+    }
+
+    /// How long `key` has left, or `None` when it has no TTL (or is gone).
+    pub fn time_to_live(&self, key: &str) -> Option<Duration> {
+        let deadline = *self.deadlines.lock().unwrap().get(key)?;
+        Some(deadline.saturating_sub(self.now()))
+    }
+
+    /// Gives `key` a TTL of `seconds`, or removes it now when that is not
+    /// positive, as `EXPIRE` does.
+    pub fn set_ttl(&self, key: &str, seconds: i64) {
+        if seconds <= 0 {
+            self.remove_key(key);
+            return;
+        }
+        self.expiries
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), seconds);
+        let deadline = self.now() + Duration::from_secs(seconds.unsigned_abs());
+        self.deadlines
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), deadline);
+    }
+
+    fn clear_ttl(&self, key: &str) {
+        self.expiries.lock().unwrap().remove(key);
+        self.deadlines.lock().unwrap().remove(key);
+    }
+
+    fn remove_key(&self, key: &str) {
+        self.table.lock().unwrap().remove(key);
+        self.clear_ttl(key);
+    }
+
+    /// Removes every key whose TTL has run out.
+    pub fn remove_expired(&self) {
+        let now = self.now();
+        let expired: Vec<String> = self
+            .deadlines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            debug!(%key, "Key expired");
+            self.remove_key(&key);
+        }
+    }
+
+    /// A failover as the client sees it: every connection closes once,
+    /// then writes answer `READONLY` `readonly_writes` times.
+    pub fn failover(&self, readonly_writes: u64) {
+        self.drop_connections();
+        for command in WRITE_COMMANDS {
+            self.fail_commands(command, None, Fault::ReadOnly, Some(readonly_writes));
+        }
+    }
+
+    /// Removes every fault rule, the partition and the latency.
+    pub fn clear_faults(&self) {
+        let mut faults = self.faults.lock().unwrap();
+        faults.rules.clear();
+        faults.partitioned = false;
+        faults.latency = None;
+    }
+
+    /// Closes every open connection and refuses new ones until called
+    /// with `false`.
+    pub fn partition(&self, partitioned: bool) {
+        let mut faults = self.faults.lock().unwrap();
+        faults.partitioned = partitioned;
+        if partitioned {
+            faults.generation += 1;
+        }
+    }
+
+    /// Closes every connection made through `port`'s listener and refuses
+    /// new ones there; the data and the other listeners stay.
+    pub fn retire_listener(&self, port: u16) {
+        self.faults.lock().unwrap().retired.insert(port);
+    }
+
+    /// Closes every open connection once; new ones are accepted.
+    pub fn drop_connections(&self) {
+        self.faults.lock().unwrap().generation += 1;
+    }
+
+    /// Holds each reply for `latency` (tokio time) before writing it.
+    pub fn set_latency(&self, latency: Option<Duration>) {
+        self.faults.lock().unwrap().latency = latency;
+    }
+
+    /// Deletes every key starting with `prefix`, as an eviction would.
+    /// Returns how many went.
+    pub fn evict_prefix(&self, prefix: &str) -> usize {
+        let mut table = self.table.lock().unwrap();
+        let before = table.len();
+        table.retain(|key, _| !key.starts_with(prefix));
+        before - table.len()
+    }
+
+    /// Commands received since the last reset, by upper-case name.
+    pub fn command_counts(&self) -> HashMap<String, u64> {
+        self.faults.lock().unwrap().counts.clone()
+    }
+
+    /// Commands received since the fake started.
+    pub fn commands_total(&self) -> u64 {
+        self.faults.lock().unwrap().total
+    }
+
+    pub fn reset_command_counts(&self) {
+        self.faults.lock().unwrap().counts.clear();
     }
 
     pub fn set_subscription_manager(&self, subscription_manager: Arc<S>) {
@@ -70,7 +353,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
             .replace(subscription_manager);
     }
 
-    async fn dynamic_fake_redis(self, listener: TcpListener) {
+    async fn dynamic_fake_redis(self, listener: TcpListener, listener_ready_tx: Sender<()>) {
+        let faults = self.faults.clone();
+        let port = listener.local_addr().map_or(0, |addr| addr.port());
         let inner = move |buf: &[u8]| -> String {
             let mut output = String::new();
             let mut buf_index = 0;
@@ -96,6 +381,33 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         panic!("Non array cmd: {frame:?}");
                     }
                 };
+
+                self.remove_expired();
+                let key = args
+                    .first()
+                    .and_then(|arg| arg.as_bytes())
+                    .and_then(|bytes| str::from_utf8(bytes).ok());
+                // EVALSHA's key is its third argument, after the sha and the
+                // key count.
+                let key = if cmd.eq_ignore_ascii_case("EVALSHA") {
+                    args.get(2)
+                        .and_then(|arg| arg.as_bytes())
+                        .and_then(|bytes| str::from_utf8(bytes).ok())
+                } else {
+                    key
+                };
+                let fault = self
+                    .faults
+                    .lock()
+                    .unwrap()
+                    .on_command(&cmd.to_ascii_uppercase(), key);
+                if let Some((reply, false)) = &fault {
+                    output.push_str(reply);
+                    if buf_index == buf.len() {
+                        break;
+                    }
+                    continue;
+                }
 
                 let ret: Value = match cmd.as_str() {
                     "HELLO" => Value::Map(vec![(
@@ -165,20 +477,56 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         );
                         let mut results = vec![Value::Int(0)];
 
+                        // `SORTBY <n> <@field> <ASC|DESC> ...`: honour the first
+                        // key so tests can assert the order the scheduler asks
+                        // for. Missing sort fields sort first, like RediSearch.
+                        let sort_spec = args
+                            .iter()
+                            .position(|a| matches!(a, OwnedFrame::BulkString(b) if b == b"SORTBY"))
+                            .and_then(|i| {
+                                let field = args.get(i + 2)?.as_bytes()?;
+                                let field = str::from_utf8(field).ok()?.trim_start_matches('@').to_string();
+                                let desc = matches!(args.get(i + 3), Some(OwnedFrame::BulkString(d)) if d == b"DESC");
+                                Some((field, desc))
+                            });
+                        // Ties come back in key order rather than the
+                        // table's hash order, so a run repeats.
+                        let sorted = |mut rows: Vec<(String, HashMap<String, Value>)>| {
+                            rows.sort_by(|a, b| a.0.cmp(&b.0));
+                            let mut rows: Vec<_> = rows.into_iter().map(|(_, f)| f).collect();
+                            if let Some((field, desc)) = &sort_spec {
+                                let key = |r: &HashMap<String, Value>| match r.get(field) {
+                                    Some(Value::BulkString(b)) => b.clone(),
+                                    _ => Vec::new(),
+                                };
+                                rows.sort_by_key(key);
+                                if *desc {
+                                    rows.reverse();
+                                }
+                            }
+                            rows
+                        };
+
                         if query == "*" {
                             // Wildcard query - return all records that have both data and version fields.
                             // Some entries (e.g., from HSET) may not have version field.
-                            for fields in self.table.lock().unwrap().values() {
-                                if let (Some(data), Some(version)) =
-                                    (fields.get("data"), fields.get("version"))
-                                {
-                                    results.push(Value::Array(vec![
-                                        Value::BulkString(b"data".to_vec()),
-                                        data.clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        version.clone(),
-                                    ]));
-                                }
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|(_, f)| {
+                                    f.contains_key("data") && f.contains_key("version")
+                                })
+                                .map(|(k, f)| (k.clone(), f.clone()))
+                                .collect();
+                            for fields in sorted(rows) {
+                                results.push(Value::Array(vec![
+                                    Value::BulkString(b"data".to_vec()),
+                                    fields["data"].clone(),
+                                    Value::BulkString(b"version".to_vec()),
+                                    fields["version"].clone(),
+                                ]));
                             }
                         } else {
                             // Field-specific query: @field:{ value }
@@ -190,16 +538,31 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .strip_prefix("{ ")
                                 .and_then(|s| s.strip_suffix(" }"))
                                 .unwrap_or(value);
-                            for fields in self.table.lock().unwrap().values() {
-                                if let Some(key_value) = fields.get(field)
-                                    && *key_value == Value::BulkString(value.as_bytes().to_vec())
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|(_, f)| {
+                                    f.get(field)
+                                        == Some(&Value::BulkString(value.as_bytes().to_vec()))
+                                })
+                                .map(|(k, f)| (k.clone(), f.clone()))
+                                .collect();
+                            for fields in sorted(rows) {
                                 {
-                                    results.push(Value::Array(vec![
+                                    let mut record = vec![
                                         Value::BulkString(b"data".to_vec()),
                                         fields.get("data").expect("No data field").clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        fields.get("version").expect("No version field").clone(),
-                                    ]));
+                                    ];
+                                    // LOAD leaves out fields the hash does not
+                                    // have, so a non-versioned record comes
+                                    // back without a version.
+                                    if let Some(version) = fields.get("version") {
+                                        record.push(Value::BulkString(b"version".to_vec()));
+                                        record.push(version.clone());
+                                    }
+                                    results.push(Value::Array(record));
                                 }
                             }
                         }
@@ -304,6 +667,13 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         if let Some(r) = ret {
                             r
                         } else {
+                            // The script deletes the key before it writes, which
+                            // drops any TTL, then sets the one it was given.
+                            if expiry == 0 {
+                                self.clear_ttl(&key);
+                            } else {
+                                self.set_ttl(&key, expiry);
+                            }
                             Value::Array(vec![Value::Int(1), Value::Int(version)])
                         }
                     }
@@ -315,11 +685,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                             0,
                             "Non-even args for hmset: {args:?}"
                         );
-                        let chunks = args[1..].chunks_exact(2);
-                        for chunk in chunks {
-                            let [key, value] = chunk else {
-                                panic!("Uneven hmset args");
-                            };
+                        let (chunks, rest) = args[1..].as_chunks::<2>();
+                        assert_eq!(rest, [], "Uneven hmset args");
+                        for [key, value] in chunks {
                             let key_name: String =
                                 str::from_utf8(key.as_bytes().expect("Key argument is not bytes"))
                                     .expect("Unable to parse key as string")
@@ -353,7 +721,7 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         .expect("EXPIRE seconds is not an integer");
                         let exists = self.table.lock().unwrap().contains_key(&key_name);
                         if exists {
-                            self.expiries.lock().unwrap().insert(key_name, seconds);
+                            self.set_ttl(&key_name, seconds);
                             Value::Int(1)
                         } else {
                             Value::Int(0)
@@ -392,14 +760,74 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                     }
                 };
 
-                arg_as_string(&mut output, ret);
+                match fault {
+                    Some((reply, true)) => output.push_str(&reply),
+                    _ => arg_as_string(&mut output, ret),
+                }
                 if buf_index == buf.len() {
                     break;
                 }
             }
             output
         };
-        fake_redis_internal(listener, vec![inner]).await;
+        listener_ready_tx
+            .send(())
+            .expect("Expected successful send");
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                panic!("accept error");
+            };
+            // As Redis does. Without it Linux holds small replies and
+            // pushes for the client's delayed ACK.
+            stream.set_nodelay(true).expect("set TCP_NODELAY");
+            let generation = {
+                let faults = faults.lock().unwrap();
+                if faults.partitioned || faults.retired.contains(&port) {
+                    drop(stream);
+                    continue;
+                }
+                faults.generation
+            };
+            let handler = inner.clone();
+            let faults = faults.clone();
+            background_spawn!("dynamic_fake_redis_connection", async move {
+                let mut buf = vec![0; 8192];
+                // Bytes read but not yet a whole command: a command can span
+                // two reads.
+                let mut pending: Vec<u8> = Vec::new();
+                loop {
+                    let Ok(read) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    {
+                        let faults = faults.lock().unwrap();
+                        if read == 0
+                            || faults.generation != generation
+                            || faults.retired.contains(&port)
+                        {
+                            return;
+                        }
+                    }
+                    pending.extend_from_slice(&buf[..read]);
+                    let complete = complete_frames_len(&pending);
+                    if complete == 0 {
+                        continue;
+                    }
+                    let commands: Vec<u8> = pending.drain(..complete).collect();
+                    let output = handler(&commands);
+                    let latency = faults.lock().unwrap().latency;
+                    if let Some(latency) = latency {
+                        tokio::time::sleep(latency).await;
+                    }
+                    if faults.lock().unwrap().generation != generation {
+                        return;
+                    }
+                    if !output.is_empty() && stream.write_all(output.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
     }
 
     pub async fn run(self) -> u16 {
@@ -407,9 +835,15 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
         let port = listener.local_addr().unwrap().port();
         info!("Using port {port}");
 
+        let (listener_ready_tx, listener_ready_rx) = oneshot::channel::<()>();
+
         background_spawn!("listener", async move {
-            self.dynamic_fake_redis(listener).await;
+            self.dynamic_fake_redis(listener, listener_ready_tx).await;
         });
+
+        listener_ready_rx
+            .await
+            .expect("Expected successful listener boot");
 
         port
     }

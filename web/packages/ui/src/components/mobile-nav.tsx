@@ -3,7 +3,9 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
+import { isCurrentNavHref, leavesSite } from "../lib/nav";
 import { Button } from "./button";
+import { ExternalLinkIcon } from "./external-link-icon";
 import { Logo } from "./logo";
 import type { NavLink } from "./site-header";
 import { ThemeToggle } from "./theme-toggle";
@@ -13,20 +15,15 @@ interface MobileNavProps {
   ctaLabel: string;
   ctaHref: string;
   githubHref?: string;
+  currentPath?: string;
 }
-
-const opensInNewTab = (label: string, href: string) =>
-  label === "Docs" ||
-  label === "Get started" ||
-  label === "Start free" ||
-  href === "/docs" ||
-  href.startsWith("http");
 
 export function MobileNav({
   links,
   ctaLabel,
   ctaHref,
   githubHref = "https://github.com/TraceMachina/nativelink",
+  currentPath,
 }: MobileNavProps) {
   const [open, setOpen] = React.useState(false);
   const [mounted, setMounted] = React.useState(false);
@@ -62,7 +59,7 @@ export function MobileNav({
           "relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-full",
           "text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60",
-          "md:hidden",
+          "xl:hidden",
         )}
       >
         <span className="relative block h-4 w-5">
@@ -95,7 +92,7 @@ export function MobileNav({
               id="mobile-nav-panel"
               aria-hidden={!open}
               className={cn(
-                "fixed inset-0 z-[100] md:hidden",
+                "fixed inset-0 z-[100] xl:hidden",
                 open ? "pointer-events-auto" : "pointer-events-none",
               )}
             >
@@ -127,6 +124,9 @@ export function MobileNav({
                     href="/"
                     onClick={() => setOpen(false)}
                     aria-label="NativeLink — home"
+                    aria-current={
+                      isCurrentNavHref("/", currentPath) ? "page" : undefined
+                    }
                     className="inline-flex items-center"
                   >
                     <Logo size="md" />
@@ -156,32 +156,52 @@ export function MobileNav({
 
                 {/* Nav list */}
                 <ul className="flex flex-col gap-1 px-6 py-8">
-                  {links.map((link, i) => (
-                    <li
-                      key={link.href}
-                      className={cn(
-                        "transition-all duration-300 ease-out",
-                        open ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
-                      )}
-                      style={{ transitionDelay: open ? `${60 + i * 40}ms` : "0ms" }}
-                    >
-                      <a
-                        href={link.href}
-                        target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
-                        rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
-                        onClick={() => setOpen(false)}
-                        className="group flex items-center justify-between rounded-xl px-4 py-4 text-2xl font-semibold tracking-tight text-foreground transition-colors hover:bg-brand-soft hover:text-brand"
+                  {links.map((link, i) => {
+                    const current = isCurrentNavHref(link.href, currentPath);
+                    const external = leavesSite(link.href);
+                    return (
+                      <li
+                        key={link.href}
+                        className={cn(
+                          "transition-all duration-300 ease-out",
+                          open
+                            ? "translate-y-0 opacity-100"
+                            : "translate-y-2 opacity-0",
+                        )}
+                        style={{
+                          transitionDelay: open ? `${60 + i * 40}ms` : "0ms",
+                        }}
                       >
-                        <span>{link.label}</span>
-                        <span
-                          aria-hidden="true"
-                          className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
+                        <a
+                          href={link.href}
+                          target={external ? "_blank" : undefined}
+                          rel={external ? "noreferrer" : undefined}
+                          aria-current={current ? "page" : undefined}
+                          onClick={() => setOpen(false)}
+                          className={cn(
+                            "group flex items-center justify-between rounded-xl px-4 py-4 text-2xl font-semibold tracking-tight transition-colors",
+                            current
+                              ? "bg-brand-soft text-brand"
+                              : "text-foreground hover:bg-brand-soft hover:text-brand",
+                          )}
                         >
-                          →
-                        </span>
-                      </a>
-                    </li>
-                  ))}
+                          <span>{link.label}</span>
+                          {external ? (
+                            <span className="inline-flex text-muted transition-colors group-hover:text-brand">
+                              <ExternalLinkIcon className="h-4 w-4 opacity-100" />
+                            </span>
+                          ) : (
+                            <span
+                              aria-hidden="true"
+                              className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
+                            >
+                              →
+                            </span>
+                          )}
+                        </a>
+                      </li>
+                    );
+                  })}
                 </ul>
 
                 {/* Footer — CTA + GitHub */}
@@ -189,11 +209,14 @@ export function MobileNav({
                   <Button asChild size="lg" className="w-full">
                     <a
                       href={ctaHref}
-                      target={opensInNewTab(ctaLabel, ctaHref) ? "_blank" : undefined}
-                      rel={opensInNewTab(ctaLabel, ctaHref) ? "noreferrer" : undefined}
+                      target={leavesSite(ctaHref) ? "_blank" : undefined}
+                      rel={leavesSite(ctaHref) ? "noreferrer" : undefined}
                       onClick={() => setOpen(false)}
                     >
                       {ctaLabel}
+                      {leavesSite(ctaHref) ? (
+                        <ExternalLinkIcon className="opacity-90" />
+                      ) : null}
                     </a>
                   </Button>
                   <div className="mt-4 flex items-center justify-center gap-2">

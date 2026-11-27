@@ -1,0 +1,94 @@
+---
+title: Operate
+description: What to watch, what to tune, and what to do at 3am, once other people depend on your cluster.
+---
+
+{/* archetype: explanation (waypoint), see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** whoever gets paged when the build farm is slow. **What
+you'll have at the end of this section:** a production-shaped deployment, a
+metrics pipeline that tells you when it's unhealthy, and a written answer for
+each of the ways it fails. **Time:** ongoing.
+
+<Prerequisites>
+  A NativeLink deployment you configured yourself. See [Your first full config](/configuration/your-first-full-config).
+</Prerequisites>
+
+## The shift this section represents [#the-shift-this-section-represents]
+
+Everything up to the How-to guides is about making NativeLink do what you want.
+This section is about making it keep doing that while you aren't looking.
+The questions change shape: not "how do I configure a filesystem store" but
+"what happens when that filesystem fills up overnight, how will I know, and what
+do I do about it."
+
+That's a different reader moment, so it's a different section, even though
+some of the same subsystems come up.
+
+## The arc [#the-arc]
+
+**Get the shape right.** The production configuration is not the quickstart
+configuration with bigger numbers. It has a fast tier over a durable one,
+eviction policies that match your disk, and a deliberate split between the
+public listeners and the worker API.
+
+**Deploy it somewhere real.** Docker Compose or bare metal, each with the
+topology, the resource sizing, and the failure domains that go with it. For
+Kubernetes, the Helm charts ship with [NativeLink Enterprise](https://enterprise.nativelink.com).
+
+**See it.** OTLP to Prometheus to Grafana, and the specific metrics worth
+alerting on rather than all of them.
+
+**Scale it.** Workers scale on queue depth and action duration; the CAS
+scales on throughput and eviction pressure. They are separate problems with
+separate signals, and conflating them is the most common scaling mistake.
+
+**Tune it.** A small number of levers move the needle. Most of the config
+surface does not, and knowing which is which saves a lot of afternoons.
+
+**Harden it.** Port exposure, mTLS, and keeping the worker API private,
+which matters more than it sounds, because a worker API is an arbitrary code
+execution endpoint by design.
+
+**Have runbooks.** Redis failover, worker OOM, disk full, backpressure. Each
+one written down before it happens.
+
+## Start here, or skip ahead [#start-here-or-skip-ahead]
+
+**Start here** if you're moving from a working setup to one people depend on.
+
+**Skip back** to [How-to guides](/how-to) if what you have isn't working the
+way you want yet. Operate assumes the shape is right and the question is
+whether it stays right.
+
+## Current pages [#current-pages]
+
+- [Production configuration](/operate/production-config): the three-process
+  shape, the port surface, and the pre-launch checklist.
+- [Tuning](/operate/tuning): the lever table (the signal you see, the knob
+  that moves it, and what moving it costs).
+- [Deploy with Docker Compose](/operate/deploy-docker-compose) or
+  [on bare metal](/operate/deploy-bare-metal): the two deployment shapes,
+  and what separates each from a production one.
+- [Observability](/operate/observability): the OTLP to Prometheus to
+  Grafana pipeline, and why skipping the collector silently breaks every
+  shipped dashboard.
+- [Security hardening](/operate/security-hardening): there is no inbound
+  authentication anywhere, so the network is the authorization layer.
+- [Scaling workers](/operate/scaling-workers): sizing one worker, the
+  queue-depth signal, and wiring an autoscaler to it.
+- [Scaling the CAS](/operate/scaling-cas): composing the store graph, sizing
+  eviction, and what a second CAS process actually costs.
+- [An autoscaling reference deployment](/operate/autoscaling-reference): the
+  manifests that make the worker pool size itself, and the five gaps in the
+  shipped examples you close first.
+- [Runbooks](/operate/runbooks): the four incidents NativeLink actually
+  produces: a worker OOM-killed, the disk full, Redis failing over, and a
+  queue that backpressures and never recovers.
+- [Troubleshooting](/operate/troubleshooting): symptom to cause to fix,
+  indexed on the error strings the system really emits.
+
+<NextStep href="/operate/production-config" title="Production configuration">
+  The production shape: three processes, a split port surface, and what to turn
+  on before other people depend on it.
+</NextStep>

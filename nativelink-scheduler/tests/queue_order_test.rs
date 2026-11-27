@@ -1,0 +1,302 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! The queue order the matcher sees must be the same on every backend:
+//! highest priority first, then oldest first. The memory backend reverses
+//! its `BTreeSet`; the Redis backend sorts the index. This runs one scenario
+//! through both so they cannot disagree again.
+
+use core::ops::Bound;
+use core::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use futures::StreamExt;
+use nativelink_config::stores::{EvictionPolicy, RedisSpec};
+use nativelink_error::Error;
+use nativelink_macro::nativelink_test;
+use nativelink_redis_tester::FakeRedisBackend;
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PersistedSortKey,
+    SortedAwaitedActionState,
+};
+use nativelink_scheduler::memory_awaited_action_db::MemoryAwaitedActionDb;
+use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
+use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+};
+use nativelink_util::common::DigestInfo;
+use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::store_trait::SchedulerStore;
+use pretty_assertions::assert_eq;
+use tokio::sync::Notify;
+
+const INSTANCE_NAME: &str = "queue_order_instance";
+
+/// A distinct action (its own digest, so nothing coalesces) with the given
+/// priority and insert time in milliseconds.
+fn action(seed: u8, priority: i32, insert_ms: u64) -> Arc<ActionInfo> {
+    let insert = SystemTime::UNIX_EPOCH + Duration::from_millis(insert_ms);
+    Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([seed; 32], 1),
+        input_root_digest: DigestInfo::new([seed; 32], 2),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority,
+        load_timestamp: insert,
+        insert_timestamp: insert,
+        unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::new([seed; 32], 3),
+        }),
+    })
+}
+
+/// Queue four actions out of order and read them back the way the matcher
+/// does. Returns `(priority, insert_ms)` per action in dispatch order.
+async fn queued_order<Db: AwaitedActionDb>(db: &Db) -> Result<Vec<(i32, u64)>, Error> {
+    // Inserted newest-first and low-priority-first on purpose: the order the
+    // backend returns must not depend on insertion order. Two of them arrive
+    // within the same second, half a second apart.
+    db.add_action(
+        OperationId::from("client-a"),
+        action(1, 0, 100_000),
+        Duration::from_mins(1),
+    )
+    .await?;
+    db.add_action(
+        OperationId::from("client-d"),
+        action(4, 0, 50_500),
+        Duration::from_mins(1),
+    )
+    .await?;
+    db.add_action(
+        OperationId::from("client-b"),
+        action(2, 0, 50_000),
+        Duration::from_mins(1),
+    )
+    .await?;
+    db.add_action(
+        OperationId::from("client-c"),
+        action(3, 5, 150_000),
+        Duration::from_mins(1),
+    )
+    .await?;
+
+    let stream = db
+        .get_range_of_actions(
+            SortedAwaitedActionState::Queued,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            true,
+        )
+        .await?;
+    let mut stream = core::pin::pin!(stream);
+    let mut order = Vec::new();
+    while let Some(subscriber) = stream.next().await {
+        let awaited = subscriber?.borrow().await?;
+        let info = awaited.action_info();
+        let ms = u64::try_from(
+            info.insert_timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        order.push((info.priority, ms));
+    }
+    Ok(order)
+}
+
+/// Highest priority first, then oldest first, down to the sub-second arrival.
+const EXPECTED: [(i32, u64); 4] = [(5, 150_000), (0, 50_000), (0, 50_500), (0, 100_000)];
+
+#[nativelink_test]
+async fn memory_backend_serves_highest_priority_then_oldest() -> Result<(), Error> {
+    let db = MemoryAwaitedActionDb::new(
+        &EvictionPolicy::default(),
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+    );
+    assert_eq!(queued_order(&db).await?, EXPECTED);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn redis_backend_serves_highest_priority_then_oldest() -> Result<(), Error> {
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some("queue_order_channel".to_string()),
+        ..Default::default()
+    };
+    let store = RedisStore::new_standard(spec).await?;
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await?);
+
+    let db = StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+        OperationId::default,
+        60,
+        60,
+        false,
+    )
+    .await?;
+    assert_eq!(queued_order(&db).await?, EXPECTED);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn memory_backend_mints_operation_ids_from_the_given_fn() -> Result<(), Error> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use nativelink_scheduler::memory_awaited_action_db::OperationIdFn;
+
+    let next = Arc::new(AtomicU64::new(1));
+    let db = MemoryAwaitedActionDb::new_with_operation_id_fn(
+        &EvictionPolicy::default(),
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+        OperationIdFn::new(move || {
+            OperationId::from(format!("op-{}", next.fetch_add(1, Ordering::AcqRel)))
+        }),
+    );
+    for (seed, expected) in [(1, "op-1"), (2, "op-2")] {
+        let subscriber = db
+            .add_action(
+                OperationId::from(format!("client-{seed}")),
+                action(seed, 0, 1_000),
+                Duration::from_mins(1),
+            )
+            .await?;
+        assert_eq!(
+            subscriber.borrow().await?.operation_id(),
+            &OperationId::from(expected)
+        );
+    }
+    Ok(())
+}
+
+/// During a rolling upgrade the Redis index holds sort keys in two widths.
+/// A scheduler before the nanosecond key writes 16 hex digits, this one 32
+/// with leading zeros, and the index sorts the strings, so every action an
+/// older scheduler queued comes first, each block by priority and then age.
+/// That is the documented order (`AwaitedActionSortKey`), not a defect; this
+/// pins it, including its cost: a high-priority action queued after the
+/// upgrade waits behind a low-priority one queued before it.
+#[nativelink_test]
+async fn redis_index_serves_older_schedulers_keys_first_during_an_upgrade() -> Result<(), Error> {
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let store = RedisStore::new_standard(RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some("queue_order_upgrade_channel".to_string()),
+        ..Default::default()
+    })
+    .await?;
+    fake_redis_backend.set_subscription_manager(store.subscription_manager().await?);
+    let db = StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+        OperationId::default,
+        60,
+        60,
+        false,
+    )
+    .await?;
+
+    // (seed, priority, insert_ms, queued by an older scheduler)
+    let queued = [
+        (1, 0, 100_000, true),
+        (2, 5, 150_000, false),
+        (3, 0, 50_000, false),
+        (4, 3, 120_000, true),
+        (5, 0, 50_500, false),
+    ];
+    for (seed, priority, insert_ms, _) in queued {
+        db.add_action(
+            OperationId::from(format!("client-{seed}")),
+            action(seed, priority, insert_ms),
+            Duration::from_mins(1),
+        )
+        .await?;
+    }
+    // An older scheduler's records carry the 16-digit key in the index.
+    let older: Vec<u8> = queued
+        .iter()
+        .filter(|(.., older)| *older)
+        .map(|(seed, ..)| *seed)
+        .collect();
+    for fields in fake_redis_backend.table.lock().unwrap().values_mut() {
+        let Some(redis::Value::BulkString(data)) = fields.get("data") else {
+            continue;
+        };
+        let Ok(awaited) = AwaitedAction::try_from(data.as_slice()) else {
+            continue;
+        };
+        let info = awaited.action_info();
+        if older.contains(&info.command_digest.packed_hash()[0]) {
+            fields.insert(
+                "sort_key".to_string(),
+                redis::Value::BulkString(
+                    PersistedSortKey::from_action_info(info)
+                        .index_field()
+                        .into_bytes(),
+                ),
+            );
+        }
+    }
+
+    let stream = db
+        .get_range_of_actions(
+            SortedAwaitedActionState::Queued,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            true,
+        )
+        .await?;
+    let mut stream = core::pin::pin!(stream);
+    let mut order = Vec::new();
+    while let Some(subscriber) = stream.next().await {
+        let awaited = subscriber?.borrow().await?;
+        let info = awaited.action_info();
+        let ms = info
+            .insert_timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        order.push((info.priority, u64::try_from(ms).unwrap()));
+    }
+    assert_eq!(
+        order,
+        [
+            // Queued before the upgrade: priority, then age.
+            (3, 120_000),
+            (0, 100_000),
+            // Queued after it, the priority-5 action included.
+            (5, 150_000),
+            (0, 50_000),
+            (0, 50_500),
+        ]
+    );
+    Ok(())
+}

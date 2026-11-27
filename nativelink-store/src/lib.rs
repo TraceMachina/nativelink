@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,8 +31,10 @@ pub mod grpc_store;
 pub mod memory_store;
 pub mod mongo_store;
 pub mod noop_store;
+pub mod oci_store;
 pub mod ontap_s3_existence_cache_store;
 pub mod ontap_s3_store;
+pub mod oss_store;
 pub mod r2_store;
 pub mod redis_store;
 mod redis_utils;

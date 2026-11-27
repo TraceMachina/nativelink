@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,7 +61,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     store_manager.add_store(
         "main_ac",
         store_factory(
@@ -70,7 +70,7 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
             None,
         )
         .await?,
-    );
+    )?;
     Ok(store_manager)
 }
 
@@ -116,8 +116,58 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
 
+    Ok(())
+}
+
+// An unknown instance name, or a request without its required action digest
+// or result, is a bad argument. Bazel retries INTERNAL with backoff but fails
+// fast on INVALID_ARGUMENT, so the code decides whether a typo'd
+// `--remote_instance_name` fails at once.
+#[nativelink_test]
+async fn bad_arguments_are_invalid_argument() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
+    let get_request = |instance_name: &str, action_digest: Option<Digest>| GetActionResultRequest {
+        instance_name: instance_name.to_string(),
+        action_digest,
+        inline_stdout: false,
+        inline_stderr: false,
+        inline_output_files: vec![],
+        digest_function: digest_function::Value::Sha256.into(),
+    };
+    let some_digest = Some(Digest {
+        hash: HASH1.to_string(),
+        size_bytes: 0,
+    });
+
+    let unknown_instance = ac_server
+        .get_action_result(Request::new(get_request(
+            "unknown_instance",
+            some_digest.clone(),
+        )))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown_instance.code(), Code::InvalidArgument);
+
+    let no_digest = ac_server
+        .get_action_result(Request::new(get_request(INSTANCE_NAME, None)))
+        .await
+        .unwrap_err();
+    assert_eq!(no_digest.code(), Code::InvalidArgument);
+
+    let no_result = ac_server
+        .update_action_result(Request::new(UpdateActionResultRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            action_digest: some_digest,
+            action_result: None,
+            results_cache_policy: None,
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(no_result.code(), Code::InvalidArgument);
     Ok(())
 }
 
@@ -161,7 +211,7 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn core::error::Erro
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
     Ok(())
 }
 
@@ -198,7 +248,9 @@ async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
         ..Default::default()
     };
 
-    let size_bytes = get_encoded_proto_size(&action_result)? as i64;
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
 
     let raw_response = update_action_result(
         &ac_server,

@@ -1,0 +1,372 @@
+"""Regression coverage for cache reconciliation and credential boundaries."""
+
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+import benchmark_credentials
+import ci_benchmark
+import cluster_ci
+
+
+class BenchmarkTest(unittest.TestCase):
+    def test_container_metadata_is_optional_and_not_a_layer_input(self):
+        self.assertIn('ci-metadata.bazelrc', Path('.dockerignore').read_text().splitlines())
+        dockerfile = Path('deployment-examples/docker-compose/Dockerfile').read_text()
+        self.assertIn('--mount=type=secret,id=ci-metadata,target=/root/nativelink/ci-metadata.bazelrc', dockerfile)
+        for workflow in ('main.yaml', 'nativelink-cloud-canary.yaml'):
+            self.assertIn('ci-metadata=ci-metadata.bazelrc',
+                          Path('.github/workflows', workflow).read_text())
+
+    def test_primary_ci_dispatches_builds_without_a_hosted_baseline(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        cluster_job = workflow.split('  cluster:', 1)[1]
+        for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
+            self.assertNotIn(hosted_build, cluster_job)
+        self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
+        self.assertIn("inputs.repetitions || '1'", workflow)
+        self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
+        self.assertNotIn('flock -n', cluster_ci.BOOTSTRAP)
+        self.assertIn("spawnSync('timeout'", cluster_ci.BOOTSTRAP)
+        self.assertNotIn('  nix-bazel:', Path('.github/workflows/nix.yaml').read_text())
+        pinned_version = Path('.bazelversion').read_text().strip()
+        self.assertNotIn(f'bazel_version: {pinned_version}',
+                         Path('.github/workflows/native-bazel.yaml').read_text())
+
+    def test_only_unlisted_forks_run_the_hosted_bazel_suite(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        pr_job = workflow.split('  pull-request:', 1)[1].split('  cluster:', 1)[0]
+        self.assertIn("github.event_name == 'pull_request' &&", pr_job)
+        self.assertIn('github.event.pull_request.head.repo.full_name != github.repository', pr_job)
+        for setting in ('id-token:', 'cluster_ci.py', 'NL_GKE_', 'NL_GCP_', 'secrets.'):
+            self.assertNotIn(setting, pr_job)
+        self.assertIn('environment: public-ci', pr_job)
+        self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', pr_job)
+        self.assertIn('python3 .github/scripts/ci_trust.py', pr_job)
+        for name in ('Setup NativeLink Cloud', 'Setup Bazel', 'Run project-pinned Bazel tests'):
+            step = pr_job.split('      - name: ' + name + '\n', 1)[1].split('\n      - ', 1)[0]
+            self.assertIn("if: steps.route.outputs.local == 'true'", step)
+        self.assertIn('./tools/bazel-retry.sh test //...', pr_job)
+        self.assertIn('--lockfile_mode=error', pr_job)
+        self.assertNotIn('USE_BAZEL_VERSION', pr_job)
+
+    def test_pr_rbe_configuration_and_missing_credentials(self):
+        for private_credentials in (True, False):
+            with self.subTest(private_credentials=private_credentials), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env = {'PATH': os.environ['PATH'], 'GITHUB_SHA': 'a' * 40,
+                       'NL_API_KEY': 'private-test-key' if private_credentials else '',
+                       'NL_CLUSTER_ENDPOINT': 'grpcs://loadtest.example:443',
+                       'NL_CLUSTER_BEP_ENDPOINT': 'grpcs://loadtest.example:443',
+                       'NL_INSTANCE': 'main', 'NL_RESULTS_URL': 'https://ui.example/build/',
+                       'NL_WORKER_IMAGE': 'image@sha256:123'}
+                rc_file = root / 'user.bazelrc'
+                with patch.dict(os.environ, env, clear=True):
+                    if private_credentials:
+                        ci_benchmark.configure_pr(rc_file)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'CI API key is missing'):
+                            ci_benchmark.configure_pr(rc_file)
+                if private_credentials:
+                    rc = rc_file.read_text()
+                    flags = [shlex.split(line)[1] for line in rc.splitlines()]
+                    expected, _ = ci_benchmark.configuration('cluster', env)
+                    for flag in expected:
+                        if not flag.startswith(('--remote_upload_local_results=', '--build_metadata=BENCHMARK_LANE=')):
+                            self.assertIn(flag, flags)
+                    self.assertIn('--remote_upload_local_results=false', flags)
+                    self.assertNotIn('--remote_upload_local_results=true', flags)
+                    self.assertIn('--remote_executor=grpcs://loadtest.example:443', flags)
+                    self.assertIn('--remote_instance_name=main', flags)
+                    self.assertIn('common --config=nl-rbe', rc)
+                    self.assertNotIn('private-test-key', rc)
+                else:
+                    self.assertFalse(rc_file.exists())
+
+    def test_web_only_changes_skip_bazel_lanes(self):
+        # A pull request that only touches web/ is covered by CI / Web. The
+        # Bazel lanes must filter it out at the trigger, not in a job `if`,
+        # so no Bazel run is spawned at all.
+        for workflow in ('parallel-cluster-ci.yaml', 'native-bazel.yaml',
+                         'sanitizers.yaml', 'clusterfuzzlite.yaml'):
+            text = Path('.github/workflows', workflow).read_text()
+            triggers = text.split('\non:\n', 1)[1].split('\njobs:\n', 1)[0].splitlines()
+            start = triggers.index('  pull_request:') + 1
+            end = next((i for i, line in enumerate(triggers[start:], start)
+                        if line.strip() and not line.startswith('    ')), len(triggers))
+            pull_request = '\n'.join(triggers[start:end])
+            self.assertIn("    paths-ignore:\n      - \"web/**\"", pull_request, workflow)
+        web = Path('.github/workflows/web.yaml').read_text()
+        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - \"web/**\"", web)
+
+    def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            result = {'revision': 'a' * 40, 'total_seconds': 12, 'runs': [{
+                'iteration': 1, 'seconds': 10, 'exit_code': 7,
+                'cache': ci_benchmark.cache_usage({'runnerCount': [
+                    {'name': 'total', 'count': 10}, {'name': 'remote cache hit', 'count': 2}]}),
+                'tests': {'cached': 2, 'total': 3, 'failed': 1}}]}
+            path.write_text(json.dumps(result))
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            self.assertIn('Not captured', output.getvalue())
+            self.assertIn('Unknown', output.getvalue())
+            self.assertIn('2/3 | failed', output.getvalue())
+
+    def test_summary_links_each_iteration_to_its_build_results_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            result = {'revision': 'a' * 40, 'total_seconds': 12, 'runs': [
+                {'iteration': 1, 'seconds': 10, 'exit_code': 0,
+                 'invocation_id': 'first-invocation',
+                 'cache': {'total_reuse_percent': 50.0, 'local_action_hits': 1,
+                           'disk_hits': 1, 'remote_hits': 1}, 'tests': {'cached': 1, 'total': 2}},
+                {'iteration': 2, 'seconds': 4, 'exit_code': 0,
+                 'invocation_id': 'second-invocation',
+                 'cache': {'total_reuse_percent': 100.0, 'local_action_hits': 2,
+                           'disk_hits': 0, 'remote_hits': 2}, 'tests': {'cached': 2, 'total': 2}}]}
+            path.write_text(json.dumps(result))
+            with patch.dict(os.environ, {'NL_RESULTS_URL': 'https://ui.example/a/acme/build/'}), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            text = output.getvalue()
+            self.assertIn('[invocation](https://ui.example/a/acme/build/first-invocation)', text)
+            self.assertIn('[invocation](https://ui.example/a/acme/build/second-invocation)', text)
+            self.assertIn('| Build results |', text)
+            self.assertIn('NativeLink `bep_server`', text)
+
+    def test_summary_omits_links_and_says_so_when_results_url_is_unset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            path.write_text(json.dumps({'revision': 'a' * 40, 'total_seconds': 1, 'runs': [
+                {'iteration': 1, 'seconds': 1, 'exit_code': 0, 'invocation_id': 'unused',
+                 'cache': {'total_reuse_percent': None, 'local_action_hits': None,
+                           'disk_hits': None, 'remote_hits': None},
+                 'tests': {'cached': 0, 'total': 0}}]}))
+            with patch.dict(os.environ, {}, clear=True), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            text = output.getvalue()
+            self.assertNotIn('[invocation]', text)
+            self.assertIn('Build-results links are unavailable', text)
+
+    def test_results_link_rejects_non_http_prefixes_and_trailing_slashes(self):
+        self.assertEqual(ci_benchmark.results_link('https://ui.example/a/acme/build/',
+                                                   'inv-1'),
+                         'https://ui.example/a/acme/build/inv-1')
+        self.assertEqual(ci_benchmark.results_link('http://localhost:21089/a/acme/build', 'inv-1'),
+                         'http://localhost:21089/a/acme/build/inv-1')
+        self.assertIsNone(ci_benchmark.results_link('', 'inv-1'))
+        self.assertIsNone(ci_benchmark.results_link('https://ui.example/build/', ''))
+        for bad in ('grpcs://ui.example/build/', 'ui.example/build/', 'javascript:alert(1)'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ci_benchmark.results_link(bad, 'inv-1')
+
+    def test_docs_lint_does_not_depend_on_a_floating_vale_release(self):
+        workflow = Path('.github/workflows/vale.yaml').read_text()
+        action = workflow.split('errata-ai/vale-action@', 1)[1]
+        self.assertRegex(action, r'(?m)^\s+version: ["\x27]?\d+\.\d+\.\d+["\x27]?\s*$')
+
+    def test_dispatch_payload_excludes_other_job_credentials(self):
+        env = {name: 'value' for name in ('NL_API_KEY', 'NL_CLUSTER_ENDPOINT', 'NL_CLUSTER_BEP_ENDPOINT',
+               'NL_INSTANCE', 'NL_RESULTS_URL', 'NL_WORKER_IMAGE', 'BENCHMARK_STARTED')}
+        env.update(GITHUB_SHA='a' * 40, GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
+                   GITHUB_REPOSITORY='TraceMachina/nativelink', GITHUB_EVENT_NAME='push',
+                   GITHUB_REF='refs/heads/feature/example',
+                   GITHUB_TOKEN='never-forward', ACTIONS_ID_TOKEN_REQUEST_TOKEN='never-forward')
+        env['CI_BAZEL_METADATA'] = json.dumps({'pipeline': 'CI / Test', 'job': 'Test / Linux'})
+        result = cluster_ci.payload(env, 3)
+        self.assertEqual(json.loads(result['CI_BAZEL_METADATA']),
+                         {'pipeline': 'CI / Test', 'job': 'Test / Linux'})
+        self.assertNotIn('never-forward', json.dumps(result))
+        self.assertEqual(result['NL_SUMMARY_DIRECTORY'], '/workspace/ci-results/123-1')
+        self.assertEqual(result['NL_PERSISTENT_CACHE'], '/workspace')
+        for change in ({'GITHUB_REPOSITORY': 'outside/nativelink'},
+                       {'GITHUB_EVENT_NAME': 'pull_request'},
+                       {'GITHUB_EVENT_NAME': 'pull_request_target'},
+                       {'GITHUB_REF': 'refs/pull/1/merge'}, {'GITHUB_REF': 'refs/tags/v1'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                cluster_ci.payload({**env, **change}, 3)
+
+    def test_cluster_lane_runs_on_aws_with_only_short_lived_credentials(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        job = workflow.split('  cluster:', 1)[1]
+        # One cluster lane, on the AWS deployment, for every repository branch.
+        self.assertNotIn('  cluster-aws:', workflow)
+        self.assertIn('environment: cluster-ci-aws', job)
+        self.assertIn('name: NativeLink / Linux\n', job)
+        self.assertIn("startsWith(github.ref, 'refs/heads/')", job)
+        for removed in ('continue-on-error', 'NL_AWS_LANE', 'cluster-ci-benchmark'):
+            self.assertNotIn(removed, workflow)
+        self.assertIn('id-token: write', job)
+        # The log of this public repository shows a variable and masks a
+        # secret, so what locates the deployment is read from secrets.
+        for located in ('NL_AWS_DISPATCH_ROLE_ARN', 'NL_GKE_SERVER', 'NL_GKE_CA_DATA'):
+            self.assertIn('${{ secrets.%s }}' % located, job)
+            self.assertNotIn('vars.%s ' % located, job)
+        self.assertIn('mask-aws-account-id: true', job)
+        self.assertRegex(job, r'aws-actions/configure-aws-credentials@[a-f0-9]{40}\n')
+        # The result is read with a new token after the build, so the
+        # credentials must outlast the job.
+        session = int(re.search(r'role-duration-seconds: (\d+)', job).group(1))
+        limit = int(re.search(r'timeout-minutes: (\d+)', job).group(1))
+        self.assertGreater(session, limit * 60)
+        for stored_key in ('aws-access-key-id', 'aws-secret-access-key', 'AWS_SECRET_ACCESS_KEY'):
+            self.assertNotIn(stored_key, workflow)
+        self.assertNotIn('NL_GCP_', workflow)
+        # The Bazel client by its own name: the Nix lane has a client of its own.
+        self.assertIn('NL_GKE_POD: ${{ vars.NL_GKE_BAZEL_POD }}', job)
+        self.assertIn('name: cluster-ci\n', job)
+
+    def test_eks_tokens_come_from_the_job_role_and_stay_out_of_kubeconfig(self):
+        env = {'NL_EKS_CLUSTER': 'ci-acceleration', 'NL_AWS_REGION': 'us-east-2',
+               'NL_GKE_SERVER': 'https://cluster.example', 'NL_GKE_CA_DATA': 'public-ca',
+               'NL_GKE_NAMESPACE': 'test', 'AWS_SECRET_ACCESS_KEY': 'role-secret',
+               'AWS_SESSION_TOKEN': 'session-secret'}
+        config = cluster_ci.kubeconfig(env)
+        plugin = config['users'][0]['user']['exec']
+        self.assertEqual(plugin['command'], 'aws')
+        self.assertEqual(plugin['args'], ['eks', 'get-token', '--cluster-name', 'ci-acceleration',
+                                          '--region', 'us-east-2', '--output', 'json'])
+        self.assertNotIn('token', config['users'][0]['user'])
+        for secret in ('role-secret', 'session-secret'):
+            self.assertNotIn(secret, json.dumps(config))
+        for change in ({'NL_EKS_CLUSTER': 'ci; rm -rf /'}, {'NL_AWS_REGION': 'us-east-2 --profile x'}):
+            with self.assertRaises(ValueError):
+                cluster_ci.kubeconfig({**env, **change})
+        # Without an EKS cluster there is no way to a token.
+        del env['NL_EKS_CLUSTER']
+        with self.assertRaises(ValueError):
+            cluster_ci.kubeconfig(env)
+
+    def test_total_reuse_counts_local_hits_once_and_uses_spawn_outcomes(self):
+        # One action may spawn multiple processes; total-internal is not a
+        # valid denominator. Test-result hits must not be added again either.
+        summary = {"actionCacheStatistics": {"hits": 95}, "runnerCount": [
+            {"name": "total", "count": 4}, {"name": "internal", "count": 1},
+            {"name": "action cache hit", "count": 95},
+            {"name": "disk cache hit", "count": 2},
+            {"name": "remote cache hit", "count": 1}, {"name": "remote", "count": 2}]}
+        self.assertEqual(ci_benchmark.cache_usage(summary)["total_reuse_percent"], 98)
+
+    def test_unknown_local_coverage_does_not_fabricate_total_reuse(self):
+        usage = ci_benchmark.cache_usage({"runnerCount": [
+            {"name": "total", "count": 10}, {"name": "remote cache hit", "count": 2}]})
+        self.assertEqual(usage["remote_hits"], 2)
+        self.assertIsNone(usage["total_reuse_percent"])
+
+    def test_bep_artifact_contains_only_aggregate_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bep = Path(directory) / "events"
+            bep.write_text(json.dumps({"optionsParsed": {"secret": "do-not-retain"}}) + "\n" +
+                           json.dumps({"testSummary": {"overallStatus": "PASSED", "totalRunCount": 1,
+                                                       "totalNumCached": 1, "label": "private"}}) + "\n")
+            result = ci_benchmark.aggregates(bep)
+            self.assertEqual(result["tests"], {"total": 1, "cached": 1, "failed": 0})
+            self.assertNotIn("private", json.dumps(result))
+            self.assertNotIn("do-not-retain", json.dumps(result))
+
+    def test_helper_never_sends_key_to_other_hosts_ports_or_cleartext(self):
+        endpoint = "grpcs://cache.example:443"
+        for uri in ["https://evil.example", "https://cache.example.evil.example",
+                    "https://cache.example:444", "http://cache.example"]:
+            self.assertEqual(benchmark_credentials.credentials(uri, endpoint, "secret"), {})
+        self.assertEqual(benchmark_credentials.credentials("https://cache.example", endpoint, "secret"),
+                         {"headers": {"x-nativelink-api-key": ["secret"]}})
+
+    def test_missing_key_fails_without_echoing_request(self):
+        helper = Path(__file__).with_name("benchmark_credentials.py")
+        result = subprocess.run([sys.executable, str(helper), "get"],
+                                input='{"uri":"https://cache.example/private"}', text=True,
+                                capture_output=True, env={**os.environ, "NL_ENDPOINTS": "grpcs://cache.example",
+                                                         "NL_API_KEY": ""})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("private", result.stderr)
+
+    def test_configuration_keeps_key_out_of_argv_and_caps_cluster_jobs(self):
+        env = {"NL_API_KEY": "do-not-write-me", "GITHUB_SHA": "a" * 40,
+               "NL_CLUSTER_ENDPOINT": "grpcs://cache.example:443",
+               "NL_CLUSTER_BEP_ENDPOINT": "grpcs://cache.example:443",
+               "NL_INSTANCE": "main", "NL_RESULTS_URL": "https://ui.example/build/",
+               "NL_WORKER_IMAGE": "image@sha256:123"}
+        flags, endpoints = ci_benchmark.configuration("cluster", env)
+        self.assertNotIn(env["NL_API_KEY"], " ".join(flags) + endpoints)
+        self.assertGreater(flags.index("--jobs=48"), flags.index("--config=nl-rbe"))
+        with self.assertRaises(ValueError):
+            ci_benchmark.configuration("cluster", {**env, "NL_API_KEY": ""})
+        with self.assertRaises(ValueError):
+            ci_benchmark.configuration("baseline", env)
+
+    def test_failure_is_retained_and_stops_warm_repetitions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = type("Args", (), {"lane": "cluster", "repetitions": 3, "output": Path(directory)})()
+            with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "BENCHMARK_STARTED": "0"}), \
+                    patch.object(ci_benchmark, "configuration", return_value=([], "")), \
+                    patch.object(ci_benchmark, "execute", return_value=7) as execute:
+                self.assertEqual(ci_benchmark.run(args), 7)
+                execute.assert_called_once()
+            result = json.loads((Path(directory) / "cluster.json").read_text())
+            self.assertEqual(result["exit_code"], 7)
+            self.assertEqual(len(result["runs"]), 1)
+
+    def test_retained_runner_writes_metadata_before_bazel_starts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = type('Args', (), {'lane': 'cluster', 'repetitions': 1, 'output': root})()
+            def execute(_command, _env):
+                self.assertIn('--build_metadata=job=Current job',
+                              (root / 'ci-metadata.bazelrc').read_text())
+                return 0
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40, 'BENCHMARK_STARTED': '0',
+                                         'CI_BAZEL_METADATA': json.dumps({'job': 'Current job'})}), \
+                    patch.object(ci_benchmark.Path, 'cwd', return_value=root), \
+                    patch.object(ci_benchmark, 'configuration', return_value=([], '')), \
+                    patch.object(ci_benchmark, 'execute', side_effect=execute):
+                self.assertEqual(ci_benchmark.run(args), 0)
+
+    def test_host_bazel_does_not_inherit_the_nix_library_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = {
+                'nix': '#!/bin/sh\nwhile [ "$1" != --command ]; do shift; done\nshift\n'
+                       'export LD_LIBRARY_PATH=/incompatible/nix-runtime\nexec "$@"\n',
+                'bazel': '#!/bin/sh\nif [ -n "${LD_LIBRARY_PATH+x}" ]; then exit 81; fi\n',
+            }
+            for name, script in scripts.items():
+                path = root / name
+                path.write_text(script)
+                path.chmod(0o755)
+            args = type('Args', (), {'lane': 'cluster', 'repetitions': 1, 'output': root})()
+            with patch.dict(os.environ, {'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                                         'NL_API_KEY': 'test-only-key', 'GITHUB_SHA': 'a' * 40,
+                                         'BENCHMARK_STARTED': '0'}), \
+                    patch.object(ci_benchmark, 'configuration', return_value=([], '')):
+                self.assertEqual(ci_benchmark.run(args), 0)
+
+    def test_comparison_requires_both_lanes_and_matching_revisions(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError):
+                ci_benchmark.compare(Path(directory))
+            base = {"revision": "a" * 40, "setup_seconds": 1, "total_seconds": 3,
+                    "exit_code": 0, "runs": [{"seconds": 2, "exit_code": 0}]}
+            for lane in ("baseline", "cluster"):
+                (Path(directory) / f"{lane}.json").write_text(json.dumps({
+                    **base, "lane": lane, "revision": lane * 10}))
+            with self.assertRaises(ValueError):
+                ci_benchmark.compare(Path(directory))
+
+
+if __name__ == "__main__":
+    unittest.main()

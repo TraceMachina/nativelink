@@ -3,3 +3,10 @@ out/
 .turbo/
 next-env.d.ts
 *.tsbuildinfo
+
+# Generated from lib/llms.ts, the blog posts and the docs corpus by
+# scripts/gen-llms.ts (runs as part of `dev` and `build`). The committed copies
+# live at the repository root; these are the ones the site serves.
+public/llms.txt
+public/llms-small.txt
+public/llms-full.txt

@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -73,10 +73,9 @@ impl PushServer {
         request: PushBlobRequest,
     ) -> Result<Response<PushBlobResponse>, Error> {
         let instance_name = &request.instance_name;
-        let store_info = self
-            .stores
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let store_info = self.stores.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         if store_info.read_only {
             return Err(make_err!(

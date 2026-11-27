@@ -5,13 +5,18 @@ exclude = [
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-sim"]
 resolver = "2"
 
 [package]
 edition = "2024"
 name = "nativelink"
-rust-version = "1.93.1"
-version = "1.5.2"
+rust-version = "1.97.1"
+version = "1.9.0"
+
+[package.metadata.cargo-machete]
+# Used by the nativelink_test macro in the binary's socket regression test.
+ignored = ["tracing-test"]
 
 [profile.release]
 lto = true
@@ -26,6 +31,10 @@ strip = true
 
 [[bin]]
 name = "nativelink"
+
+[lib]
+name = "nativelink"
+path = "src/lib.rs"
 
 [features]
 nix = ["nativelink-worker/nix"]
@@ -53,8 +62,9 @@ clap = { version = "4.5.35", features = [
   "usage",
 ], default-features = false }
 futures = { version = "0.3.31", default-features = false }
+h2 = { version = "0.4.19", default-features = false }
 hex = { version = "0.4.3", default-features = false }
-hyper = { version = "1.6.0", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false, features = [
   "tracing",
 ] }
@@ -66,7 +76,7 @@ rustls-pki-types = { version = "1.13.1", features = [
   "std",
 ], default-features = false }
 sha2 = { version = "0.10.8", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "rt-multi-thread",
@@ -75,12 +85,21 @@ tokio = { version = "1.52.2", features = [
 tokio-rustls = { version = "0.26.2", default-features = false, features = [
   "ring",
 ] }
-tonic = { version = "0.13.0", features = [
+tonic = { version = "0.14.0", features = [
   "tls-ring",
   "transport",
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+
+[dev-dependencies]
+nativelink-macro = { path = "nativelink-macro" }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] }
+tracing-test = { version = "0.2.5", default-features = false, features = [
+  "no-env-filter",
+] }
 
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
@@ -94,7 +113,6 @@ serial_test = ["async"]
 tokio = ["fs", "io-util", "rt-multi-thread", "signal"]
 tokio-stream = ["fs"]
 tonic = ["tls", "transport"]
-tonic-build = ["prost"]
 uuid = ["serde", "v4"]
 
 [workspace.lints.rust]
@@ -113,47 +131,47 @@ invalid-macro-export-arguments = "deny"
 invalid-nan-comparisons = "deny"
 invalid-reference-casting = "deny"
 invalid-value = "deny"
+let-underscore = "deny"
 opaque-hidden-inferred-bound = "deny"
 overlapping-range-endpoints = "deny"
 suspicious-double-ref-op = "deny"
+trivial-casts = "deny"
 unconditional-recursion = "deny"
 unexpected-cfgs = "deny"
-unknown-lints = "deny"
+unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
 unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
 unused-imports = "deny"
+unused-qualifications = "deny"
 
 keyword-idents = "warn"
-let-underscore = "warn"
 macro-use-extern-crate = "warn"
 meta-variable-misuse = "warn"
 missing-abi = "warn"
 missing-copy-implementations = "warn"
 missing-debug-implementations = "warn"
 noop-method-call = "warn"
-single-use-lifetimes = "warn"
-trivial-casts = "warn"
 trivial-numeric-casts = "warn"
 unreachable-pub = "warn"
 unused = { level = "warn", priority = -1 }
 unused-import-braces = "warn"
 unused-lifetimes = "warn"
-unused-qualifications = "warn"
 variant-size-differences = "warn"
 
 [workspace.lints.clippy]
 
 # Global configuration
-all = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 
 # Restriction Denies with default priority
 alloc-instead-of-core = "deny"
 as-underscore = "deny"
 await-holding-lock = "deny"
 bind-instead-of-map = "deny"
+cast_possible_wrap = { level = "deny", priority = 1 }
 collapsible-if = "deny"
 disallowed-methods = "deny"
 doc-markdown = "deny"
@@ -176,7 +194,6 @@ semicolon-if-nothing-returned = "deny"
 similar-names = "deny"
 single-char-pattern = "deny"
 single-match-else = "deny"
-std-instead-of-core = "deny"
 string-lit-as-bytes = "deny"
 todo = "deny"
 unchecked-time-subtraction = "deny"
@@ -187,7 +204,6 @@ useless-format = "deny"
 
 # Restriction Warnings with default priority
 dbg-macro = "warn"
-decimal-literal-representation = "warn"
 get-unwrap = "allow"                    # TODO(jhpratt) Flip
 missing-docs-in-private-items = "allow" # TODO(jhpratt) Flip
 unimplemented = "warn"
@@ -203,12 +219,12 @@ iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) 
 option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
 redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
 significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+std-instead-of-core = "allow"                                   # TODO(palfrey): see https://github.com/rust-lang/rust-clippy/pull/16964 fixed in 1.98
 too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
 
 # TODO(palfrey): Remove these to get to pedantic.
 cast_possible_truncation = { level = "deny", priority = 1 }
-cast_possible_wrap = { level = "allow", priority = 1 }
 cast_precision_loss = { level = "allow", priority = 1 }
 cast_sign_loss = { level = "allow", priority = 1 }
 large_futures = { level = "allow", priority = 1 }
@@ -219,4 +235,5 @@ must_use_candidate = { level = "allow", priority = 1 }
 ref_option = { level = "allow", priority = 1 }
 too_many_lines = { level = "allow", priority = 1 }
 unused_async = { level = "allow", priority = 1 }
+unused_async_trait_impl = { level = "allow", priority = 1 } # TODO(palfrey): nightly only, remove when we upgrade Rust above 1.97.1
 unused_self = { level = "allow", priority = 1 }

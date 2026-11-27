@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ use http::status::StatusCode;
 use http_body::Frame;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalOntapS3Spec};
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -33,7 +33,7 @@ use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -730,6 +730,89 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
         .update_oneshot(digest, send_data.clone().into())
         .await
         .unwrap();
+    mock_client.assert_requests_match(&[]);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_small_upload_never_sends_ontap_put() -> Result<(), Error> {
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        let mock = StaticReplayClient::new(vec![]);
+        let config = Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::from_static(VSERVER_NAME))
+            .http_client(mock)
+            .build();
+        let store = OntapS3Store::new_with_client_and_jitter(
+            &ExperimentalOntapS3Spec {
+                bucket: BUCKET_NAME.to_string(),
+                vserver_name: VSERVER_NAME.to_string(),
+                endpoint: "https://example.com".to_string(),
+                ..Default::default()
+            },
+            aws_sdk_s3::Client::from_conf(config),
+            Arc::new(|_| Duration::from_secs(0)),
+            MockInstantWrapped::default,
+        )?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(
+            store.update(
+                DigestInfo::try_new(VALID_HASH1, 78)?,
+                rx,
+                UploadSizeInfo::ExactSize(78)
+            ),
+            send
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn remove_deletes_object() -> Result<(), Error> {
+    let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-100?x-id=DeleteObject"
+            ))
+            .body(SdkBody::empty())
+            .unwrap(),
+        http::Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(SdkBody::empty())
+            .unwrap(),
+    )]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::from_static(VSERVER_NAME))
+        .http_client(mock_client.clone())
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = OntapS3Store::new_with_client_and_jitter(
+        &(ExperimentalOntapS3Spec {
+            bucket: BUCKET_NAME.to_string(),
+            vserver_name: VSERVER_NAME.to_string(),
+            endpoint: "https://example.com".to_string(),
+            ..Default::default()
+        }),
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+    let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
+    assert!(
+        Store::new(store)
+            .as_store_driver_pin()
+            .remove(digest.into())
+            .await?
+    );
     mock_client.assert_requests_match(&[]);
     Ok(())
 }

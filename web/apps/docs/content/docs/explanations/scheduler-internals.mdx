@@ -1,0 +1,539 @@
+---
+title: Scheduler internals
+description: Action merging, the awaited-action database, how a worker is chosen, and what happens when an action fails.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone tuning a scheduler, debugging an action that
+queued forever, or wondering why two identical builds did not share work.
+**What you'll have at the end:** the merge rule, the ordering rule, the
+matching rule, and the retry rule, each of which has at least one
+counter-intuitive edge. **Time:** twenty-five minutes.
+
+The scheduler's job sounds small: take actions from clients, give them to
+workers. Almost all of its complexity comes from three questions it has to
+answer that the protocol does not specify: when are two actions the same
+one, which of the queued actions goes next, and what does "this failed" mean.
+
+## No `ActionScheduler` trait exists [#there-is-no-actionscheduler-trait]
+
+If you go looking for one (and older material about NativeLink will send you
+looking) you will not find it. The abstraction is split by *who is asking*,
+into three traits in
+<SourceLink file="nativelink-util/src/operation_state_manager.rs" symbol="operation_state_manager.rs" />:
+
+**`ClientStateManager`** is the client's view: submit an action, subscribe to
+its progress. **`WorkerStateManager`** is the worker's view: report that an
+operation changed state. **`MatchingEngineStateManager`** is the matcher's
+view: list actions that could be dispatched, assign one to a worker.
+
+Two more sit beside them: `WorkerScheduler`, which owns worker lifecycle, and
+`KnownPlatformPropertyProvider`, which is how the capabilities service learns
+which platform property keys an instance's scheduler knows about.
+
+The split is what allows the whole state layer to be swapped:
+`SimpleSchedulerStateManager` implements all three traits and is generic over
+an `AwaitedActionDb`, which is either `MemoryAwaitedActionDb` or the
+store-backed `StoreAwaitedActionDb` used for Redis. It is also why "the
+scheduler" in configuration can be a stack (the `cache_lookup` decorator is
+optional, and none of the shipped example configs use it):
+
+<Mermaid>{`graph TD
+  client["Client<br/>Execute"]
+  cl["CacheLookupScheduler<br/>(decorator)"]
+  ac["Action cache"]
+  ss["SimpleScheduler"]
+  me["Matching engine"]
+  sm["State manager<br/>in-memory or Redis"]
+  wk["Worker"]
+  client --> cl
+  cl -->|"lookup"| ac
+  ac -->|"hit: never enters the queue"| client
+  cl -->|"miss"| ss
+  ss --> sm
+  me --> sm
+  me -->|"assign"| wk
+  wk -->|"state updates"| sm
+`}</Mermaid>
+
+The decorator in front is why a cache hit never appears in queue depth, and
+why `ActionStage::CacheCheck` is never emitted by the scheduler crate.
+
+## When are two actions the same action? [#when-are-two-actions-the-same-action]
+
+Two clients asking for the same work should wait on one execution. The key
+that decides this is `ActionUniqueKey`, and it has exactly three fields:
+instance name, digest function, and the action digest.
+
+That key is wrapped in `ActionUniqueQualifier`, which is either `Cacheable`
+or `Uncacheable`. Only the `Cacheable` variant merges.
+
+Three things people expect to be in that key and are not:
+
+**No salt exists.** A comment in the source refers to one; the struct has no
+such field. If you need two textually identical actions to be distinct, the
+difference has to be in the action itself.
+
+**`do_not_cache` is never read.** The REAPI flag exists on the message and
+NativeLink parses it, but no code in the repository branches on it. Setting
+it does not stop a result being written.
+
+**The flag that actually matters is `skip_cache_lookup`,** and its effect is
+asymmetric in a way worth stating plainly: it disables the cache **read**,
+and it disables **merging**, but it does **not** disable the cache
+**write**. An action submitted with `skip_cache_lookup` runs on its own,
+ignoring any existing result, and then overwrites that result.
+
+<Callout type="info" title="Why that asymmetry is the useful one">
+  It is exactly what you want for "re-run this and fix the cache": force a
+  real execution, and let everyone else benefit from the answer. If it also
+  suppressed the write, the poisoned entry you were trying to replace would
+  survive.
+</Callout>
+
+## Ordering is one 64-bit integer [#ordering-is-one-64-bit-integer]
+
+`AwaitedActionSortKey` packs the entire queue ordering into a single `u64`:
+the upper 32 bits are the priority (shifted from `i32` into unsigned range so
+byte order matches numeric order), and the lower 32 bits are the insertion
+timestamp in whole seconds XORed with `u32::MAX`.
+
+The XOR is what makes an *earlier* timestamp sort *higher*, so the rule falls
+out of the encoding: **priority dominates absolutely, and ties break in
+favour of the action that arrived first**, at one-second resolution; actions
+inserted within the same second are ordered by operation ID, which is
+effectively arbitrary. It has no aging, no starvation
+guard, and no fairness across clients. A client that submits everything at
+priority 1000 will starve a client at priority 0 indefinitely, and nothing in
+the scheduler will intervene.
+
+Priority is a contract between the people sharing a cluster, enforced
+socially. If you need it enforced mechanically, that has to happen in front
+of the scheduler.
+
+## Two state enums, and one that never appears [#two-state-enums-and-one-that-never-appears]
+
+`ActionStage` is the wire-facing state a client sees.
+`SortedAwaitedActionState` is the database index state the scheduler sorts
+on. They overlap but are not the same, and conflating them while reading the
+source is a reliable way to get lost.
+
+Notably: **`ActionStage::CacheCheck` is never produced by the scheduler
+crate.** It exists in the protocol, but by the time an action reaches the
+scheduler the cache lookup has already happened in the decorator in front of
+it; see [where an action's path forks](/explanations/architecture-deep-dive#where-an-actions-path-forks).
+A client waiting to observe `CacheCheck` will wait forever.
+
+## Matching is first-fit over an LRU [#matching-is-first-fit-over-an-lru]
+
+The matching engine walks the queue in sort order, and for each action looks
+for the first worker that satisfies the action's platform properties. The
+source still carries an `O(n*m)` TODO in
+<SourceLink
+  file="nativelink-scheduler/src/simple_scheduler.rs"
+  symbol="SimpleScheduler"
+/>,
+but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
+over `Exact` and `Priority` properties) produces the candidate set, and only
+that set is scanned in LRU order, checking availability and `Minimum`
+values per worker.
+<SourceLink file="nativelink-scheduler/src/worker_capability_index.rs" symbol="WorkerCapabilityIndex" />
+
+For clusters of tens or low hundreds of workers this is not the bottleneck.
+It is worth knowing about before you plan for thousands.
+
+`allocation_strategy` is a smaller knob than its name suggests. The two
+original values choose **which end of the LRU the scan starts from**, and
+nothing else. Starting from the least-recently-used end spreads load;
+starting from the most-recently-used end packs work onto hot workers and
+leaves the rest idle long enough to be scaled down. `least_loaded` takes the
+eligible worker with the fewest running actions, least recently used among
+equals, so a worker that just joined takes the next action instead of
+waiting for every older worker to be used once more, and a burst that lands
+while most of the fleet is still starting does not fill the first worker to
+its concurrency cap. None of them is a bin-packing algorithm.
+
+The admission ledger only subtracts what an action declares, so an action
+that declared too little is invisible to it. **`live_memory_veto`** names a
+`minimum` property, usually `memory_kb`, that the scheduler checks against the
+free memory each worker reports with its keepalive (the cgroup limit less
+its working set, or `MemAvailable` without a limit). The working set is
+`memory.current` less the `inactive_file` page cache in `memory.stat`, as
+kubelet counts it for eviction, except that `file_dirty` and
+`file_writeback` pages still count as used until they reach the disk, so
+inactive, clean cache a worker's own I/O built up does not count against
+it. A worker reporting less than the action asks for is skipped for that
+action; a worker that reports
+nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
+this: `worker.keepalive.gap` is the seconds between consecutive messages from
+a worker, which is what `worker_timeout_s` should be judged against, and
+`worker.disconnections` carries a `worker.disconnect.reason` of
+`disconnected`, `drained`, `timeout`, `kill_unacknowledged`, `error`,
+`removed` or `shutdown`.
+
+Within a priority the queue is ordered by insert time to the nanosecond, on
+both backends, so a burst submitted together dispatches in arrival order.
+
+The pass keeps that order when a worker frees up while it is running. A pass
+reads the queue one action at a time, a store round trip each on a
+store-backed queue (the listing serves the record it already loaded, and
+only the client keepalive is read), so on a long queue a worker that
+finishes mid-pass would otherwise hand its room to whatever action the pass
+happened to be reading, newer than everything it had already passed over. Instead, actions that found
+no room are parked in the order the queue listed them, highest priority first
+and then oldest, and when the fleet's capacity changes the pass offers the
+room to the parked actions in that order before the one in hand, asking the
+fleet once per property shape. `scheduler.matching.parked_dispatched` counts
+the parked actions a worker was actually told to run that way; a non-zero
+rate is normal on a busy fleet and means the head of the queue is being
+served.
+
+Parking does not help an action whose reservation only fits a worker with
+nothing else on it. Every pass tries it first and finds each worker partly
+busy, then fills the room that opens with newer, smaller actions, so no
+worker ever drains for it while the fleet reads as free. **`reservation_hold`**
+is for that action: once it has waited `hold_after_s` and fits no busy worker
+until more than one of that worker's actions finish (an action one completion
+would make room for is only waiting its turn, which the pass order gives it),
+the pass holds a worker that would fit it idle (fewest actions running, then
+most memory free as last reported, never one that declined that much while
+idle) and offers it nothing else; as its actions finish the held action is
+placed there the moment the ledger and the live veto allow. The hold stays
+through the dispatch until the worker takes the action; a worker that declines
+it sends it back to the queue with the hold kept, unless it declined idle, in
+which case the hold moves to another worker. The hold ends when a worker takes
+the action, anywhere, when it leaves the queue, when the worker leaves or
+drains, or after `max_hold_s`, whichever is first; an expired hold is not
+repeated for that action until as long again has passed, twice as long for
+each expiry in a row on a worker that was idle, so an action that never fits
+does not keep workers idle in turns. At most `max_held_workers` are held at
+once per replica (a tenth of the workers connected to it by default). A hold is
+local to the scheduler replica the worker is connected to; replicas sharing a
+queue take turns per action, by a hash of the action over the replicas whose
+workers would fit it as the fleet census last read them, so one worker is held
+for it fleet-wide. `scheduler.worker.holds` counts holds by outcome and
+`scheduler.worker.held` is how many workers are held right now. An action no
+connected worker would fit even idle gets no hold; that is the unsatisfiable
+path, or a sizing class larger than the workers less their overhead.
+
+When a worker reports an action killed for memory, by its own reservation
+enforcement or by the kernel near the limit, **`memory_escalation`** requeues
+the action with the reservation multiplied by `percent` (default 200) instead
+of failing it. With `ladder_kb` set to the memory values of the fleet's size
+classes, a kill steps the reservation to the next class up instead of
+scaling it. The next dispatch carries the raised value, so the worker holds
+the action to that. The reservation grows to the largest memory any connected
+worker advertises (or `max_kb`); the last step reserves that worker whole,
+its memory and, through `cpu_property`, its CPU, so the action runs alone.
+Only a kill there fails the action, with a message saying no worker in the
+fleet can run it. Escalations have their own budget (`max_steps`, default 8)
+and do not spend `max_job_retries`. The execution histograms carry an
+`execution.outcome` attribute so the killed samples can be told from the
+completed ones.
+
+The `historical_resource` scheduler uses `hints_file` by default. It loads the
+file at startup and refreshes it in the background at `refresh_interval_s`
+(zero means once), preserving the last usable generation after a failed read.
+An existing configuration does not switch to learning automatically.
+
+Set `learn_from_workers: true` to size actions from worker measurements.
+In this mode the file is only a seed for an empty sketch, and its first real
+sample replaces each seeded entry. Every sampled usage report a worker
+sends lands in a bounded sketch: one entry per key with 25-bucket log2
+histograms of peak memory, CPU and disk, the exact maxima, the reservation
+the action was last killed at, and when it was last seen. The key is the
+`(target_id, action_mnemonic)` the client sent, the mnemonic alone when it
+sent no target, or the action's `command_digest` when it sent neither (the
+same program with the same arguments, whatever its inputs, so one key
+gathers every run; a digest earns an entry on its second sighting or a
+kill, since one that ran once is an action-cache hit next time). An attempt
+that names both is recorded under its mnemonic as well, so a target the
+sketch has never seen is sized from its kind of action rather than the cold
+start. A lookup walks that ladder most specific first and reserves the 95th
+percentile bucket's upper bound, capped by the exact maximum, plus
+`headroom_percent`, never at or below the kill. Two half-window histograms
+retain samples for between half and one full `window_days` window, and a
+kill floor expires with the window. Wide histogram counters preserve the
+relative weights of common and rare observations. **`classes`** on the same scheduler defines the
+fleet's size ladder: named points with `cpu_count`, `memory_kb` and
+`disk_kb`, listed ascending, and a hint takes the smallest class that holds
+its numbers on every dimension the class names. An action the sketch has
+nothing for takes the class picked by `class_by_mnemonic`, then
+`class_by_timeout` (Bazel test sizes arrive as timeouts), then
+`default_class`; without classes the raw `cold_start` numbers apply. With
+`memory_escalation.ladder_kb` set to the classes' memory values, a memory
+kill steps the reservation to the next class instead of scaling it, and a
+kill at the top class fails the action.
+
+A class may also carry `gpu_count`, written to `gpu_property_name` on the
+scale the workers advertise: whole devices, or shares of one where a fleet
+counts a device in parts. A share is stated and never measured, so it plays
+no part in choosing a class for a measured action. While the hints file
+sizes actions, an entry states it directly with `gpu_count` or through the
+class it names. In either mode the class the cold-start rules name for an
+action supplies it, and goes on supplying it after the action's CPU and
+memory have been learned. A learning scheduler does not seed a `gpu_count`
+from the hints file and logs a warning when the file states one. A value
+the client sent is never lowered, and a class rule fills the property only
+when it is absent.
+
+Device memory is the part of a GPU that is learned, where something
+measures it. A worker reads no device itself: whatever wraps an action
+reports the peak it held as `peak_gpu_memory_kb` in the side channel file,
+the worker carries that figure in its usage report, and the sketch keeps the
+largest one of each half-window. The reservation, written to
+`gpu_memory_property_name`, is the most any run in the window held plus
+`headroom_percent`; a maximum and not a percentile, because an action that
+runs out of device memory is ended outright. A class that names
+`gpu_memory_kb` stands for a slice of a GPU. An action measured on a device
+takes the smallest such class that holds what it held, with that class's
+`gpu_count`, and an action that was not measured on one takes a class that
+names no device memory. Past the largest slice no class stands in: the
+measured number is reserved as it is, so only a worker advertising that
+much is asked. A measurement is reserved only when a class names
+`gpu_memory_kb`. A ladder that names no device memory reserves none, and
+neither does a configuration with no ladder at all, because nothing there
+says a worker advertises it; the measurement is still recorded. A number
+stated in the hints file is applied as written. Snapshots that predate the
+dimension still load.
+
+The `memory_budget_bytes` accounting includes entry storage, variable-length
+keys, map bookkeeping, probation and reserved snapshot working memory. The
+**512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
+families with short keys; long labels reduce that capacity. Explicitly configured
+budgets keep their value. One quarter funds resident data and the remainder
+reserves space for snapshot encoding and loading. Size the process memory limit
+above the budget plus the scheduler's other allocations: this is not a total
+process RSS limit. File-backed mode does not allocate the learned cache in advance.
+Old keys expire after `window_days`, and full families evict their least recently
+used entries. Monitor capacity and evictions as the number of distinct keys grows.
+The writer encodes one shard at a time without cloning the entire sketch;
+lock contention and snapshot latency still need workload measurements.
+
+Each replica writes `historical_resource_sketch/<replica_id>` in `snapshot_store`
+every `snapshot_interval_s`. Set `replica_id` to a stable identity unique among
+concurrent writers, or leave it empty to use the pod's hostname. On startup the
+scheduler prefers its own snapshot. A replacement pod whose key is missing
+restores the newest compatible snapshot under the same prefix, **without merging
+histories**. Discovery reads small headers and retains at most 128 candidate keys;
+if that limit is exceeded, it warns and uses the hints file. Keep retired keys
+under a TTL, and use a separate store prefix for each logical scheduler. Stores
+without listing support need a stable replica ID to restore after a roll.
+
+Snapshot version 3 uses wide counters; older snapshots are skipped with a warning.
+Reads and decoded entry counts are bounded. Zero disables periodic writes;
+shutdown does not flush them. In learning mode the admin API's
+`/scheduler/{instance}/hints` exports shaped reservations as a hints file.
+Switching back to file-backed mode restores the configured file and refresh
+interval, not the learned state. Preserve the last known-good file for rollback.
+
+#### Choosing a snapshot store [#choosing-a-snapshot-store]
+
+`snapshot_store` names an entry in **this scheduler process's top-level `stores`**.
+It does not create a store or reference another CAS process's configuration. A
+missing name or failed startup write/read probe warns and leaves learning in
+memory for that process's lifetime. Fix the configuration or backend and restart
+to enable persistence; unsaved measurements are lost on restart.
+
+Names are user-defined in NativeLink. For the enterprise chart's standard names,
+check the rendered scheduler config:
+
+| Scheduler backend | Available standard snapshot-store names |
+| --- | --- |
+| Redis | `SCHEDULER_STORE`; also `ORIGIN_EVENT_STORE` when `cas.originEvents.enabled=true` |
+| Memory | `ORIGIN_EVENT_STORE` only when `cas.originEvents.enabled=true`; `SCHEDULER_STORE` is absent |
+
+If neither store is rendered, leave `snapshot_store` unset or define a dedicated
+store in the scheduler's own config. The chart may reject an invalid store name
+earlier during rendering; the server's fallback does not override chart checks.
+
+#### Waiting for an autoscaled size class [#waiting-for-an-autoscaled-size-class]
+
+Learned sizing selects from the configured class ladder, including a class whose
+pool currently has no connected workers. The retry escalator separately caps its
+memory ceiling at the largest connected worker advertisement; a size class is not
+an inventory of pools that can be provisioned. Capping learned hints to currently connected
+workers would prevent scale-from-zero and could repeat memory kills on a small
+worker.
+
+The memory scheduler sees only its own connected workers. Redis peer exchange
+adds other schedulers' **connected** workers, not pool templates awaiting startup. A pod
+created by the provisioner does not satisfy an action until the worker registers.
+A 60-second `unsatisfiable_action_timeout_s` can therefore fail a valid large-class
+action while its node or image is still starting.
+
+For autoscaling, initially leave that timeout at `0`, or set it above the measured
+worst-case time through worker registration, including node and image startup.
+For example, if that bound is below ten minutes, the nested `simple` scheduler can
+use:
+
+```json5
+{
+  simple: {
+    unsatisfiable_action_timeout_s: 600,
+    no_worker_action_timeout_s: 600,
+  },
+}
+```
+
+The second timeout covers a completely empty connected fleet; it does not replace
+the first when small workers are still connected. Zero disables the respective
+failure deadline, so monitor queued demand and provisioning failures. These
+settings preserve the requested reservation while the larger pool starts; they
+do not create workers themselves. With the memory backend, provisioner demand
+must come from the scheduler admin API rather than nonexistent Redis queue records.
+
+### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
+
+Every property key a worker advertises has a declared type:
+
+| Type | Meaning |
+| --- | --- |
+| `Exact` | The action's value must equal the worker's |
+| `Minimum` | The worker's value must be at least the action's, **and is consumed** |
+| `Priority` | The worker must have the key; its value is not compared (the source marks value-based preference as a TODO) |
+| `Ignore` | Accepted and disregarded |
+
+A *worker* announcing a property key the scheduler does not know is rejected
+at connect time. An *action* naming an unknown key is not rejected at
+submission: the key is only translated during the matching pass, where it
+produces an `Unknown platform property` error that is logged, and the action
+stays queued. That is the harder of the two to diagnose, so if an action
+sits in the queue with workers idle, check the scheduler log for that
+message before anything else.
+<SourceLink file="nativelink-scheduler/src/platform_property_manager.rs" symbol="make_prop_value" />
+
+`Minimum` is the one that changes how you think about a worker. Its value is
+**decremented when an action is dispatched and restored when the action
+completes**; see
+<SourceLink file="nativelink-scheduler/src/worker.rs" symbol="Worker" />. A
+worker advertising `cores: 16` is not saying "I am a 16-core machine, send me
+anything"; it is a pool of 16 units that actions draw down and return. That
+is the mechanism behind running several actions concurrently on one worker,
+and it is why getting the advertised number wrong oversubscribes the machine
+rather than queueing.
+
+[Platform properties](/remote-execution/platform-properties) covers this from
+the configuration side.
+
+## Retries, and what "failed" means [#retries-and-what-failed-means]
+
+The attempt counter is incremented by one event, and two other events that
+used to spend it now have budgets of their own.
+
+**`UpdateWithError` increments the attempt count, unless the error is
+`ResourceExhausted`.** Backpressure is free. A worker saying "I am too busy"
+does not spend one of the action's lives, which is what makes it safe for a
+worker to shed load.
+
+**`UpdateWithDisconnect` counts against `max_worker_loss_retries`** (default
+10), not `max_job_retries`. A worker that vanishes mid-action is usually not
+the action's doing, so the action goes back to the queue without spending one
+of its lives; the separate budget is what stops an action that reliably
+OOM-kills its worker from taking one down forever. Past it the client sees a
+`FAILED_PRECONDITION` saying the worker was lost that many times.
+
+**`UpdateWithEscalation` counts against `memory_escalation.max_steps`**
+(default 8), not `max_job_retries` either: the scheduler chose to run the
+action again with more memory, and the fleet's ceiling bounds how far that
+goes.
+
+The limit is checked as `attempts > max_job_retries`, strictly, so the
+default of `3` permits **four** total executions. That off-by-one is in the
+name: three *retries* after one initial attempt.
+
+<Callout type="warn" title="Final failure is not an RPC error">
+  When an action exhausts its retries, the client receives
+  `ActionStage::Completed` with `ActionResult.error` set: a *successful* RPC
+  describing a failed action. A client that only inspects the gRPC status will
+  read this as a clean completion. This is what the REAPI specifies, and it
+  is the single most common source of "the build passed but nothing was
+  built" reports.
+</Callout>
+
+### Two timeouts with very different defaults [#two-timeouts-with-very-different-defaults]
+
+`max_action_executing_timeout_s` **defaults to `0`, which means disabled.**
+It is not the only guard against a hung action: the worker kills the process
+when the action's own timeout (or the worker's `max_action_timeout_s`, 20
+minutes by default) elapses, and the scheduler re-queues an executing action
+whose worker stops sending updates for `worker_timeout_s`. What this knob
+adds is a ceiling for the case where the worker is alive and heartbeating
+but sends no update for a specific action; with it disabled, that case has no
+ceiling. On a shared cluster it is worth setting.
+
+`client_action_timeout_s` defaults to 60. If no client is listening for that
+long, the action is killed with `DeadlineExceeded`. This is a deliberate
+anti-orphan measure (a client that pressed Ctrl-C should not leave work
+running), but it also means a client that disconnects and reconnects slowly
+can lose work it expected to still be running.
+
+## Who writes the action cache entry? [#who-writes-the-action-cache-entry]
+
+Not the scheduler. **The worker writes the action cache entry, and it does so
+before telling the scheduler that the action finished.** The ordering is what
+guarantees that a client which observes completion and then queries the cache
+finds the result there.
+
+What gets written depends on the exit code, via `should_cache_result` in
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="RunningActionsManager" />.
+With the defaults, a **successful** action's result goes to the action cache
+(`SuccessOnly`), and a **failed** action's result goes to the historical
+results store (`FailuresOnly`) instead. A non-zero exit code is not an error
+in the REAPI sense (it is a legitimate, cacheable outcome), but by default
+NativeLink keeps it out of the action cache so that a failing compile is
+re-attempted rather than replayed.
+
+## Where the exact truth lives [#where-the-exact-truth-lives]
+
+Every scheduler field and default is in the generated
+[scheduler configuration reference](/reference/nativelink-config#namedschedulerconfig).
+For the operational levers, see [tuning](/operate/tuning).
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Why did two identical builds not share work?" id="why-no-merge">
+    Check the three fields in the merge key first: instance name, digest
+    function, action digest. A different instance name is the usual answer,
+    and the second most common is one client sending `skip_cache_lookup`,
+    which opts that action out of merging entirely.
+  </Accordion>
+  <Accordion title="My queue depth is zero but clients are waiting. Why?" id="queue-depth-zero">
+    Cache hits never enter the queue; on a Bazel client they are answered by
+    `GetActionResult` before `Execute` is ever sent, and with a `cache_lookup`
+    scheduler they are answered by the decorator in front of the queue. If
+    clients are genuinely waiting with an empty queue, look at whether the
+    `Execute` calls are being rejected up front (missing inputs return
+    `FAILED_PRECONDITION`) rather than queued.
+  </Accordion>
+  <Accordion title="What does the Redis backend change?" id="redis-backend-differences">
+    It swaps the state layer for one backed by RediSearch indexes with
+    optimistic concurrency. Two consequences: `Code::Aborted` from an internal
+    operation means "reload and retry", not "failed"; it is the normal
+    outcome of a version conflict. And action merging becomes best-effort,
+    because there is a small window where a just-written action is not yet
+    visible to the index; a short retry narrows it but does not close it. Two
+    identical actions submitted within milliseconds of each other may both
+    run.
+  </Accordion>
+  <Accordion title="Is fallback_match_interval_s just a safety net?" id="fallback-match-interval">
+    Not with the Redis backend. Matching there is driven by pub-sub with this
+    interval as a poll fallback, and pub-sub delivery is not guaranteed, so
+    the interval is load-bearing, and raising it raises worst-case dispatch
+    latency directly. It defaults to five seconds.
+  </Accordion>
+  <Accordion title="Can I stop one team starving another?" id="priority-starvation">
+    Not inside the scheduler. Ordering is priority-dominant with no aging and
+    no per-client fairness, so a client submitting everything at high priority
+    will starve everyone below it. Enforcement has to sit in front of the
+    scheduler: separate instance names with separate schedulers, or an
+    admission layer that normalises priority.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/worker-execution" title="Worker execution">
+  What the worker does with an action once the scheduler hands it over,
+  including exactly how much isolation you are and are not getting.
+</NextStep>

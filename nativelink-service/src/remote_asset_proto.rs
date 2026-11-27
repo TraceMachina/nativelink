@@ -1,3 +1,17 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use bytes::Bytes;
 use nativelink_proto::build::bazel::remote::asset::v1::Qualifier;
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
@@ -6,7 +20,7 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use prost::Message;
 use prost_types::Timestamp;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAssetQuery {
     pub uri: String,
     pub qualifiers: Vec<Qualifier>,
@@ -28,7 +42,7 @@ impl RemoteAssetQuery {
     }
 }
 
-#[derive(Clone, PartialEq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, prost::Message)]
 pub struct RemoteAssetArtifact {
     #[prost(string, tag = "1")]
     pub uri: String,
@@ -47,6 +61,10 @@ pub struct RemoteAssetArtifact {
         tag = "5"
     )]
     pub digest_function: i32,
+
+    /// When retrieval from origin started. Older records have no timestamp.
+    #[prost(message, optional, tag = "6")]
+    pub fetched_at: Option<Timestamp>,
 }
 
 impl RemoteAssetArtifact {
@@ -63,6 +81,7 @@ impl RemoteAssetArtifact {
             blob_digest: Some(blob_digest),
             expire_at,
             digest_function,
+            fetched_at: None,
         }
     }
 

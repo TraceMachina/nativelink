@@ -1,13 +1,17 @@
 ---
-name: Scorecard supply-chain security
+name: Security / Scorecard
 on:
   schedule:
     # Non-peak hour 23:15 on Tuesdays.
-    - cron: '15 23 * * 1'
+    - cron: "15 23 * * 1"
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
-permissions: read-all
+# Jobs without their own permissions block only check out the repository;
+# read-all also implies scopes a GitHub App installation token cannot be
+# granted.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,7 +19,7 @@ concurrency:
 
 jobs:
   analysis:
-    name: Scorecard analysis
+    name: Analyze
     runs-on: ubuntu-24.04
     permissions:
       security-events: write
@@ -29,8 +33,8 @@ jobs:
           persist-credentials: false
 
       - name: Run analysis
-        uses: >- # v2.4.0
-          ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46
+        uses: >- # v2.4.4
+          ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc
         with:
           results_file: results.sarif
           results_format: sarif

@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,11 +21,13 @@ use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
 use http::status::StatusCode;
 use nativelink_config::stores::{
-    CommonObjectSpec, ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec, Retry, StoreSpec,
+    CommonObjectSpec, ExperimentalOntapS3Spec, MemorySpec, OntapS3ExistenceCacheSpec, Retry,
+    StoreSpec,
 };
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
 use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_store::store_manager::StoreManager;
@@ -71,6 +73,7 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
             multipart_max_concurrent_uploads: None,
             insecure_allow_http: false,
             disable_http2: false,
+            ..Default::default()
         },
     };
 
@@ -536,6 +539,74 @@ async fn test_empty_bucket_handling() -> Result<(), Error> {
     assert_eq!(
         result, None,
         "Empty bucket should not add any objects to cache"
+    );
+    Ok(())
+}
+
+/// `remove` drops the index entry and forwards removal to the inner store.
+/// `remove_cached` keeps the index entry and the durable copy.
+#[nativelink_test]
+async fn remove_cached_keeps_index_entry_and_forwards_to_inner_store() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let temp_dir = tempdir().expect("Failed to create temporary directory");
+    let cache_path = temp_dir
+        .path()
+        .join("cache_index.json")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let mock_client = StaticReplayClient::new(vec![]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::from_static(VSERVER_NAME))
+        .http_client(mock_client)
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+
+    let inner = MemoryStore::new(&MemorySpec::default());
+    let digest = DigestInfo::try_new(VALID_HASH1, VALUE.len())?;
+    Store::new(inner.clone())
+        .update_oneshot(digest, VALUE.into())
+        .await?;
+
+    let mut digests = std::collections::HashSet::new();
+    digests.insert(digest);
+    let existence_cache = OntapS3ExistenceCache::new_for_testing(
+        Store::new(inner.clone()),
+        Arc::new(s3_client),
+        cache_path,
+        digests,
+        10,
+        MockInstantWrapped::default,
+    );
+    let store = Store::new(existence_cache);
+    assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
+
+    assert!(
+        store.as_store_driver_pin().remove(digest.into()).await?,
+        "remove reports the inner store's deletion"
+    );
+    assert_eq!(store.has(digest).await?, None);
+    assert_eq!(
+        Store::new(inner.clone()).has(digest).await?,
+        None,
+        "remove deletes the inner copy"
+    );
+
+    store.update_oneshot(digest, VALUE.into()).await?;
+    assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove_cached(digest.into())
+            .await?
+    );
+    assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
+    assert_eq!(
+        Store::new(inner)
+            .get_part_unchunked(digest, 0, None)
+            .await?,
+        VALUE.as_bytes()
     );
     Ok(())
 }

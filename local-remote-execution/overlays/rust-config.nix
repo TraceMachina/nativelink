@@ -1,6 +1,6 @@
 let
-  defaultStableVersion = "1.93.1";
-  defaultNightlyVersion = "2026-03-24";
+  defaultStableVersion = "1.97.1";
+  defaultNightlyVersion = "2026-08-26";
 in rec {
   # This map translates execution platforms to sensible targets that can
   # be built on such a platform. For instance, an x86_64-linux execution
@@ -20,14 +20,6 @@ in rec {
     "aarch64-linux" = [
       "aarch64-unknown-linux-gnu"
       "aarch64-unknown-linux-musl"
-      "x86_64-unknown-linux-gnu"
-      "x86_64-unknown-linux-musl"
-    ];
-    "x86_64-darwin" = [
-      "aarch64-apple-darwin"
-      "aarch64-unknown-linux-gnu"
-      "aarch64-unknown-linux-musl"
-      "x86_64-apple-darwin"
       "x86_64-unknown-linux-gnu"
       "x86_64-unknown-linux-musl"
     ];

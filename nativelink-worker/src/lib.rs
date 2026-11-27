@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod buck2_file_capture;
+pub mod capacity;
 pub mod directory_cache;
+pub mod input_mounts;
 pub mod local_worker;
 #[cfg(target_os = "linux")]
 pub mod namespace_utils;
 pub mod persistent_worker;
+pub mod process_table;
 pub mod qos;
+pub mod reaper;
 pub mod running_actions_manager;
 pub mod worker_api_client_wrapper;
 pub mod worker_utils;

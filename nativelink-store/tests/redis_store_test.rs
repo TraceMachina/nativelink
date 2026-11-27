@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,37 +13,40 @@
 // limitations under the License.
 
 use core::ops::RangeBounds;
+use core::pin::Pin;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
-use nativelink_config::stores::{RedisMode, RedisSpec};
+use nativelink_config::stores::{ExistenceCacheSpec, RedisMode, RedisSpec, StoreSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, add_to_response,
+    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, add_to_response, add_to_response_raw,
     fake_redis_sentinel_master_stream, fake_redis_sentinel_stream, fake_redis_stream,
     make_fake_redis_with_responses,
 };
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::redis_store::{
     ClusterRedisManager, DEFAULT_MAX_CHUNK_UPLOADS_PER_UPDATE, DEFAULT_MAX_COUNT_PER_CURSOR,
-    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager,
+    LUA_VERSION_SET_SCRIPT, RedisStore, RedisSubscriptionManager, decode_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::HealthStatus;
 use nativelink_util::store_trait::{
-    FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
-    SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, StoreLike, TrueValue,
-    UploadSizeInfo,
+    FalseValue, RemoveItemCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
+    SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
+    SchedulerSubscription, SchedulerSubscriptionManager, Store, StoreDriver, StoreKey, StoreLike,
+    TrueValue, UploadSizeInfo,
 };
 use pretty_assertions::assert_eq;
 use redis::{PushInfo, RedisError, Value, make_extension_error};
 use redis_test::{MockCmd, MockRedisConnection};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, info, info_span};
 
@@ -62,13 +65,27 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
+/// What `FT.INFO` says while the index created a moment ago is still
+/// scanning existing keys (`indexing 1`) and once it is done (`0`).
+fn make_ft_info(index: &str, indexing: i64) -> MockCmd {
+    MockCmd::new(
+        redis::cmd("FT.INFO").arg(index),
+        Ok(Value::Array(vec![
+            Value::BulkString(b"num_docs".to_vec()),
+            Value::Int(3),
+            Value::BulkString(b"indexing".to_vec()),
+            Value::Int(indexing),
+        ])),
+    )
+}
+
 async fn make_mock_store(
     commands: Vec<MockCmd>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 fn add_lua_version_script(mut responses: HashMap<String, String>) -> HashMap<String, String> {
     add_lua_script(&mut responses, LUA_VERSION_SET_SCRIPT, FAKE_SCRIPT_SHA);
@@ -84,9 +101,11 @@ async fn fake_redis_sentinel_master_stream_with_script() -> u16 {
         .await
 }
 
-async fn make_mock_store_with_prefix(
+async fn make_mock_store_with_prefix_and_subscriber_channel(
     mut commands: Vec<MockCmd>,
     key_prefix: String,
+    key_ttl: Option<Duration>,
+    subscriber_channel: UnboundedReceiver<PushInfo>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
     commands.insert(
         0,
@@ -97,7 +116,6 @@ async fn make_mock_store_with_prefix(
     );
     let mock_connection = MockRedisConnection::new(commands);
     let manager = ClusterRedisManager::new(mock_connection).await.unwrap();
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     RedisStore::new_from_builder_and_parts(
         None,
         mock_uuid_generator,
@@ -108,11 +126,133 @@ async fn make_mock_store_with_prefix(
         DEFAULT_MAX_PERMITS,
         DEFAULT_MAX_COUNT_PER_CURSOR,
         Duration::from_secs(4),
-        rx,
+        key_ttl,
+        subscriber_channel,
         manager,
     )
     .await
     .unwrap()
+}
+
+async fn make_mock_store_with_ttl(
+    commands: Vec<MockCmd>,
+    key_ttl: Duration,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    make_mock_store_with_prefix_and_subscriber_channel(commands, String::new(), Some(key_ttl), rx)
+        .await
+}
+
+async fn make_mock_store_with_prefix(
+    commands: Vec<MockCmd>,
+    key_prefix: String,
+) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    make_mock_store_with_prefix_and_subscriber_channel(commands, key_prefix, None, rx).await
+}
+
+/// Lifetime `RedisStore` gives an upload's temp key when `key_ttl_s` is not
+/// set: `TEMP_KEY_TTL` in the store, one hour.
+const TEMP_TTL: i64 = 60 * 60;
+
+/// The first command of every upload: the temp key created with its
+/// lifetime, before any chunk lands.
+fn stage(temp_key: &str, ttl_secs: i64) -> MockCmd {
+    MockCmd::new(
+        redis::cmd("SET")
+            .arg(temp_key)
+            .arg("")
+            .arg("EX")
+            .arg(ttl_secs),
+        Ok(Value::Okay),
+    )
+}
+
+/// One chunk write: the SETRANGE, the key's TTL as it stood before it (how
+/// the store tells a key the chunk recreated), and the EXPIRE that arms the
+/// lifetime again.
+fn chunk_pipe(temp_key: &str, offset: usize, data: &[u8], ttl_secs: i64) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.cmd("SETRANGE")
+        .arg(temp_key)
+        .arg(offset)
+        .arg(data)
+        .cmd("TTL")
+        .arg(temp_key)
+        .cmd("EXPIRE")
+        .arg(temp_key)
+        .arg(ttl_secs);
+    pipe
+}
+
+/// A chunk write that found the key alive: `written` is SETRANGE's answer.
+fn chunk(temp_key: &str, offset: usize, data: &[u8], ttl_secs: i64, written: i64) -> MockCmd {
+    MockCmd::with_values(
+        chunk_pipe(temp_key, offset, data, ttl_secs),
+        Ok(vec![
+            Value::Int(written),
+            Value::Int(ttl_secs),
+            Value::Int(1),
+        ]),
+    )
+}
+
+/// The length check after the chunks, which reads the key's remaining TTL
+/// in the same round trip.
+fn length_check(temp_key: &str, len: usize, remaining_ttl: i64) -> MockCmd {
+    MockCmd::with_values(
+        redis::pipe()
+            .cmd("STRLEN")
+            .arg(temp_key)
+            .cmd("TTL")
+            .arg(temp_key),
+        Ok(vec![
+            Value::Int(i64::try_from(len).unwrap()),
+            Value::Int(remaining_ttl),
+        ]),
+    )
+}
+
+/// The publish on a store without `key_ttl_s`: the rename and, because the
+/// rename carries the temp key's TTL across, a PERSIST in one transaction.
+/// A transaction's answer is EXEC's array of the two replies.
+fn publish_pipe(temp_key: &str, real_key: &str) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.atomic()
+        .cmd("RENAME")
+        .arg(temp_key)
+        .arg(real_key)
+        .cmd("PERSIST")
+        .arg(real_key);
+    pipe
+}
+
+fn publish(temp_key: &str, real_key: &str) -> MockCmd {
+    MockCmd::with_values(
+        publish_pipe(temp_key, real_key),
+        Ok(vec![Value::Array(vec![Value::Okay, Value::Int(1)])]),
+    )
+}
+
+/// The publish on a store with `key_ttl_s`: the rename and the retention
+/// window restarted at completion, in one transaction.
+fn publish_with_ttl_pipe(temp_key: &str, real_key: &str, ttl_secs: i64) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.atomic()
+        .cmd("RENAME")
+        .arg(temp_key)
+        .arg(real_key)
+        .cmd("EXPIRE")
+        .arg(real_key)
+        .arg(ttl_secs);
+    pipe
+}
+
+fn publish_with_ttl(temp_key: &str, real_key: &str, ttl_secs: i64) -> MockCmd {
+    MockCmd::with_values(
+        publish_with_ttl_pipe(temp_key, real_key, ttl_secs),
+        Ok(vec![Value::Array(vec![Value::Okay, Value::Int(1)])]),
+    )
 }
 
 #[nativelink_test]
@@ -131,32 +271,19 @@ async fn upload_and_get_data() -> Result<(), Error> {
     let commands = vec![
         // The first set of commands are for setting the data.
         // Append the real value to the temp key.
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
         // Move the data from the fake key to the real key.
-        MockCmd::new(
-            redis::cmd("RENAME")
-                .arg(temp_key.clone())
-                .arg(real_key.clone()),
-            Ok(Value::Nil),
-        ),
+        publish(&temp_key, &real_key),
         // The second set of commands are for retrieving the data from the key.
         // Check that the key exists.
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
-                .arg(real_key.clone())
+                .arg(&real_key)
                 .cmd("EXISTS")
-                .arg(real_key.clone()),
+                .arg(&real_key),
             Ok(vec![Value::Int(2), Value::Boolean(true)]),
         ),
         // Retrieve the data from the real key.
@@ -200,27 +327,13 @@ async fn update_retries_after_transient_zero_length() -> Result<(), Error> {
     let real_key = packed_hash_hex;
 
     let commands = vec![
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         // First verify hits a stale/replica connection that can't see the temp key.
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(0)),
-        ),
+        length_check(&temp_key, 0, TEMP_TTL),
         // After re-resolving the master, the retry sees the real length.
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
-        MockCmd::new(
-            redis::cmd("RENAME").arg(temp_key).arg(real_key),
-            Ok(Value::Nil),
-        ),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
     ];
 
     let store = make_mock_store(commands).await;
@@ -237,21 +350,31 @@ async fn update_errors_when_length_never_matches() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
     let packed_hash_hex = format!("{digest}");
     let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
 
-    let mut commands = vec![MockCmd::new(
-        redis::cmd("SETRANGE")
-            .arg(temp_key.clone())
-            .arg(0)
-            .arg(data.to_vec()),
-        Ok(Value::Int(0)),
-    )];
-    // MAX_REDIS_RETRY_ATTEMPTS (5) STRLEN reads that all return 0.
+    let mut commands = vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+    ];
+    // MAX_REDIS_RETRY_ATTEMPTS (5) length checks that all return 0.
     for _ in 0..5 {
-        commands.push(MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(0)),
-        ));
+        commands.push(length_check(&temp_key, 0, TEMP_TTL));
     }
+    // The failed upload frees its temp key rather than leaving it to the TTL.
+    commands.push(MockCmd::new(
+        redis::cmd("DEL").arg(&temp_key),
+        Ok(Value::Int(1)),
+    ));
+    // A read afterwards so the DEL expectation is consumed in order; the mock
+    // ignores expectations nobody reaches.
+    commands.push(MockCmd::with_values(
+        redis::pipe()
+            .cmd("STRLEN")
+            .arg(&real_key)
+            .cmd("EXISTS")
+            .arg(&real_key),
+        Ok(vec![Value::Int(0), Value::Boolean(false)]),
+    ));
 
     let store = make_mock_store(commands).await;
     let result = store.update_oneshot(digest, data).await;
@@ -259,6 +382,7 @@ async fn update_errors_when_length_never_matches() -> Result<(), Error> {
         result.is_err(),
         "expected a Data length mismatch error after exhausting retries",
     );
+    assert_eq!(store.has(digest).await?, None);
     Ok(())
 }
 
@@ -319,32 +443,18 @@ async fn update_retries_after_transient_write_error() -> Result<(), Error> {
 
     let commands = vec![
         // First chunk write fails with a retryable connection error.
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Err::<Value, _>(RedisError::from(std::io::Error::new(
+        stage(&temp_key, TEMP_TTL),
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "transient",
             ))),
         ),
         // After re-resolving the master, the retried chunk write succeeds.
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
-        MockCmd::new(
-            redis::cmd("RENAME").arg(temp_key).arg(real_key),
-            Ok(Value::Nil),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
     ];
 
     let store = make_mock_store(commands).await;
@@ -366,21 +476,10 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
     let real_key = packed_hash_hex;
 
     let commands = vec![
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
-        MockCmd::new(
-            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-            Ok(Value::Nil),
-        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
@@ -464,21 +563,10 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
     let real_key = packed_hash_hex;
 
     let commands = vec![
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
-        MockCmd::new(
-            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-            Ok(Value::Nil),
-        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
@@ -496,15 +584,15 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg(READ_CHUNK_SIZE as i64 - 1),
+                .arg(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(data.slice(..READ_CHUNK_SIZE).into())),
         ),
         MockCmd::new(
             // Similar GETRANGE index shenanigans here.
             redis::cmd("GETRANGE")
                 .arg(real_key)
-                .arg(READ_CHUNK_SIZE as i64)
-                .arg(data.len() as i64 - 1),
+                .arg(READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(data.len().try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(data.slice(READ_CHUNK_SIZE..).into())),
         ),
     ];
@@ -550,28 +638,11 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
 
     let commands = vec![
         // We expect multiple `"SETRANGE"`s as we send data in multiple chunks
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data_p1.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(data_p1.len())
-                .arg(data_p2.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("STRLEN").arg(temp_key.clone()),
-            Ok(Value::Int(data.len() as i64)),
-        ),
-        MockCmd::new(
-            redis::cmd("RENAME").arg(temp_key).arg(real_key.clone()),
-            Ok(Value::Nil),
-        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data_p1, TEMP_TTL, 0),
+        chunk(&temp_key, data_p1.len(), &data_p2, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
         MockCmd::with_values(
             redis::pipe()
                 .cmd("STRLEN")
@@ -584,21 +655,29 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg((DEFAULT_READ_CHUNK_SIZE - 1) as i64),
+                .arg((DEFAULT_READ_CHUNK_SIZE - 1).try_into().unwrap_or(i64::MAX)),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
-                .arg(DEFAULT_READ_CHUNK_SIZE as i64)
-                .arg((DEFAULT_READ_CHUNK_SIZE * 2 - 1) as i64),
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (DEFAULT_READ_CHUNK_SIZE * 2 - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key)
-                .arg((DEFAULT_READ_CHUNK_SIZE * 2) as i64)
-                .arg((data_p1.len() + data_p2.len() - 1) as i64),
+                .arg((DEFAULT_READ_CHUNK_SIZE * 2).try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (data_p1.len() + data_p2.len() - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
             Ok(Value::BulkString(data.clone().to_vec())),
         ),
     ];
@@ -653,7 +732,7 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg(DEFAULT_READ_CHUNK_SIZE as i64 - 1),
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
             Ok(Value::BulkString(vec![])),
         ),
         MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(0))),
@@ -668,6 +747,117 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
         "{result:?}"
     );
 
+    Ok(())
+}
+
+// An existing key holding nothing under a digest that names bytes is what a
+// failed upload left: the store reports it missing on both paths so the
+// client uploads it again instead of reading it as DataLoss forever.
+#[nativelink_test]
+async fn an_empty_value_under_a_digest_is_missing() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 1024)?;
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(0), Value::Boolean(true)]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(1))),
+    ];
+    let store = make_mock_store(commands).await;
+
+    assert_eq!(store.has(digest).await?, None);
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_ref().unwrap_err().code,
+        Code::NotFound,
+        "{result:?}"
+    );
+    Ok(())
+}
+
+// The key was evicted between two GETRANGEs: the second comes back empty,
+// which is also what the end of a value on a chunk boundary looks like. The
+// store asks STRLEN, sees the key is gone, and fails the read instead of
+// ending it early.
+#[nativelink_test]
+async fn get_part_key_removed_between_chunks_is_not_found() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, DEFAULT_READ_CHUNK_SIZE * 2)?;
+    let real_key = format!("{digest}");
+    let chunk_end = i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap() - 1;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(chunk_end),
+            Ok(Value::BulkString(vec![b'a'; DEFAULT_READ_CHUNK_SIZE])),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(chunk_end + 1)
+                .arg(chunk_end * 2 + 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(real_key), Ok(Value::Int(0))),
+    ];
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_ref().unwrap_err().code,
+        Code::NotFound,
+        "{result:?}"
+    );
+    Ok(())
+}
+
+// A value that ends exactly on a chunk boundary: the empty GETRANGE is the
+// real end, STRLEN agrees, and the read completes with every byte.
+#[nativelink_test]
+async fn get_part_value_ending_on_a_chunk_boundary_reads_whole() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, DEFAULT_READ_CHUNK_SIZE)?;
+    let real_key = format!("{digest}");
+    let chunk_end = i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap() - 1;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(chunk_end),
+            Ok(Value::BulkString(vec![b'a'; DEFAULT_READ_CHUNK_SIZE])),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(chunk_end + 1)
+                .arg(chunk_end * 2 + 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(real_key),
+            Ok(Value::Int(i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap())),
+        ),
+    ];
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(result.len(), DEFAULT_READ_CHUNK_SIZE);
     Ok(())
 }
 
@@ -796,7 +986,7 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-fn test_connection_errors() {
+async fn test_connection_errors() {
     // name is resolvable, but not connectable
     let spec = RedisSpec {
         addresses: vec!["redis://nativelink.com:6379/".to_string()],
@@ -811,7 +1001,7 @@ fn test_connection_errors() {
             code: Code::DeadlineExceeded,
             messages: vec![
                 "Io: timed out".into(),
-                format!("While connecting to redis with url: redis://nativelink.com:6379/")
+                "While connecting to redis with url: redis://nativelink.com:6379/".into()
             ],
             context: ErrorContext::None,
         },
@@ -844,15 +1034,16 @@ async fn test_health() {
                 "nativelink_store::redis_store::RedisStore<redis::aio::connection_manager::ConnectionManager, nativelink_store::redis_store::StandardRedisManager<redis::aio::connection_manager::ConnectionManager>>"
             );
             // The write path treats a timeout as retryable (a failover symptom),
-            // so it re-resolves the master and retries the chunk write once before
-            // surfacing the error — hence the "(after reconnect)" prefix.
+            // so it re-resolves the master and retries the first write, the
+            // temp key's creation, once before surfacing the error, hence
+            // the "(after reconnect)" prefix.
             assert!(
-                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key ("),
+                message.starts_with("Store.update_oneshot() failed: Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while creating temp key ("),
                 "message: '{message}'"
             );
             logs_assert(|logs| {
                 for log in logs {
-                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while appending to temp key (") {
+                    if log.contains("check_health Store.update_oneshot() failed e=Error { code: DeadlineExceeded, messages: [\"Io: timed out\", \"(after reconnect) while creating temp key (") {
                         return Ok(())
                     }
                 }
@@ -941,9 +1132,14 @@ async fn test_sentinel_connect_with_bad_master() {
         connection_timeout_ms: 100,
         ..Default::default()
     };
+    // Unavailable, not InvalidArgument: an unknown master name is
+    // indistinguishable from a sentinel failover in progress, and the two
+    // must not be told apart by guessing. A genuinely wrong name keeps
+    // failing and stays visible; a failover recovers on retry. Classifying
+    // this as permanent meant a routine failover killed in-flight builds.
     assert_eq!(
         Error {
-            code: Code::InvalidArgument,
+            code: Code::Unavailable,
             messages: vec![
                 "MasterNameNotFoundBySentinel: Master with given name not found in sentinel - MasterNameNotFoundBySentinel".into(),
                 format!("While connecting to redis with url: redis+sentinel://127.0.0.1:{port}/")
@@ -1004,7 +1200,7 @@ async fn test_sentinel_connect_and_update_data_unversioned_readonly() {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }
@@ -1050,7 +1246,13 @@ async fn test_sentinel_connect_with_url_specified_master() {
             "redis+sentinel://127.0.0.1:{port}/?sentinelServiceName=specific_master"
         )],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 100,
+        // This test asserts that the sentinelServiceName URL parameter
+        // resolves, not that it resolves quickly. 100ms — copied from the
+        // fail-fast bad-master test above, where a tight budget is the point —
+        // has to cover two TCP connects and two handshakes plus SENTINEL
+        // MASTERS in between, which a loaded macOS CI runner does not manage.
+        // Every other success-path test here allows 1s or more.
+        connection_timeout_ms: 5_000,
         ..Default::default()
     };
     RedisStore::new_standard(spec).await.expect("Working spec");
@@ -1258,7 +1460,9 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -1285,8 +1489,6 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1295,6 +1497,7 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1317,6 +1520,88 @@ fn test_search_by_index() -> Result<(), Error> {
         search_results[0].content
     );
 
+    Ok(())
+}
+
+/// A provider that reads its index descending, the way the scheduler's
+/// awaited-action index does.
+struct SearchByContentPrefixDesc {
+    prefix: String,
+}
+
+impl SchedulerIndexProvider for SearchByContentPrefixDesc {
+    const KEY_PREFIX: &'static str = "test:";
+    const INDEX_NAME: &'static str = "content_prefix_desc";
+    type Versioned = TrueValue;
+
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    const SORT_DESCENDING: bool = true;
+
+    fn index_value(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.prefix)
+    }
+}
+
+impl SchedulerStoreDecodeTo for SearchByContentPrefixDesc {
+    type DecodeOutput = TestSchedulerDataUnversioned;
+
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        TestSchedulerKey::decode(version, data)
+    }
+}
+
+// The direction on the wire follows the provider. The scheduler's queue index
+// is the descending one; serving it ascending is the bug that made the Redis
+// backend dispatch lowest priority first, newest first.
+#[nativelink_test]
+fn test_search_by_index_descending() -> Result<(), Error> {
+    let commands = vec![MockCmd::new(
+        redis::cmd("FT.AGGREGATE")
+            .arg("test:_content_prefix_desc_sort_key_3e762c15")
+            .arg("@content_prefix_desc:{ Searchable }")
+            .arg("TIMEOUT")
+            .arg(10000_u64)
+            .arg("LOAD")
+            .arg(2)
+            .arg("data")
+            .arg("version")
+            .arg("WITHCURSOR")
+            .arg("COUNT")
+            .arg(1500)
+            .arg("MAXIDLE")
+            .arg(30000)
+            .arg("SORTBY")
+            .arg(2usize)
+            .arg("@sort_key")
+            .arg("DESC")
+            .arg("MAX")
+            .arg(1_000_000_u64),
+        Ok(Value::Array(vec![
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Array(vec![
+                    Value::BulkString(b"data".to_vec()),
+                    Value::BulkString(b"1234".to_vec()),
+                    Value::BulkString(b"version".to_vec()),
+                    Value::BulkString(b"1".to_vec()),
+                ]),
+            ]),
+            Value::Int(0),
+        ])),
+    )];
+    let store = make_mock_store(commands).await;
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefixDesc {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(search_results.len(), 1);
+    assert_eq!(search_results[0].content, "1234");
     Ok(())
 }
 
@@ -1345,7 +1630,9 @@ fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             result,
         )
     }
@@ -1392,6 +1679,130 @@ fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
     Ok(())
 }
 
+/// `RediSearch` matches documents in the search phase and reads their fields
+/// in the load phase. A document that expires or is deleted between the two
+/// comes back as a RESP3 row whose `extra_attributes` is Nil. That is routine
+/// on a busy scheduler — completed awaited-action records expire constantly —
+/// so the row must drop out of the results rather than fail the whole
+/// aggregate. Failing it reached clients as `INVALID_ARGUMENT`, which Bazel
+/// treats as permanent, so one expiry race ended the build.
+#[nativelink_test]
+fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error> {
+    fn loaded_row(content: &str) -> Value {
+        Value::Map(vec![
+            (
+                Value::SimpleString("extra_attributes".into()),
+                Value::Map(vec![
+                    (
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(content.as_bytes().to_vec()),
+                    ),
+                    (
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ),
+                ]),
+            ),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    fn expired_row() -> Value {
+        Value::Map(vec![
+            (Value::SimpleString("extra_attributes".into()), Value::Nil),
+            (Value::SimpleString("values".into()), Value::Array(vec![])),
+        ])
+    }
+
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
+            // A page whose middle document expired between match and load.
+            Ok(Value::Array(vec![
+                Value::Map(vec![
+                    (
+                        Value::SimpleString("attributes".into()),
+                        Value::Array(vec![]),
+                    ),
+                    (
+                        Value::SimpleString("format".into()),
+                        Value::SimpleString("STRING".into()),
+                    ),
+                    (
+                        Value::SimpleString("results".into()),
+                        Value::Array(vec![loaded_row("1234"), expired_row(), loaded_row("5678")]),
+                    ),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let commands = vec![
+        make_ft_aggregate(),
+        MockCmd::new(
+            redis::cmd("FT.CREATE")
+                .arg("test:_content_prefix__3e762c15")
+                .arg("ON")
+                .arg("HASH")
+                .arg("NOHL")
+                .arg("NOFIELDS")
+                .arg("NOFREQS")
+                .arg("NOOFFSETS")
+                .arg("PREFIX")
+                .arg(1)
+                .arg("test:")
+                .arg("SCHEMA")
+                .arg("content_prefix")
+                .arg("TAG"),
+            Ok(Value::Nil),
+        ),
+        // The index is still backfilling on the first ask and ready on the
+        // second; the read waits for the second.
+        make_ft_info("test:_content_prefix__3e762c15", 1),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
+        make_ft_aggregate(),
+    ];
+    let store = make_mock_store(commands).await;
+    let search_provider = SearchByContentPrefix {
+        prefix: "Searchable".to_string(),
+    };
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(search_provider)
+        .await
+        .err_tip(|| "The expired row must not fail the aggregate")?
+        .try_collect()
+        .await?;
+
+    // Only the two surviving documents come back; the expired one contributes
+    // nothing rather than taking the other two down with it.
+    assert_eq!(search_results.len(), 2, "Should skip only the expired row");
+    assert_eq!(search_results[0].content, "1234");
+    assert_eq!(search_results[1].content, "5678");
+
+    Ok(())
+}
+
 #[nativelink_test]
 fn test_search_by_index_failure() -> Result<(), Error> {
     let store = make_mock_store(vec![]).await;
@@ -1408,7 +1819,7 @@ fn test_search_by_index_failure() -> Result<(), Error> {
         "Client: TEST - Client: unexpected command", "Error with ft_create in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)", "---", "Client: TEST - Client: unexpected command", "Error with second ft_aggregate in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)"].iter().map(ToString::to_string).collect()));
 
     assert!(logs_contain(
-        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
+        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"], sort_desc: false } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\", \"MAX\", \"1000000\"]"
     ));
 
     Ok(())
@@ -1440,7 +1851,9 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -1457,8 +1870,6 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1478,6 +1889,7 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
     let commands = vec![
         make_ft_aggregate(),
         make_ft_create_already_exists(),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1523,7 +1935,9 @@ fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> 
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -1540,8 +1954,6 @@ fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> 
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1603,7 +2015,9 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -1632,8 +2046,6 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1642,6 +2054,7 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1688,7 +2101,9 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Map(vec![
                     (
@@ -1737,8 +2152,6 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1750,6 +2163,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTABLE"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1796,7 +2210,9 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             // First page: one entry, cursor=42 so the stream issues
             // FT.CURSOR READ for a second page.
             Ok(Value::Array(vec![
@@ -1860,10 +2276,118 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
     Ok(())
 }
 
+/// The store speaks RESP3, under which a cursor page arrives as a map in
+/// the same shape as the aggregate's own first page. Before the cursor read
+/// parsed that shape, every listing longer than one page failed on its
+/// second page with "Non map item".
+#[nativelink_test]
+async fn search_by_index_prefix_reads_a_resp3_cursor_page() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(2),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"first".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ]),
+                ]),
+                Value::Int(42),
+            ])),
+        )
+    }
+
+    fn make_ft_cursor_read_resp3() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("ft.cursor")
+                .arg("read")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .cursor_arg(42),
+            Ok(Value::Array(vec![
+                Value::Map(vec![
+                    (
+                        Value::SimpleString("attributes".to_string()),
+                        Value::Array(vec![]),
+                    ),
+                    (
+                        Value::SimpleString("format".to_string()),
+                        Value::SimpleString("STRING".to_string()),
+                    ),
+                    (
+                        Value::SimpleString("results".to_string()),
+                        Value::Array(vec![Value::Map(vec![
+                            (
+                                Value::SimpleString("extra_attributes".to_string()),
+                                Value::Map(vec![
+                                    (
+                                        Value::BulkString(b"data".to_vec()),
+                                        Value::BulkString(b"second".to_vec()),
+                                    ),
+                                    (
+                                        Value::BulkString(b"version".to_vec()),
+                                        Value::BulkString(b"2".to_vec()),
+                                    ),
+                                ]),
+                            ),
+                            (
+                                Value::SimpleString("values".to_string()),
+                                Value::Array(vec![]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let store = make_mock_store(vec![make_ft_aggregate(), make_ft_cursor_read_resp3()]).await;
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        2,
+        "the RESP3 page is read like the first"
+    );
+    assert_eq!(search_results[0].content, "first");
+    assert_eq!(search_results[1].content, "second");
+    Ok(())
+}
+
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     // To give the stream enough time to get polled
     sleep(Duration::from_secs(1)).await;
@@ -1882,7 +2406,8 @@ async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
 #[nativelink_test]
 async fn send_messages_to_subscription_channel() -> Result<(), Error> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let subscription_manager = RedisSubscriptionManager::new(rx);
+    let subscription_manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     tx.send(PushInfo {
         kind: redis::PushKind::PSubscribe,
@@ -1921,6 +2446,10 @@ async fn send_messages_to_subscription_channel() -> Result<(), Error> {
 
     // Because otherwise it gets dropped immediately, and we need it to live to do things
     drop(subscription_manager);
+
+    assert!(logs_contain(
+        "PSubscribe, ignore push_info=PushInfo { kind: PSubscribe, data: [bulk-string('\"scheduler_key_change\"'), int(1)] }"
+    ));
 
     Ok(())
 }
@@ -1964,7 +2493,7 @@ async fn core_test_update_data_unversioned_with_expiry(expire_response: i64) {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }
@@ -2019,7 +2548,7 @@ async fn test_update_data_versioned_with_expiry() {
         version: 0,
     };
     store
-        .update_data(data, Some(Duration::from_secs(60)))
+        .update_data(data, Some(Duration::from_mins(1)))
         .await
         .expect("working update");
 }
@@ -2041,7 +2570,8 @@ impl SchedulerStoreKeyProvider for TestSubKey {
 #[nativelink_test]
 async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let sub = manager.subscribe(TestSubKey("solo-key".to_string()))?;
     drop(sub);
@@ -2060,7 +2590,8 @@ async fn redis_subscription_single_drop_is_silent() -> Result<(), Error> {
 #[nativelink_test]
 async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "shared-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2088,7 +2619,8 @@ async fn redis_subscription_drop_one_of_two_keeps_publisher() -> Result<(), Erro
 async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Error> {
     const ITERATIONS: usize = 200;
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     for i in 0..ITERATIONS {
         let key = format!("race-key-{i}");
@@ -2122,7 +2654,8 @@ async fn redis_subscription_concurrent_drops_no_absence_warn() -> Result<(), Err
 #[nativelink_test]
 async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let manager = RedisSubscriptionManager::new(rx);
+    let manager =
+        RedisSubscriptionManager::new(rx, Arc::new(async_lock::Mutex::new(vec![])), String::new());
 
     let key = "cycle-key";
     let sub_a = manager.subscribe(TestSubKey(key.to_string()))?;
@@ -2146,5 +2679,897 @@ async fn redis_subscription_resubscribe_after_drop_creates_fresh_publisher() -> 
     ));
     drop(sub_c);
     drop(manager);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LoggingRemoveCallback {}
+
+impl RemoveItemCallback for LoggingRemoveCallback {
+    fn callback<'a>(
+        &'a self,
+        store_key: StoreKey<'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        info!(?store_key, "Callback for removed item");
+        Box::pin(async {})
+    }
+}
+
+async fn callback_for_eviction_core<F>(
+    logs_contain: F,
+    notify_keyspace_events: &[u8],
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool,
+{
+    let redis_span = info_span!("redis");
+
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    add_to_response(
+        &mut responses,
+        redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("notify-keyspace-events"),
+        vec![Value::Map(vec![(
+            Value::BulkString(b"notify-keyspace-events".into()),
+            Value::BulkString(notify_keyspace_events.into()),
+        )])],
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("PSUBSCRIBE").arg("__key*__:*"),
+        vec![Value::Nil],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    store.register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
+
+    timeout(Duration::from_secs(3), async move {
+        loop {
+            if logs_contain("new psubscribe complete pattern=\"__key*__:*\" new_subscription=true")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_not_enabled() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events not enabled for Redis, will fail to get remove callbacks"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_keyspace() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"E").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events notify_keyspace_events=\"E\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_no_all() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"K").await?;
+    assert!(logs_contain(
+        "notify-keyspace-events does not contain 'A' so we won't get eviction events notify_keyspace_events=\"K\""
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn callback_for_eviction_good() -> Result<(), Error> {
+    callback_for_eviction_core(logs_contain, b"KA").await?;
+    assert!(!logs_contain("ERROR"));
+    Ok(())
+}
+
+// Repro for a fail-silent one-shot init bug: `register_remove_callback`
+// returns Ok(()) immediately and performs the CONFIG GET + PSUBSCRIBE lazily
+// inside a `background_spawn` via `OnceCell::get_or_try_init`. If that init
+// hits a single transient Redis error (here: `-LOADING`), the error is only
+// logged, the OnceCell stays uninitialized, and nothing ever retries — so the
+// `__key*__:*` subscription is never established and evicted/expired keys
+// never fire remove callbacks, silently and permanently.
+#[nativelink_test]
+async fn transient_init_error_permanently_disables_remove_callbacks() -> Result<(), Error> {
+    let redis_span = info_span!("redis");
+
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    // The one-time init query fails with a transient, retryable server error
+    // (Redis restarting/failing over). The server is otherwise healthy and
+    // would happily accept a PSUBSCRIBE.
+    add_to_response_raw(
+        &mut responses,
+        redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("notify-keyspace-events"),
+        "-LOADING Redis is loading the dataset in memory\r\n".to_string(),
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("PSUBSCRIBE").arg("__key*__:*"),
+        vec![Value::Nil],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    // The caller (e.g. ExistenceCacheStore at construction, its only call
+    // site) is told Ok(()) and believes eviction tracking is live.
+    store.register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
+
+    // Deterministic sync point: wait until the background init task has hit
+    // the transient error and logged it.
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if logs_contain("Error while trying to initialise remove_callback_subscribe") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background init never ran/logged its error");
+
+    // Since register_remove_callback reported success, the keyspace-event
+    // subscription must (eventually) be established — otherwise remove
+    // callbacks are silently dead forever. On current code there is no retry
+    // path at all (the OnceCell is left empty and only another
+    // register_remove_callback call could re-drive it), so this never happens.
+    let subscribed = timeout(Duration::from_secs(2), async {
+        loop {
+            if logs_contain("new psubscribe complete pattern=\"__key*__:*\"") {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(
+        subscribed,
+        "register_remove_callback returned Ok(()) but a single transient CONFIG GET \
+         error permanently disabled the __key*__:* subscription; evicted/expired keys \
+         will never invoke remove callbacks (stale ExistenceCacheStore entries)"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn send_eviction_to_subscription_channel() -> Result<(), Error> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscription_manager = RedisSubscriptionManager::new(
+        rx,
+        Arc::new(async_lock::Mutex::new(vec![Arc::new(
+            LoggingRemoveCallback {},
+        )])),
+        String::new(),
+    );
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString("keyprefix:test-eviction".into()),
+            Value::BulkString("evicted".into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Callback for removed item store_key=Str(\"test-eviction\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Because otherwise it gets dropped immediately, and we need it to live to do things
+    drop(subscription_manager);
+
+    assert!(logs_contain(
+        "Removed key removed_key=\"keyprefix:test-eviction\""
+    ));
+
+    Ok(())
+}
+
+async fn store_key_coding_round_trip_core(key_prefix: String) -> Result<(), Error> {
+    let store = make_mock_store_with_prefix(vec![], key_prefix.clone()).await;
+
+    for key in [
+        StoreKey::new_str("foo"),
+        StoreKey::Digest(DigestInfo::zero_digest()),
+        StoreKey::Digest(DigestInfo::new([99u8; 32], 512)),
+    ] {
+        assert_eq!(key, decode_key(&key_prefix, store.encode_key(&key))?);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::new()).await
+}
+
+#[nativelink_test]
+async fn store_key_coding_round_trip_with_prefix() -> Result<(), Error> {
+    store_key_coding_round_trip_core(String::from("demo")).await
+}
+
+async fn evict_keys_for_existence_cache_core<F>(
+    prefix: String,
+    removal_event: &str,
+    logs_contain: F,
+) -> Result<(), Error>
+where
+    F: Fn(&str) -> bool + Send + Sync,
+{
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::RedisStore(RedisSpec::default()), // Note: Not used.
+        eviction_policy: Option::default(), // Not evicting here, we'll evict from Redis
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let real_key = format!("{prefix}{digest}");
+    let temp_key = make_temp_key(&real_key);
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("CONFIG")
+                .arg("GET")
+                .arg("notify-keyspace-events"),
+            Ok(Value::Map(vec![(
+                Value::BulkString(b"notify-keyspace-events".into()),
+                Value::BulkString(b"KA".into()),
+            )])),
+        ),
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        // Move the data from the fake key to the real key.
+        publish(&temp_key, &real_key),
+        // Retrieve the data from the real key.
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(&real_key).arg(0).arg(1),
+            Ok(Value::BulkString(b"14".to_vec())),
+        ),
+    ];
+
+    let redis_store = Arc::new(
+        make_mock_store_with_prefix_and_subscriber_channel(commands, prefix.clone(), None, rx)
+            .await,
+    );
+    let existence_store = ExistenceCacheStore::new(&spec, Store::new(redis_store.clone()));
+
+    // Wait for subscription first so the mock redis commands are in the right order
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Attempting to subscribe to eviction events") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    existence_store
+        .update_oneshot(digest, data.clone())
+        .await
+        .unwrap();
+
+    tx.send(PushInfo {
+        kind: redis::PushKind::PMessage,
+        data: vec![
+            Value::BulkString("demo_pattern".into()),
+            Value::BulkString(format!("keyprefix:{real_key}").into()),
+            Value::BulkString(removal_event.into()),
+        ],
+    })
+    .unwrap();
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(!logs_contain("ERROR"));
+            if logs_contain("Evicting (direct remove) key=DigestInfo(\"3031323334353637383961626364656630303030303030303030303030303030-2\")") {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert!(logs_contain(&format!(
+        "Removed key removed_key=\"keyprefix:{prefix}3031323334353637383961626364656630303030303030303030303030303030-2\""
+    )));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_no_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::new(), "evicted", logs_contain).await
+}
+
+#[nativelink_test]
+async fn evict_keys_for_existence_cache_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::from("demo_prefix:"), "evicted", logs_contain).await
+}
+
+/// A key that reaches its TTL has to invalidate the existence cache exactly
+/// as a maxmemory eviction does. Redis reports the two differently: `evicted`
+/// for maxmemory pressure, `expired` for a TTL. Handling only the former left
+/// the cache claiming to hold a key Redis had already dropped, which is
+/// newly reachable now that a store can be given a TTL.
+#[nativelink_test]
+async fn expired_keys_invalidate_the_existence_cache() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::new(), "expired", logs_contain).await
+}
+
+#[nativelink_test]
+async fn expired_keys_invalidate_the_existence_cache_with_prefix() -> Result<(), Error> {
+    evict_keys_for_existence_cache_core(String::from("demo_prefix:"), "expired", logs_contain).await
+}
+
+/// A store configured with a TTL must expire what it writes. Without this a
+/// BEP store keeps every key it ever wrote once its consumer stops, which is
+/// how one deployment reached 1.79M keys with `expires=0`.
+#[nativelink_test]
+async fn update_sets_a_ttl_when_configured() -> Result<(), Error> {
+    const TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+    let ttl_arg = i64::try_from(TTL_SECONDS).unwrap();
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let store = make_mock_store_with_ttl(
+        vec![
+            // The temp key carries the store's TTL from the moment it exists,
+            // so an update that dies before the rename cannot orphan it.
+            stage(&temp_key, ttl_arg),
+            chunk(&temp_key, 0, &data, ttl_arg, 0),
+            length_check(&temp_key, data.len(), ttl_arg),
+            // Re-set with the rename so the retention window starts at
+            // completion rather than at the first byte.
+            publish_with_ttl(&temp_key, &real_key, ttl_arg),
+            // A read afterwards, purely so the expectations above get
+            // consumed. The mock ignores expectations nobody reaches, so
+            // without something after it a skipped EXPIRE would pass silently.
+            MockCmd::with_values(
+                redis::pipe()
+                    .cmd("STRLEN")
+                    .arg(&real_key)
+                    .cmd("EXISTS")
+                    .arg(&real_key),
+                Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            ),
+        ],
+        Duration::from_secs(TTL_SECONDS),
+    )
+    .await;
+    store.update_oneshot(digest, data).await?;
+    let size = store.has(digest).await?;
+    assert_eq!(size, Some(2), "the value must survive the expiry being set");
+    Ok(())
+}
+
+/// A failover as the key is published must not leave it without its TTL.
+/// Every other step in `update` reconnects and retries once on a transient
+/// error; the expiry once did not, which review caught after it merged.
+#[nativelink_test]
+async fn update_retries_the_publish_after_a_failover() -> Result<(), Error> {
+    const TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+    let ttl_arg = i64::try_from(TTL_SECONDS).unwrap();
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store_with_ttl(
+        vec![
+            stage(&temp_key, ttl_arg),
+            chunk(&temp_key, 0, &data, ttl_arg, 0),
+            length_check(&temp_key, data.len(), ttl_arg),
+            // The master goes away right as the key is published.
+            MockCmd::with_values(
+                publish_with_ttl_pipe(&temp_key, &real_key, ttl_arg),
+                Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "connection reset by peer",
+                ))),
+            ),
+            // After re-resolving the master the publish runs on the new one.
+            publish_with_ttl(&temp_key, &real_key, ttl_arg),
+        ],
+        Duration::from_secs(TTL_SECONDS),
+    )
+    .await;
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// A failover between the chunk writes and the length check used to fail the
+/// upload after the command timeout on the dead master. Seen on a bed where a
+/// Redis master kill failed every CAS upload for forty seconds.
+#[nativelink_test]
+async fn update_retries_the_length_check_after_a_failover() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        // The master goes away right as the length is checked.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&temp_key)
+                .cmd("TTL")
+                .arg(&temp_key),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            ))),
+        ),
+        // After re-resolving the master the check runs against the new one.
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
+    ])
+    .await;
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// Without `key_ttl_s` the published key never expires. The same store type
+/// backs the CAS fast tier and the scheduler, and expiring scheduler state
+/// would drop in-flight actions. The temp key still gets its lifetime, and
+/// the publish clears the TTL the rename carries across.
+///
+/// The mock rejects any command it was not given, so an EXPIRE on the real
+/// key here would fail this test.
+#[nativelink_test]
+async fn update_leaves_the_real_key_without_a_ttl_by_default() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        publish(&temp_key, &real_key),
+    ])
+    .await;
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// An upload that fails frees its temp key at once rather than leaving it to
+/// the TTL: with uploads failing in numbers, an hour of partial blobs is the
+/// difference between a bounded and a full Redis.
+#[nativelink_test]
+async fn update_deletes_the_temp_key_when_the_upload_fails() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Err::<Vec<Value>, _>(RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            ))),
+        ),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+        // A read afterwards so the DEL expectation is consumed in order; the
+        // mock ignores expectations nobody reaches.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(0), Value::Boolean(false)]),
+        ),
+    ])
+    .await;
+    let result = store.update_oneshot(digest, data).await;
+    assert!(result.is_err(), "the write error must fail the upload");
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// The `ByteStream` server drops the store future when a client goes away or
+/// closes its stream early; no error reaches the store. The temp key must
+/// still be deleted then, not left for its TTL: a bed showed every abandoned
+/// upload's key sitting for the hour.
+#[nativelink_test]
+async fn update_deletes_the_temp_key_when_dropped_mid_stream() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 4)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = Arc::new(
+        make_mock_store(vec![
+            stage(&temp_key, TEMP_TTL),
+            chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+            // Issued from the guard's own task once the update is dropped.
+            MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+            // A read afterwards so the DEL expectation is consumed in order.
+            MockCmd::with_values(
+                redis::pipe()
+                    .cmd("STRLEN")
+                    .arg(&real_key)
+                    .cmd("EXISTS")
+                    .arg(&real_key),
+                Ok(vec![Value::Int(0), Value::Boolean(false)]),
+            ),
+        ])
+        .await,
+    );
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            StoreLike::update(&*store, digest, rx, UploadSizeInfo::ExactSize(4)).await
+        })
+    };
+    // The first chunk lands; the second never comes.
+    tx.send(data).await?;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    upload.abort();
+    assert!(upload.await.unwrap_err().is_cancelled());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// SETRANGE on a key that has expired creates it again, zero-filled and
+/// without a TTL, and the length still matches. A key found that way by the
+/// length check must be refused, not published as zeros under the digest.
+#[nativelink_test]
+async fn update_refuses_a_temp_key_that_lost_its_ttl() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        // TTL answers -1: the key exists with no expiry, so it is not the one
+        // this upload staged.
+        length_check(&temp_key, data.len(), -1),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(0), Value::Boolean(false)]),
+        ),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(err.to_string().contains("lost its temp key"), "{err:?}");
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// Every chunk reads the key's TTL as it was before the SETRANGE. An answer
+/// of -1 means the key was gone (expired, or lost in a failover) and this
+/// chunk recreated it: the chunk deletes what it made and the upload fails
+/// with a code the client retries on, instead of the length check finding
+/// zeros an hour later.
+#[nativelink_test]
+async fn a_chunk_that_finds_its_temp_key_gone_deletes_it_and_fails() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Ok(vec![Value::Int(2), Value::Int(-1), Value::Int(1)]),
+        ),
+        // The chunk deletes the key it recreated, then the guard deletes
+        // again on the error path.
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(0), Value::Boolean(false)]),
+        ),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(
+        err.to_string().contains("found the temp key gone"),
+        "{err:?}"
+    );
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// The publish is one transaction. When it applied on the old master but
+/// its reply was lost in the failover, the retry's RENAME finds no temp
+/// key; the final key then has the upload's length, and that is a success,
+/// not an error that makes the client send the bytes again under a key
+/// that already holds them.
+#[nativelink_test]
+async fn a_publish_whose_reply_was_lost_is_accepted_on_retry() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "ERR",
+                "no such key".to_owned(),
+            ))),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(&real_key), Ok(Value::Int(2))),
+    ])
+    .await;
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// The same lost reply when the failover also lost the temp key: the final
+/// key is not the upload, and the client is told to send it again.
+#[nativelink_test]
+async fn a_lost_publish_whose_final_key_is_not_the_upload_fails() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "ERR",
+                "no such key".to_owned(),
+            ))),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(&real_key), Ok(Value::Int(0))),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(err.to_string().contains("is not it"), "{err:?}");
+    Ok(())
+}
+
+/// EXPIRE and PERSIST answer 0 only when the key is gone, so a key that
+/// expired between the length check and the publish is reported, not stored.
+#[nativelink_test]
+async fn update_refuses_a_key_that_expired_as_it_was_published() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        // Under a second left on the key.
+        length_check(&temp_key, data.len(), 0),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Ok(vec![Value::Array(vec![Value::Okay, Value::Int(0)])]),
+        ),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(0), Value::Boolean(false)]),
+        ),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(err.to_string().contains("expired"), "{err:?}");
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// Counting must not read any documents. `search_by_index_prefix` has to
+/// `LOAD` the data and version of every match and page through them, so using
+/// it to answer "how many" makes the cost grow with the number of matches; on
+/// the scheduler's queued/completed indexes that is the whole action body of
+/// every action, repeatedly. `count_by_index_prefix` asks `RediSearch` for the
+/// total instead, which is why this test pins the command shape.
+#[nativelink_test]
+async fn test_count_by_index_prefix_asks_for_the_total_only() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Array(vec![Value::Int(42)])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 42);
+    Ok(())
+}
+
+/// The same reply under RESP3, which answers with a map rather than an array.
+#[nativelink_test]
+async fn test_count_by_index_prefix_reads_a_resp3_reply() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Map(vec![
+            (
+                Value::SimpleString("attributes".to_string()),
+                Value::Array(vec![]),
+            ),
+            (
+                Value::SimpleString("total_results".to_string()),
+                Value::Int(7),
+            ),
+            (
+                Value::SimpleString("results".to_string()),
+                Value::Array(vec![]),
+            ),
+        ])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 7);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_never_renames_redis_temp_key() -> Result<(), Error> {
+    for payload in [
+        Bytes::new(),
+        Bytes::from_static(b"short"),
+        Bytes::from(vec![9; 79]),
+    ] {
+        let key = DigestInfo::try_new(VALID_HASH1, 78)?;
+        let temp_key = make_temp_key(&key.to_string());
+        let mut commands = vec![stage(&temp_key, TEMP_TTL)];
+        if !payload.is_empty() {
+            commands.push(chunk(
+                &temp_key,
+                0,
+                &payload,
+                TEMP_TTL,
+                i64::try_from(payload.len()).unwrap(),
+            ));
+        }
+        // The short upload frees its temp key. Any STRLEN or RENAME beyond
+        // these temporary writes is unexpected.
+        commands.push(MockCmd::new(
+            redis::cmd("DEL").arg(&temp_key),
+            Ok(Value::Int(1)),
+        ));
+        let store = make_mock_store(commands).await;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(
+            StoreLike::update(&store, key, rx, UploadSizeInfo::ExactSize(78)),
+            send
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
     Ok(())
 }
