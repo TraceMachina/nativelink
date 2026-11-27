@@ -109,6 +109,17 @@ rust_binary(
     ],
 )
 
+# Configs outside nativelink-config, so its tests can check them too.
+filegroup(
+    name = "deployment_configs",
+    srcs = glob([
+        "deployment-examples/**/*.json5",
+        "integration_tests/**/*.json5",
+        "kubernetes/**/*.json5",
+    ]),
+    visibility = ["//nativelink-config:__pkg__"],
+)
+
 filegroup(
     name = "docs",
     srcs = [

@@ -89,7 +89,10 @@ rust_test_suite(
     ],
     data = glob(
         ["examples/*.json5"],
-    ) + ["tests/duplicate_servers.json5"],
+    ) + [
+        "tests/duplicate_servers.json5",
+        "//:deployment_configs",
+    ],
     deps = [
         "//nativelink-config",
         "//nativelink-error",
@@ -100,6 +103,8 @@ rust_test_suite(
         "@crates//:serde_assert",
         "@crates//:serde_json",
         "@crates//:serde_json5",
+        "@crates//:tracing",
+        "@crates//:tracing-test",
     ],
 )
 

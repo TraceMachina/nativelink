@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::Cell;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nativelink_config::cas_server::CasConfig;
+use tracing_test::traced_test;
 
 /// Examples that are deliberately incomplete and only need to *parse*.
 ///
@@ -71,4 +73,98 @@ fn test_example_parsing() {
     }
 
     assert!(found_at_least_one_entry);
+}
+
+/// The one config allowed to use the deprecated map format. It exists to show
+/// that shape to people migrating, so it must keep using it.
+const LEGACY_CONFIG: &str = "legacy_service_config.json5";
+
+/// The first line of the warning `backcompat` logs for a deprecated map.
+const DEPRECATION_NOTICE: &str = "WARNING: Using deprecated map format";
+
+/// The repository root: Bazel runs tests from the runfiles root, Cargo from
+/// the crate directory.
+fn repo_root() -> PathBuf {
+    let cwd = Path::new(".")
+        .canonicalize()
+        .expect("Can canonicalize current dir");
+    if cwd.join("nativelink-config").exists() {
+        cwd
+    } else {
+        cwd.parent().expect("crate dir has a parent").to_path_buf()
+    }
+}
+
+/// Every `.json5` file under `dir`, recursively, in a stable order.
+fn json5_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|e| panic!("Failed to read from {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(json5_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "json5") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+#[traced_test]
+fn test_only_legacy_config_uses_deprecated_format() {
+    let root = repo_root();
+    let configs: Vec<PathBuf> = [
+        "nativelink-config/examples",
+        "deployment-examples",
+        "integration_tests",
+        "kubernetes",
+    ]
+    .iter()
+    .flat_map(|dir| json5_files(&root.join(dir)))
+    .collect();
+    assert!(
+        configs.iter().any(|path| path.ends_with(LEGACY_CONFIG)),
+        "{LEGACY_CONFIG} not found under {}",
+        root.display()
+    );
+
+    // Logs build up over the test, so count the notices each file adds.
+    let notices_so_far = || {
+        let count = Cell::new(0);
+        logs_assert(|lines: &[&str]| {
+            count.set(
+                lines
+                    .iter()
+                    .filter(|line| line.contains(DEPRECATION_NOTICE))
+                    .count(),
+            );
+            Ok(())
+        });
+        count.get()
+    };
+
+    let mut seen = 0;
+    for config in &configs {
+        let config_file = config.display().to_string();
+        CasConfig::try_from_json5_file(&config_file)
+            .unwrap_or_else(|e| panic!("Error while reading {config_file}: {e}"));
+        let name = config.strip_prefix(&root).unwrap_or(config).display();
+        let total = notices_so_far();
+        let added = total - seen;
+        seen = total;
+        if config.ends_with(LEGACY_CONFIG) {
+            assert!(
+                added > 0,
+                "{name} no longer uses the deprecated map format it exists to show"
+            );
+        } else {
+            assert_eq!(
+                added, 0,
+                "{name} uses a deprecated map format; convert it to the list form"
+            );
+        }
+    }
 }
