@@ -28,7 +28,11 @@ writeShellScriptBin "local-image-test" ''
     # so we can run --debug on skopeo
     # nix run .#$1.copyTo docker-daemon:''${IMAGE_TARGET}
     nix build .#$1
-    ${skopeo}/bin/skopeo --debug --insecure-policy copy nix:''${IMAGE} docker-daemon:''${IMAGE_TARGET}
+    EXTRA_ARGS=
+    if [[ -n ''${DOCKER_HOST:-} ]]; then
+      EXTRA_ARGS="--dest-daemon-host=''${DOCKER_HOST}"
+    fi
+    ${skopeo}/bin/skopeo --debug --insecure-policy copy ''${EXTRA_ARGS} nix:''${IMAGE} docker-daemon:''${IMAGE_TARGET}
   fi
 
   # Ensure that the image has minimal closure size.

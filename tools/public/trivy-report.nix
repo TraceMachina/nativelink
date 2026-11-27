@@ -10,6 +10,7 @@ writeShellScriptBin "trivy-report" ''
     ${trivy}/bin/trivy \
       image \
       --format sarif \
+      --timeout 15m \
       $1 \
     > trivy-results.sarif
   else

@@ -54,7 +54,8 @@ runs:
     - name: Test image
       if: ${{ inputs.multi-arch == 'false' && inputs.testing == 'true' }}
       run: |
-        nix run .#local-image-test ${{ inputs.image }}
+        # --impure is so we can pull in DOCKER_HOST for macs
+        nix run --fallback .#local-image-test ${{ inputs.image }} --impure
       shell: bash -euo pipefail {0}
 
     - name: Upload image
