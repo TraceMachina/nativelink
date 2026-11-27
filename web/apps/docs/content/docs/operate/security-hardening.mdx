@@ -302,6 +302,15 @@ Invocation metadata identifies the client request; it does not authenticate its
 owner. Separate action mount namespaces and entrypoint wrappers are rejected so
 the collector cannot accidentally archive the outer worker's filesystem.
 
+On macOS,
+[`experimental_readonly_input_symlinks`](/reference/nativelink-config/main#localworkerconfig)
+shares one copy of a selected input directory between every action that uses
+it. The directories in that copy are read-only, which stops an action from
+adding a file by accident. It does not stop an action that means to: actions
+run as the worker's user and can change the modes back, and a changed file is
+what every later action reads. Select only directories that trusted actions
+use.
+
 Workers can be configured with `use_namespaces: true` and
 `use_mount_namespace: true`. Both are real, and neither makes an action safe to
 run on your behalf.
