@@ -481,6 +481,265 @@ mod tests {
         Ok(())
     }
 
+    /// A directory selected by pattern is one symlink into the sealed cache,
+    /// so its files keep the inode and change time macOS keys its exec-time
+    /// assessment on. A selected directory the action writes into is
+    /// materialized privately, without giving up the action's other matches.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn readonly_input_symlinks_keep_inodes_and_fall_back_per_directory() -> Result<(), Error>
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_fast, _slow, cas, _ac) = setup_stores().await?;
+        let root = make_temp_path("symlinked_actions");
+        fs::create_dir_all(&root).await?;
+        let cache_root = PathBuf::from(&root).join("readonly_inputs");
+        let cache = Arc::new(
+            DirectoryCache::new_sealed(
+                DirectoryCacheConfig {
+                    cache_root: cache_root.clone(),
+                    ..Default::default()
+                },
+                cas.clone(),
+            )
+            .await?,
+        );
+        let manager = Arc::new(
+            RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_secs(30),
+                max_upload_timeout: Duration::from_secs(30),
+                max_download_timeout: Duration::from_secs(30),
+                max_cleanup_wait: Duration::from_secs(30),
+                max_cleanup_backoff: Duration::from_millis(10),
+                timeout_handled_externally: false,
+                active_input_leases: true,
+                directory_cache: None,
+            })?
+            .with_readonly_input_symlinks(&["**/*.runfiles/sdk".into()], cache.clone())?,
+        );
+        let tool = Bytes::from_static(
+            b"#!/bin/sh\nif [ $# -gt 0 ]; then printf sdk-content > \"$1\"; else printf sdk-content; fi",
+        );
+        let tool_digest = compute_buf_digest(&tool, &mut DigestHasherFunc::Sha256.hasher());
+        cas.as_ref().update_oneshot(tool_digest, tool).await?;
+        let data = Bytes::from_static(b"sdk-data");
+        let data_digest = compute_buf_digest(&data, &mut DigestHasherFunc::Sha256.hasher());
+        cas.as_ref().update_oneshot(data_digest, data).await?;
+        let sdk_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![
+                    FileNode {
+                        name: "data".into(),
+                        digest: Some(data_digest.into()),
+                        ..Default::default()
+                    },
+                    FileNode {
+                        name: "tool".into(),
+                        digest: Some(tool_digest.into()),
+                        is_executable: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let runfiles_digest = serialize_and_upload_message(
+            &Directory {
+                directories: vec![DirectoryNode {
+                    name: "sdk".into(),
+                    digest: Some(sdk_digest.into()),
+                }],
+                ..Default::default()
+            },
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let cache_root = fs::canonicalize(&cache_root).await?;
+        // Each file's identity as macOS sees it: (inode, ctime seconds, ctime nanos).
+        let mut identities = None;
+        for i in 0..6 {
+            // Every action has the SDK twice, under a different test's
+            // runfiles each time, as Bazel lays out a toolchain.
+            let runfiles = |name: String| DirectoryNode {
+                name,
+                digest: Some(runfiles_digest.into()),
+            };
+            let bin_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![
+                        runfiles(format!("a{i}.runfiles")),
+                        runfiles(format!("b{i}.runfiles")),
+                    ],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let input_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![DirectoryNode {
+                        name: "bin".into(),
+                        digest: Some(bin_digest.into()),
+                    }],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let a = format!("bin/a{i}.runfiles/sdk");
+            let b = format!("bin/b{i}.runfiles/sdk");
+            // Action 2 declares an output inside `a`, and action 3 works
+            // inside it: `a` is then private, and `b` is still a symlink.
+            let a_is_private = i == 2 || i == 3;
+            let output_path = if i == 2 {
+                format!("{a}/result")
+            } else {
+                "result".to_owned()
+            };
+            let command_digest = serialize_and_upload_message(
+                &Command {
+                    arguments: match i {
+                        // The sealed directory refuses a new file, and both
+                        // copies of the tool still run.
+                        0 => vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            format!("! touch {a}/forbidden && ./{a}/tool > /dev/null && ./{b}/tool > result"),
+                        ],
+                        2 => vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            format!("./{b}/tool > {a}/result"),
+                        ],
+                        3 => vec!["./tool".into(), "result".into()],
+                        // Execute the linked tool directly, also from a nested cwd.
+                        4 => vec![format!("./{a}/tool"), "result".into()],
+                        5 => vec![format!("../{a}/tool"), "result".into()],
+                        _ => vec![
+                            "/bin/sh".into(),
+                            "-c".into(),
+                            format!("./{a}/tool > result"),
+                        ],
+                    },
+                    working_directory: match i {
+                        3 => a.clone(),
+                        5 => "bin".into(),
+                        _ => String::new(),
+                    },
+                    environment_variables: vec![EnvironmentVariable {
+                        name: "PATH".into(),
+                        value: env::var("PATH").unwrap(),
+                    }],
+                    output_paths: vec![output_path],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action_digest = serialize_and_upload_message(
+                &Action {
+                    command_digest: Some(command_digest.into()),
+                    input_root_digest: Some(input_digest.into()),
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = manager
+                .create_and_add_action(
+                    "test-worker".into(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: OperationId::default().to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .prepare_action()
+                .await?;
+            let work_directory = PathBuf::from(action.get_work_directory());
+            for (sdk, private) in [(&a, a_is_private), (&b, false)] {
+                let sdk = work_directory.join(sdk);
+                let is_symlink = fs::symlink_metadata(&sdk).await?.file_type().is_symlink();
+                assert_eq!(is_symlink, !private, "action {i}: {}", sdk.display());
+                if private {
+                    continue;
+                }
+                assert!(
+                    fs::read_link(&sdk).await?.starts_with(&cache_root),
+                    "the symlink must point into the sealed cache"
+                );
+                let mut identity = Vec::new();
+                for file in ["tool", "data"] {
+                    let metadata = fs::metadata(sdk.join(file)).await?;
+                    assert_eq!(metadata.nlink(), 1, "{file} must not share an inode");
+                    identity.push((metadata.ino(), metadata.ctime(), metadata.ctime_nsec()));
+                }
+                assert_eq!(
+                    *identities.get_or_insert_with(|| identity.clone()),
+                    identity,
+                    "action {i}: files must keep their inode and change time"
+                );
+            }
+            assert_eq!(
+                cache.stats().await.entries,
+                1,
+                "every match shares one entry"
+            );
+            assert_eq!(cache.stats().await.in_use_entries, 1);
+            let result = action
+                .clone()
+                .execute()
+                .await?
+                .upload_results()
+                .await?
+                .get_finished_result()
+                .await?;
+            assert_eq!(result.exit_code, 0, "action {i}");
+            assert_eq!(result.output_files.len(), 1);
+            let output = cas
+                .as_ref()
+                .get_part_unchunked(result.output_files[0].digest, 0, None)
+                .await?;
+            assert_eq!(output.as_ref(), b"sdk-content");
+            action.cleanup().await?;
+            assert_eq!(
+                cache.stats().await.in_use_entries,
+                0,
+                "cleanup must release the tree pin"
+            );
+        }
+        // Every later action saw the first one's inodes, so no cleanup
+        // followed a symlink into the cache entry.
+        assert!(identities.is_some());
+        // The directories are read-only, so unlock them the way eviction does.
+        nativelink_util::fs_util::set_dir_writable_recursive(&cache_root).await?;
+        fs::remove_dir_all(root).await?;
+        Ok(())
+    }
+
     const NOW_TIME: u64 = 10000;
 
     fn make_system_time(add_time: u64) -> SystemTime {

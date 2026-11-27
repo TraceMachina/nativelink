@@ -1293,66 +1293,86 @@ pub async fn new_local_worker(
             "Read-only input mounts not supported on non-Linux OSes"
         ));
     }
+    #[cfg(not(target_os = "macos"))]
+    if !config.experimental_readonly_input_symlinks.is_empty() {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Read-only input symlinks are only supported on macOS"
+        ));
+    }
 
-    let running_actions_manager =
-        Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
-            root_action_directory: config.work_directory.clone(),
-            execution_configuration: ExecutionConfiguration {
-                max_captured_output_bytes: config.max_captured_output_bytes,
-                kill_grace: if config.kill_grace_ms == 0 {
-                    DEFAULT_KILL_GRACE
-                } else {
-                    Duration::from_millis(config.kill_grace_ms)
-                },
-                set_tmpdir: config.set_tmpdir,
-                max_concurrent_input_downloads: config.max_concurrent_input_downloads,
-                persistent_workers: persistent_worker_settings(
-                    config.persistent_workers.as_ref(),
-                    persistent_workers_namespaced,
-                ),
-                buck2_file_capture: config.experimental_buck2_file_capture.clone(),
-                entrypoint,
-                additional_environment: config.additional_environment.clone(),
-                resource_enforcement: config.resource_enforcement.as_ref().and_then(
-                    |enforcement| {
-                        let mut resource_enforcement =
-                            ResourceEnforcement::from_config(enforcement)?;
-                        if let Some(pressure_kill) = &mut resource_enforcement.pressure_kill {
-                            pressure_kill.largest_reservation_kb =
-                                crate::capacity::advertised_memory_kb(
-                                    config.capacity.as_ref(),
-                                    config.capacity.as_ref().map_or(0, |capacity| {
-                                        crate::capacity::memory_headroom_percent(
-                                            capacity,
-                                            Some(enforcement),
-                                        )
-                                    }),
-                                    crate::capacity::observe_cgroup(),
-                                    &config.platform_properties,
-                                    &enforcement.memory_property_name,
-                                );
-                        }
-                        Some(resource_enforcement)
-                    },
-                ),
+    #[cfg(target_os = "macos")]
+    let readonly_input_cache = if config.experimental_readonly_input_symlinks.is_empty() {
+        None
+    } else {
+        Some(new_readonly_input_cache(&config, fast_slow_store.clone()).await?)
+    };
+
+    let running_actions_manager = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+        root_action_directory: config.work_directory.clone(),
+        execution_configuration: ExecutionConfiguration {
+            max_captured_output_bytes: config.max_captured_output_bytes,
+            kill_grace: if config.kill_grace_ms == 0 {
+                DEFAULT_KILL_GRACE
+            } else {
+                Duration::from_millis(config.kill_grace_ms)
             },
-            cas_store: fast_slow_store,
-            ac_store,
-            historical_store,
-            upload_action_result_config: &config.upload_action_result,
-            max_action_timeout,
-            max_upload_timeout,
-            max_download_timeout,
-            max_cleanup_wait,
-            max_cleanup_backoff,
-            timeout_handled_externally: config.timeout_handled_externally,
-            directory_cache,
-            active_input_leases: config.experimental_active_input_leases,
-            #[cfg(target_os = "linux")]
-            readonly_input_mounts: config.experimental_readonly_input_mounts.clone(),
-            #[cfg(target_os = "linux")]
-            use_namespaces,
-        })?);
+            set_tmpdir: config.set_tmpdir,
+            max_concurrent_input_downloads: config.max_concurrent_input_downloads,
+            persistent_workers: persistent_worker_settings(
+                config.persistent_workers.as_ref(),
+                persistent_workers_namespaced,
+            ),
+            buck2_file_capture: config.experimental_buck2_file_capture.clone(),
+            entrypoint,
+            additional_environment: config.additional_environment.clone(),
+            resource_enforcement: config
+                .resource_enforcement
+                .as_ref()
+                .and_then(|enforcement| {
+                    let mut resource_enforcement = ResourceEnforcement::from_config(enforcement)?;
+                    if let Some(pressure_kill) = &mut resource_enforcement.pressure_kill {
+                        pressure_kill.largest_reservation_kb =
+                            crate::capacity::advertised_memory_kb(
+                                config.capacity.as_ref(),
+                                config.capacity.as_ref().map_or(0, |capacity| {
+                                    crate::capacity::memory_headroom_percent(
+                                        capacity,
+                                        Some(enforcement),
+                                    )
+                                }),
+                                crate::capacity::observe_cgroup(),
+                                &config.platform_properties,
+                                &enforcement.memory_property_name,
+                            );
+                    }
+                    Some(resource_enforcement)
+                }),
+        },
+        cas_store: fast_slow_store,
+        ac_store,
+        historical_store,
+        upload_action_result_config: &config.upload_action_result,
+        max_action_timeout,
+        max_upload_timeout,
+        max_download_timeout,
+        max_cleanup_wait,
+        max_cleanup_backoff,
+        timeout_handled_externally: config.timeout_handled_externally,
+        directory_cache,
+        active_input_leases: config.experimental_active_input_leases,
+        #[cfg(target_os = "linux")]
+        readonly_input_mounts: config.experimental_readonly_input_mounts.clone(),
+        #[cfg(target_os = "linux")]
+        use_namespaces,
+    })?;
+    #[cfg(target_os = "macos")]
+    let running_actions_manager = match readonly_input_cache {
+        Some(cache) => running_actions_manager
+            .with_readonly_input_symlinks(&config.experimental_readonly_input_symlinks, cache)?,
+        None => running_actions_manager,
+    };
+    let running_actions_manager = Arc::new(running_actions_manager);
     // What actions leave behind is reaped here; see `crate::reaper`.
     if let Err(err) = crate::reaper::become_subreaper() {
         warn!(
@@ -1776,6 +1796,53 @@ impl Metrics {
 
 /// The pool settings from the worker config, defaults for what it leaves at
 /// zero or unset.
+/// Creates the sealed directory cache behind
+/// `experimental_readonly_input_symlinks`, next to the work directory or, when
+/// a `directory_cache` is configured, next to that cache and with its limits.
+/// It is a cache of its own: its entries are used in place and must share no
+/// inode with the trees the ordinary cache copies into actions.
+#[cfg(target_os = "macos")]
+async fn new_readonly_input_cache(
+    config: &LocalWorkerConfig,
+    cas_store: Arc<FastSlowStore>,
+) -> Result<Arc<crate::directory_cache::DirectoryCache>, Error> {
+    use std::path::PathBuf;
+
+    use crate::directory_cache::{DirectoryCache, DirectoryCacheConfig};
+
+    let defaults = DirectoryCacheConfig::default();
+    let configured = config.directory_cache.as_ref();
+    let ordinary_root = configured
+        .filter(|cache| !cache.cache_root.is_empty())
+        .map_or_else(
+            || {
+                PathBuf::from(&config.work_directory).parent().map_or_else(
+                    || PathBuf::from("/tmp/nativelink_directory_cache"),
+                    |parent| parent.join("directory_cache"),
+                )
+            },
+            |cache| PathBuf::from(&cache.cache_root),
+        );
+    let mut cache_root = ordinary_root.into_os_string();
+    cache_root.push("_readonly_inputs");
+    let cache = DirectoryCache::new_sealed(
+        DirectoryCacheConfig {
+            max_entries: configured.map_or(defaults.max_entries, |cache| cache.max_entries),
+            max_size_bytes: configured
+                .map_or(defaults.max_size_bytes, |cache| cache.max_size_bytes),
+            cache_root: PathBuf::from(cache_root),
+            max_concurrent_fetches: configured.map_or(defaults.max_concurrent_fetches, |cache| {
+                cache.max_concurrent_fetches
+            }),
+            ..defaults
+        },
+        cas_store,
+    )
+    .await
+    .err_tip(|| "Creating the directory cache for experimental_readonly_input_symlinks")?;
+    Ok(Arc::new(cache))
+}
+
 fn persistent_worker_settings(
     config: Option<&nativelink_config::cas_server::PersistentWorkersConfig>,
     namespaced: bool,
