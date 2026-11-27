@@ -80,7 +80,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, Semaphore, SemaphorePermit, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit, mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
@@ -1896,6 +1896,42 @@ fn collect_download_links<'a>(
     input_mounts: Option<Arc<InputMounts>>,
     downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<CollectedTree, Error>> {
+    Box::pin(async move {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<BoxFuture<'a, ()>>();
+        let mut root = collect_download_links_queued(
+            cas_store,
+            digest,
+            current_directory,
+            input_lease,
+            input_mounts,
+            downloads,
+            sender,
+        );
+        let mut pending = FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                result = &mut root => return result,
+                Some(work) = receiver.recv() => pending.push(work),
+                Some(()) = pending.next(), if !pending.is_empty() => {},
+            }
+        }
+    })
+}
+
+// Queue child polls rather than nesting them, while retaining each directory's
+// concurrency limit and releasing download permits before descending.
+fn collect_download_links_queued<'a, 'b>(
+    cas_store: &'a FastSlowStore,
+    digest: &'b DigestInfo,
+    current_directory: &'b str,
+    input_lease: Option<Arc<ActionInputLease>>,
+    input_mounts: Option<Arc<InputMounts>>,
+    downloads: &'a Semaphore,
+    sender: mpsc::UnboundedSender<BoxFuture<'a, ()>>,
+) -> BoxFuture<'b, Result<CollectedTree, Error>>
+where
+    'a: 'b,
+{
     async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
@@ -1976,20 +2012,28 @@ fn collect_download_links<'a>(
             }
             let input_lease = input_lease.clone();
             let input_mounts = input_mounts.clone();
+            let sender = sender.clone();
             futures.push(
                 async move {
-                    let (mut sub_dirs, files, inline) = collect_download_links(
-                        cas_store,
-                        &digest,
-                        &new_directory_path,
-                        input_lease,
-                        input_mounts,
-                        downloads,
-                    )
-                    .await
-                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
-                    sub_dirs.push(PathBuf::from(new_directory_path));
-                    Ok::<_, Error>((sub_dirs, files, inline))
+                    let (mut response, result) = oneshot::channel();
+                    let child_sender = sender.clone();
+                    sender.send(Box::pin(async move {
+                        tokio::select! {
+                            biased;
+                            () = response.closed() => {},
+                            value = collect_download_links_queued(
+                                cas_store, &digest, &new_directory_path,
+                                input_lease, input_mounts, downloads, child_sender,
+                            ) => {
+                                let value = value.map(|(mut dirs, files, inline)| {
+                                    dirs.push(PathBuf::from(&new_directory_path));
+                                    (dirs, files, inline)
+                                }).err_tip(|| format!("in download_to_directory : {new_directory_path}"));
+                                drop(response.send(value));
+                            },
+                        }
+                    })).map_err(|_| make_err!(Code::Internal, "input directory work queue closed"))?;
+                    result.await.map_err(|_| make_err!(Code::Internal, "input directory work cancelled"))?
                 }
                 .boxed(),
             );

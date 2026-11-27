@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
-use futures::stream::TryStreamExt;
+use futures::stream::{FuturesUnordered, TryStreamExt};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
@@ -42,7 +42,9 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, default_digest_hasher_func};
 #[cfg(target_os = "macos")]
 use nativelink_util::fs_util::clone_file_pristine;
-use nativelink_util::fs_util::{CloneMethod, hardlink_directory_tree, set_dir_writable_recursive};
+use nativelink_util::fs_util::{
+    CloneMethod, hardlink_directory_tree_with_guard, set_dir_writable_recursive,
+};
 use nativelink_util::store_trait::{StoreKey, StoreLike};
 use prost::Message;
 use tokio::fs;
@@ -59,7 +61,7 @@ const CONSTRUCT_DIRECTORY_CONCURRENCY: usize = 64;
 /// Default for `DirectoryCacheConfig::max_concurrent_fetches`, preserving
 /// the historical cache-wide fetch bound.
 const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 64;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore, mpsc, oneshot};
 use tracing::{debug, info, trace, warn};
 
 /// Prefix for in-progress construction trees under `cache_root`. Cache-entry
@@ -78,6 +80,118 @@ const CLONE_PROBE_NAME: &str = ".clone-probe";
 
 /// Minimum interval between summary log lines, in nanoseconds (one minute).
 const SUMMARY_LOG_INTERVAL_NANOS: u64 = 60_000_000_000;
+
+#[derive(Clone)]
+struct DirectoryWork<'a> {
+    sender: mpsc::UnboundedSender<BoxFuture<'a, ()>>,
+    scope: Option<Arc<DirectoryWorkScope>>,
+}
+
+// A child scope holds one registration in its parent for its entire lifetime.
+#[derive(Debug)]
+struct DirectoryWorkScope {
+    parent: Option<Arc<Self>>,
+    pending: AtomicUsize,
+    idle: Notify,
+}
+
+impl DirectoryWorkScope {
+    fn new(parent: Option<Arc<Self>>) -> Arc<Self> {
+        if let Some(parent) = &parent {
+            parent.retain();
+        }
+        Arc::new(Self {
+            parent,
+            pending: AtomicUsize::new(0),
+            idle: Notify::new(),
+        })
+    }
+
+    fn register(self: &Arc<Self>) -> DirectoryWorkGuard {
+        self.retain();
+        DirectoryWorkGuard(self.clone())
+    }
+
+    fn retain(&self) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn release(&self) {
+        if self.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle.notify_one();
+        }
+    }
+
+    async fn wait(&self) {
+        while self.pending.load(Ordering::Acquire) != 0 {
+            self.idle.notified().await;
+        }
+    }
+}
+
+impl Drop for DirectoryWorkScope {
+    fn drop(&mut self) {
+        // Unwind uniquely owned ancestors without nesting their destructors.
+        let mut parent = self.parent.take();
+        while let Some(scope) = parent {
+            scope.release();
+            parent = Arc::into_inner(scope).and_then(|mut scope| scope.parent.take());
+        }
+    }
+}
+
+struct DirectoryWorkGuard(Arc<DirectoryWorkScope>);
+
+tokio::task_local! {
+    static LEAF_SCOPE: Arc<DirectoryWorkScope>;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static SCRATCH_CLEANUP_STARTED: Arc<Notify>;
+}
+
+// Keep the guard in the blocking closure so dropping its waiter cannot
+// release scratch cleanup before the syscall returns.
+async fn leaf_io<F>(operation: F) -> Result<(), Error>
+where
+    F: FnOnce() -> std::io::Result<()> + Send + 'static,
+{
+    let guard = LEAF_SCOPE.try_with(DirectoryWorkScope::register).ok();
+    nativelink_util::spawn_blocking!("directory_leaf_io", move || {
+        let _guard = guard;
+        operation()
+    })
+    .await
+    .err_tip(|| "Directory file operation failed")??;
+    Ok(())
+}
+
+impl Drop for DirectoryWorkGuard {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+type DirectoryProtos = Arc<HashMap<DigestInfo, ProtoDirectory>>;
+
+async fn drive_directory_work<'a, T>(
+    start: impl FnOnce(DirectoryWork<'a>) -> BoxFuture<'a, Result<T, Error>>,
+) -> Result<T, Error> {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut root = start(DirectoryWork {
+        sender,
+        scope: None,
+    });
+    let mut pending = FuturesUnordered::new();
+    loop {
+        tokio::select! {
+            result = &mut root => return result,
+            Some(work) = receiver.recv() => pending.push(work),
+            Some(()) = pending.next(), if !pending.is_empty() => {},
+        }
+    }
+}
 
 /// Current time as nanoseconds since the unix epoch, for lock-free LRU
 /// timestamps. Saturates instead of failing (`u64` nanos overflow in 2554).
@@ -209,11 +323,15 @@ impl PreparedDirectory {
 #[derive(Debug)]
 struct ScratchGuard {
     path: Option<PathBuf>,
+    scope: Arc<DirectoryWorkScope>,
 }
 
 impl ScratchGuard {
-    const fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+    const fn new(path: PathBuf, scope: Arc<DirectoryWorkScope>) -> Self {
+        Self {
+            path: Some(path),
+            scope,
+        }
     }
 
     fn disarm(&mut self) {
@@ -224,7 +342,11 @@ impl ScratchGuard {
 impl Drop for ScratchGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            DirectoryCache::dispatch_evictions(vec![path]);
+            let scope = self.scope.clone();
+            background_spawn!("cancelled_scratch_cleanup", async move {
+                scope.wait().await;
+                DirectoryCache::dispatch_evictions(vec![path]);
+            });
         }
     }
 }
@@ -561,10 +683,15 @@ impl DirectoryCache {
         dest_path: &Path,
         lease: Option<&dyn DigestLease>,
     ) -> Result<bool, Error> {
-        let (hit, _size) = self
-            .get_or_create_entry(digest, dest_path, None, true, lease)
-            .await?;
-        Ok(hit)
+        drive_directory_work(|work| {
+            Box::pin(async move {
+                let (hit, _size) = self
+                    .get_or_create_entry(digest, dest_path, None, true, lease, work)
+                    .await?;
+                Ok(hit)
+            })
+        })
+        .await
     }
 
     /// Acquires a reusable tree without copying it to an action workspace.
@@ -573,6 +700,18 @@ impl DirectoryCache {
         &self,
         digest: DigestInfo,
         lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        drive_directory_work(|work| {
+            Box::pin(async move { self.prepare_for_mount_inner(digest, lease, work).await })
+        })
+        .await
+    }
+
+    async fn prepare_for_mount_inner<'a>(
+        &'a self,
+        digest: DigestInfo,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<PreparedDirectory, Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
@@ -599,7 +738,7 @@ impl DirectoryCache {
             nativelink_util::metrics::INPUT_MOUNT_METRICS
                 .cache_misses
                 .add(1, &[]);
-            self.construct_entry(digest, None, true, lease).await
+            self.construct_entry(digest, None, true, lease, work).await
         };
         self.forget_construction_lock(&digest).await;
         result
@@ -618,19 +757,23 @@ impl DirectoryCache {
     /// `GetTree` prefetch on a cold miss. Subtree flights pass the root's
     /// map down instead, so cache hits (root or subtree) never prefetch. A
     /// server may paginate that traversal across multiple RPCs.
-    async fn get_or_create_entry(
-        &self,
+    async fn get_or_create_entry<'a>(
+        &'a self,
         digest: DigestInfo,
         dest_path: &Path,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<(bool, u64), Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
 
         // Fast path: serve from an existing entry.
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+        if let Some(size) = self
+            .try_materialize_from_cache(&digest, dest_path, work.scope.as_ref())
+            .await?
+        {
             return Ok((true, size));
         }
 
@@ -658,7 +801,7 @@ impl DirectoryCache {
         // then remove its lock from the map if no other callers are waiting.
         // Waiters must keep sharing this flight even if construction failed.
         let result = self
-            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
+            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease, work)
             .await;
         self.forget_construction_lock(&digest).await;
         result
@@ -684,6 +827,7 @@ impl DirectoryCache {
         &self,
         digest: &DigestInfo,
         dest_path: &Path,
+        scope: Option<&Arc<DirectoryWorkScope>>,
     ) -> Result<Option<u64>, Error> {
         let Some(PreparedDirectory {
             path: cache_path,
@@ -694,7 +838,13 @@ impl DirectoryCache {
             return Ok(None);
         };
         debug!(?digest, ?cache_path, "Directory cache HIT");
-        match hardlink_directory_tree(&cache_path, dest_path).await {
+        match hardlink_directory_tree_with_guard(
+            &cache_path,
+            dest_path,
+            scope.map(DirectoryWorkScope::register),
+        )
+        .await
+        {
             Ok(method) => {
                 drop(pin);
                 self.record_clone_method(method);
@@ -725,39 +875,49 @@ impl DirectoryCache {
     /// construction lock after either success or failure.
     /// `protos` and `prefetch_on_miss` are documented on
     /// [`Self::get_or_create_entry`].
-    async fn construct_and_materialize(
-        &self,
+    async fn construct_and_materialize<'a>(
+        &'a self,
         digest: DigestInfo,
         dest_path: &Path,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<(bool, u64), Error> {
         // Re-check: another task may have just constructed this digest while
         // we waited on the construction lock. If the entry turns out to be
         // damaged it is invalidated and we fall through to rebuild it fresh
         // (exactly once — we hold the construction lock).
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
+        if let Some(size) = self
+            .try_materialize_from_cache(&digest, dest_path, work.scope.as_ref())
+            .await?
+        {
             return Ok((true, size));
         }
 
+        let scope = work.scope.clone();
         let prepared = self
-            .construct_entry(digest, protos, prefetch_on_miss, lease)
+            .construct_entry(digest, protos, prefetch_on_miss, lease, work)
             .await?;
-        let method = hardlink_directory_tree(prepared.path(), dest_path)
-            .await
-            .err_tip(|| "Failed to hardlink newly cached directory")?;
+        let method = hardlink_directory_tree_with_guard(
+            prepared.path(),
+            dest_path,
+            scope.as_ref().map(DirectoryWorkScope::register),
+        )
+        .await
+        .err_tip(|| "Failed to hardlink newly cached directory")?;
         self.record_clone_method(method);
         Ok((false, prepared.size))
     }
 
     /// Constructs and publishes a pinned entry, without copying it elsewhere.
-    async fn construct_entry(
-        &self,
+    async fn construct_entry<'a>(
+        &'a self,
         digest: DigestInfo,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        protos: Option<DirectoryProtos>,
         prefetch_on_miss: bool,
-        lease: Option<&dyn DigestLease>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<PreparedDirectory, Error> {
         // Construct the directory into a UNIQUE temp path first, then
         // atomically publish it to the canonical `cache_root/<digest>` path
@@ -788,16 +948,24 @@ impl DirectoryCache {
         } else {
             None
         };
-        let protos = prefetched.as_ref().or(protos);
+        let protos = prefetched.map(Arc::new).or(protos);
         let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
-        let mut temp_guard = ScratchGuard::new(temp_path.clone());
+        let scope = DirectoryWorkScope::new(work.scope);
+        let work = DirectoryWork {
+            sender: work.sender,
+            scope: Some(scope.clone()),
+        };
+        let mut temp_guard = ScratchGuard::new(temp_path.clone(), scope.clone());
         let size = match self
-            .construct_directory(digest, &temp_path, protos, lease)
+            .construct_directory(digest, &temp_path, protos, lease, work)
             .await
         {
             Ok(size) => size,
             Err(e) => {
+                scope.wait().await;
                 temp_guard.disarm();
+                #[cfg(test)]
+                let _ = SCRATCH_CLEANUP_STARTED.try_with(|started| started.notify_one());
                 Self::remove_tree_best_effort(&temp_path).await;
                 return Err(e);
             }
@@ -1086,14 +1254,23 @@ impl DirectoryCache {
         }
     }
 
-    fn construct_directory<'a>(
+    fn construct_directory<'a, 'b>(
         &'a self,
         digest: DigestInfo,
-        dest_path: &'a Path,
-        protos: Option<&'a HashMap<DigestInfo, ProtoDirectory>>,
+        dest_path: &'b Path,
+        protos: Option<DirectoryProtos>,
         lease: Option<&'a dyn DigestLease>,
-    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
+        work: DirectoryWork<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'b>>
+    where
+        'a: 'b,
+    {
         Box::pin(async move {
+            let scope = DirectoryWorkScope::new(work.scope.clone());
+            let work = DirectoryWork {
+                sender: work.sender,
+                scope: Some(scope.clone()),
+            };
             debug!(?digest, ?dest_path, "Constructing directory");
             // The root is reserved by `get_or_create_entry`; child digests are
             // reserved before their recursive futures are queued below.
@@ -1101,7 +1278,7 @@ impl DirectoryCache {
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.
             // an incomplete GetTree response) degrades to the fetch path.
-            let prefetched = protos.and_then(|map| map.get(&digest));
+            let prefetched = protos.as_ref().and_then(|map| map.get(&digest));
             let directory: ProtoDirectory = if let Some(directory) = prefetched {
                 directory.clone()
             } else {
@@ -1114,7 +1291,7 @@ impl DirectoryCache {
             // Create the destination directory. It must be writable while it
             // is being populated; 0o755 is its final mode too, so set it now
             // (umask-independent) — no post-construction permission walk.
-            self.create_dir_writable(dest_path).await?;
+            Self::create_dir_writable(dest_path, &scope).await?;
 
             let mut total_size: u64 = 0;
             for file in &directory.files {
@@ -1139,8 +1316,12 @@ impl DirectoryCache {
                 directory.files.len() + directory.directories.len() + directory.symlinks.len(),
             );
             for file in &directory.files {
+                let scope = scope.clone();
                 node_futures.push(Box::pin(async move {
-                    self.create_file(dest_path, file).await.map(|()| 0)
+                    LEAF_SCOPE
+                        .scope(scope, self.create_file(dest_path, file))
+                        .await
+                        .map(|()| 0)
                 }));
             }
             for dir_node in &directory.directories {
@@ -1149,19 +1330,46 @@ impl DirectoryCache {
                 {
                     acquire_digest(lease, &dir_digest);
                 }
-                node_futures.push(Box::pin(
-                    self.create_subdirectory(dest_path, dir_node, protos, lease),
-                ));
-            }
-            for symlink in &directory.symlinks {
+                let parent = dest_path.to_owned();
+                let dir_node = dir_node.clone();
+                let protos = protos.clone();
+                let work = work.clone();
+                let scope = scope.clone();
                 node_futures.push(Box::pin(async move {
-                    self.create_symlink(dest_path, symlink).await.map(|()| 0)
+                    let (mut response, result) = oneshot::channel();
+                    let child_work = work.clone();
+                    let guard = scope.register();
+                    work.sender.send(Box::pin(async move {
+                        let _guard = guard;
+                        tokio::select! {
+                            biased;
+                            () = response.closed() => {},
+                            value = self.create_subdirectory(&parent, &dir_node, protos, lease, child_work) => {
+                                drop(response.send(value));
+                            },
+                        }
+                    }))
+                    .map_err(|_| make_err!(Code::Internal, "directory work queue closed"))?;
+                    result.await.map_err(|_| make_err!(Code::Internal, "directory work cancelled"))?
                 }));
             }
-            total_size += futures::stream::iter(node_futures)
+            for symlink in &directory.symlinks {
+                let scope = scope.clone();
+                node_futures.push(Box::pin(async move {
+                    LEAF_SCOPE
+                        .scope(scope, self.create_symlink(dest_path, symlink))
+                        .await
+                        .map(|()| 0)
+                }));
+            }
+            let children = futures::stream::iter(node_futures)
                 .buffer_unordered(CONSTRUCT_DIRECTORY_CONCURRENCY)
                 .try_fold(0u64, |acc, size| async move { Ok(acc + size) })
-                .await?;
+                .await;
+            // An error drops sibling receivers; wait until their queued work
+            // and all descendants have actually stopped before cleanup.
+            scope.wait().await;
+            total_size += children?;
 
             Ok(total_size)
         })
@@ -1170,18 +1378,23 @@ impl DirectoryCache {
     /// Creates `dir` (and any missing parents) and sets its mode to 0o755 so
     /// that it is writable while the cache entry is being populated and stays
     /// at a stable, umask-independent final mode afterwards.
-    async fn create_dir_writable(&self, dir: &Path) -> Result<(), Error> {
-        fs::create_dir_all(dir)
-            .await
-            .err_tip(|| format!("Failed to create directory: {}", dir.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-                .await
-                .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
-        }
-        Ok(())
+    async fn create_dir_writable(dir: &Path, scope: &Arc<DirectoryWorkScope>) -> Result<(), Error> {
+        let dir = dir.to_owned();
+        let guard = scope.register();
+        nativelink_util::spawn_blocking!("create_cache_directory", move || {
+            let _guard = guard;
+            std::fs::create_dir_all(&dir)
+                .err_tip(|| format!("Failed to create directory: {}", dir.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+                    .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
+            }
+            Ok(())
+        })
+        .await
+        .err_tip(|| "Directory creation task failed")?
     }
 
     /// Creates a file from a `FileNode` inside a cache entry.
@@ -1222,7 +1435,8 @@ impl DirectoryCache {
         // and a single failure aborts the whole DirectoryCache construction.
         // Short-circuit and write the empty file directly.
         if is_zero_digest(digest) {
-            fs::write(&file_path, b"")
+            let dst = file_path.clone();
+            leaf_io(move || std::fs::write(dst, b""))
                 .await
                 .err_tip(|| format!("Failed to write empty file: {}", file_path.display()))?;
             // macOS only: read-only like every other materialized input, and
@@ -1237,9 +1451,12 @@ impl DirectoryCache {
                 } else {
                     0o444
                 };
-                fs::set_permissions(&file_path, std::fs::Permissions::from_mode(mode))
-                    .await
-                    .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
+                let dst = file_path.clone();
+                leaf_io(move || {
+                    std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode))
+                })
+                .await
+                .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
             }
             return Ok(());
         }
@@ -1337,12 +1554,15 @@ impl DirectoryCache {
             digest,
             "hardlink",
             move |src| async move {
-                fs::hard_link(&src, &file_path).await.err_tip(|| {
-                    format!(
-                        "Failed to hardlink CAS blob into cache entry: {}",
-                        file_path.display()
-                    )
-                })
+                let dst = file_path.clone();
+                leaf_io(move || std::fs::hard_link(src, dst))
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Failed to hardlink CAS blob into cache entry: {}",
+                            file_path.display()
+                        )
+                    })
             },
         )
         .await
@@ -1414,14 +1634,19 @@ impl DirectoryCache {
     ) -> Result<(), Error> {
         let dst = file_path.to_path_buf();
         self.with_cas_blob_path_locked(filesystem_store, digest, "clone", move |src| async move {
-            clone_file_pristine(Path::new(&src), &dst, 0o555)
-                .await
-                .err_tip(|| {
-                    format!(
-                        "Failed to clone CAS blob into cache entry: {}",
-                        dst.display()
-                    )
-                })
+            nativelink_util::fs_util::clone_file_pristine_with_guard(
+                Path::new(&src),
+                &dst,
+                0o555,
+                LEAF_SCOPE.try_with(DirectoryWorkScope::register).ok(),
+            )
+            .await
+            .err_tip(|| {
+                format!(
+                    "Failed to clone CAS blob into cache entry: {}",
+                    dst.display()
+                )
+            })
         })
         .await
     }
@@ -1444,7 +1669,8 @@ impl DirectoryCache {
                 .err_tip(|| format!("Failed to fetch file: {}", file_path.display()))?
         };
 
-        fs::write(file_path, data.as_ref())
+        let dst = file_path.to_owned();
+        leaf_io(move || std::fs::write(dst, data.as_ref()))
             .await
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
@@ -1458,7 +1684,8 @@ impl DirectoryCache {
             // blob or another action's hardlink — unlike the hardlink path,
             // where the shared read-only blob must never be chmod'd.
             let mode = if executable { 0o555 } else { 0o444 };
-            fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
+            let dst = file_path.to_owned();
+            leaf_io(move || std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode)))
                 .await
                 .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
         }
@@ -1479,12 +1706,13 @@ impl DirectoryCache {
     /// When disabled (the default), the subtree is always constructed
     /// directly under the parent with no cache interaction — today's
     /// behavior, unchanged.
-    async fn create_subdirectory(
-        &self,
+    async fn create_subdirectory<'a>(
+        &'a self,
         parent: &Path,
         dir_node: &DirectoryNode,
-        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
-        lease: Option<&dyn DigestLease>,
+        protos: Option<DirectoryProtos>,
+        lease: Option<&'a dyn DigestLease>,
+        work: DirectoryWork<'a>,
     ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
@@ -1504,7 +1732,7 @@ impl DirectoryCache {
             // through this method, so nested subtrees get their own entries
             // too (leaf-level reuse).
             let (hit, _size) = self
-                .get_or_create_entry(digest, &dir_path, protos, false, lease)
+                .get_or_create_entry(digest, &dir_path, protos, false, lease, work)
                 .await?;
             let counter = if hit {
                 &self.subtree_hits
@@ -1524,7 +1752,7 @@ impl DirectoryCache {
         }
 
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path, protos, lease)
+        self.construct_directory(digest, &dir_path, protos, lease, work)
             .await
     }
 
@@ -1536,15 +1764,21 @@ impl DirectoryCache {
         trace!(?link_path, ?target, "Creating symlink");
 
         #[cfg(unix)]
-        fs::symlink(&target, &link_path)
-            .await
-            .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+        {
+            let dst = link_path.clone();
+            let target = target.to_owned();
+            leaf_io(move || std::os::unix::fs::symlink(target, dst))
+                .await
+                .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
+        }
 
         #[cfg(windows)]
         {
             // On Windows, we need to know if target is a directory
             // For now, assume files (can be improved later)
-            fs::symlink_file(&target, &link_path)
+            let dst = link_path.clone();
+            let target = target.to_owned();
+            leaf_io(move || std::os::windows::fs::symlink_file(target, dst))
                 .await
                 .err_tip(|| format!("Failed to create symlink: {}", link_path.display()))?;
         }
@@ -1827,6 +2061,346 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[nativelink_test]
+    async fn dropping_deep_work_scopes_releases_the_root() {
+        let root = DirectoryWorkScope::new(None);
+        let mut leaf = root.clone();
+        for _ in 0..8_192 {
+            leaf = DirectoryWorkScope::new(Some(leaf));
+        }
+        assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+        drop(leaf);
+        root.wait().await;
+    }
+
+    #[nativelink_test]
+    async fn work_scope_waits_for_cancelled_descendants() {
+        let root = DirectoryWorkScope::new(None);
+        let child = DirectoryWorkScope::new(Some(root.clone()));
+        let child_job = root.register();
+        let descendant_job = child.register();
+
+        drop(child_job);
+        assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+        assert!(futures::poll!(Box::pin(child.wait())).is_pending());
+        drop(child);
+
+        drop(descendant_job);
+        root.wait().await;
+    }
+
+    #[nativelink_test]
+    async fn work_scope_waits_for_queued_task_to_stop() -> Result<(), Error> {
+        drive_directory_work(|work| {
+            Box::pin(async move {
+                let root = DirectoryWorkScope::new(None);
+                let child = DirectoryWorkScope::new(Some(root.clone()));
+                let child_job = root.register();
+                let descendant_job = child.register();
+                drop(child);
+                let (started, started_rx) = oneshot::channel();
+                let (release, release_rx) = oneshot::channel::<()>();
+                work.sender
+                    .send(Box::pin(async move {
+                        let _guard = descendant_job;
+                        let _ = started.send(());
+                        drop(release_rx.await);
+                    }))
+                    .map_err(|_| make_err!(Code::Internal, "directory work queue closed"))?;
+                started_rx
+                    .await
+                    .map_err(|_| make_err!(Code::Internal, "queued task did not start"))?;
+                drop(child_job);
+                assert!(futures::poll!(Box::pin(root.wait())).is_pending());
+                drop(release);
+                root.wait().await;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    #[nativelink_test]
+    async fn cancelled_filesystem_operation_keeps_cleanup_pending() -> Result<(), Error> {
+        check_cancelled_filesystem_operation().await
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a separate one-thread blocking pool makes cancellation ordering deterministic"
+    )]
+    async fn check_cancelled_filesystem_operation() -> Result<(), Error> {
+        let temp_dir = TempDir::new()?;
+        let scratch = temp_dir.path().join("scratch");
+        fs::create_dir_all(&scratch).await?;
+        let late_directory = scratch.join("late/leaf");
+        let scope = DirectoryWorkScope::new(None);
+        let guard = scope.register();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()?;
+        let (started, started_rx) = oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let blocker = runtime.spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.expect("blocking worker started");
+
+        // Poll the real filesystem call while its blocking worker is occupied.
+        // Dropping the outer job must not release cleanup ahead of that call.
+        let mut operation = Box::pin(async {
+            let _guard = guard;
+            DirectoryCache::create_dir_writable(&late_directory, &scope).await
+        });
+        let pending = {
+            let _entered = runtime.enter();
+            let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+            operation.as_mut().poll(&mut cx).is_pending()
+        };
+        drop(operation);
+        let waits_for_io = futures::poll!(Box::pin(scope.wait())).is_pending();
+        if !waits_for_io {
+            DirectoryCache::remove_tree_best_effort(&scratch).await;
+        }
+        drop(release);
+        blocker.await.expect("blocking worker released");
+        runtime
+            .spawn_blocking(|| ())
+            .await
+            .expect("filesystem queue drained");
+        runtime.shutdown_background();
+        scope.wait().await;
+        let recreated = scratch.exists();
+        DirectoryCache::remove_tree_best_effort(&scratch).await;
+        assert!(pending, "filesystem operation must have been queued");
+        assert!(
+            waits_for_io,
+            "cleanup was allowed before cancelled filesystem I/O completed; scratch recreated: {recreated}"
+        );
+        Ok(())
+    }
+
+    async fn filesystem_cancellation_case(subtree: bool, cancel_root: bool) -> Result<(), Error> {
+        let temp_dir = TempDir::new()?;
+        let (store, slow) = make_fast_slow_store(&temp_dir).await;
+        let file = upload_blob(&slow, 10, b"cancel regression").await;
+        let mut branch_digest = upload_blob(
+            &slow,
+            11,
+            &ProtoDirectory {
+                files: vec![FileNode {
+                    name: "file".into(),
+                    digest: Some(file.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        for (tag, name) in [(12, "leaf"), (13, "middle")] {
+            branch_digest = upload_blob(
+                &slow,
+                tag,
+                &ProtoDirectory {
+                    directories: vec![DirectoryNode {
+                        name: name.into(),
+                        digest: Some(branch_digest.into()),
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .await;
+        }
+        let missing_data = ProtoDirectory {
+            files: vec![FileNode {
+                name: "recovered".into(),
+                digest: Some(file.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let missing = DigestInfo::new([14; 32], missing_data.len() as u64);
+        let digest = upload_blob(
+            &slow,
+            15,
+            &ProtoDirectory {
+                directories: vec![
+                    DirectoryNode {
+                        name: "branch".into(),
+                        digest: Some(branch_digest.into()),
+                    },
+                    DirectoryNode {
+                        name: "missing".into(),
+                        digest: Some(missing.into()),
+                    },
+                ],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        )
+        .await;
+        let cache_root = temp_dir.path().join("cache");
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: cache_root.clone(),
+                experimental_subtree_caching: subtree,
+                max_concurrent_fetches: 1,
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        let destination = temp_dir.path().join("cancelled");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let cleanup_started = Arc::new(Notify::new());
+        let mut root = Box::pin(SCRATCH_CLEANUP_STARTED.scope(
+            cleanup_started.clone(),
+            cache.get_or_create_entry(
+                digest,
+                &destination,
+                None,
+                true,
+                None,
+                DirectoryWork {
+                    sender,
+                    scope: None,
+                },
+            ),
+        ));
+
+        // Drive production construction against real disk, but retain control
+        // of queued jobs so cancellation cannot finish before we inspect cleanup.
+        let mut first = tokio::select! {
+            result = &mut root => panic!("root finished before queuing children: {result:?}"),
+            job = receiver.recv() => job.expect("first child job"),
+        };
+        let mut second = tokio::select! {
+            result = &mut root => panic!("root finished before queuing failure: {result:?}"),
+            job = receiver.recv() => job.expect("second child job"),
+        };
+        let mut entries = fs::read_dir(&cache_root).await?;
+        let scratch = entries.next_entry().await?.expect("root scratch").path();
+        assert!(
+            scratch
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(TEMP_PREFIX)
+        );
+        assert!(entries.next_entry().await?.is_none());
+        let marker = scratch.join("cleanup-marker");
+        fs::write(&marker, b"parent still owns this tree").await?;
+        // Only the missing child can finish while its sibling's queued
+        // descendants are held by the test.
+        let mut branch = tokio::select! {
+            () = &mut first => second,
+            () = &mut second => first,
+        };
+        let mut middle = tokio::select! {
+            () = &mut branch => panic!("branch finished before queuing middle"),
+            job = receiver.recv() => job.expect("middle job"),
+        };
+        let leaf = tokio::select! {
+            () = &mut middle => panic!("middle finished before queuing leaf"),
+            job = receiver.recv() => job.expect("leaf job"),
+        };
+
+        if cancel_root {
+            drop(root);
+            branch.await;
+            middle.await;
+            leaf.await;
+        } else {
+            tokio::select! {
+                biased;
+                result = &mut root => panic!("parent cleaned up before branch stopped: {result:?}"),
+                () = &mut branch => {},
+            }
+            assert!(futures::poll!(root.as_mut()).is_pending());
+            assert!(
+                futures::poll!(Box::pin(cleanup_started.notified())).is_pending(),
+                "parent completed while a cancelled descendant was still alive"
+            );
+            assert_eq!(fs::read(&marker).await?, b"parent still owns this tree");
+            middle.await;
+            assert!(futures::poll!(root.as_mut()).is_pending());
+            assert!(futures::poll!(Box::pin(cleanup_started.notified())).is_pending());
+            assert!(
+                marker.exists(),
+                "parent cleaned up before queued leaf stopped"
+            );
+            leaf.await;
+            assert!(root.await.is_err());
+            assert!(
+                !scratch.exists(),
+                "failed root must remove its scratch tree"
+            );
+        }
+        drop(receiver);
+
+        // Root cancellation uses background scratch cleanup. Wait for its real
+        // filesystem effects, not just for the cancelled futures to disappear.
+        loop {
+            let mut entries = fs::read_dir(&cache_root).await?;
+            let mut has_scratch = false;
+            while let Some(entry) = entries.next_entry().await? {
+                has_scratch |= entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX);
+            }
+            if !has_scratch {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(cache.stats().await.in_use_entries, 0);
+        slow.as_store_driver_pin()
+            .update_oneshot(missing.into(), missing_data.into())
+            .await?;
+        let retry = temp_dir.path().join("retry");
+        assert!(!cache.get_or_create(digest, &retry).await?);
+        assert_eq!(
+            fs::read(retry.join("branch/middle/leaf/file")).await?,
+            b"cancel regression"
+        );
+        assert_eq!(
+            fs::read(retry.join("missing/recovered")).await?,
+            b"cancel regression"
+        );
+        assert_eq!(cache.stats().await.in_use_entries, 0);
+        assert!(cache.construction_locks.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn filesystem_parent_cleanup_waits_for_cancelled_descendants() -> Result<(), Error> {
+        for subtree in [false, true] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                filesystem_cancellation_case(subtree, false),
+            )
+            .await
+            .expect("cancellation or retry deadlocked")?;
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn filesystem_root_cancellation_cleans_up_and_retries() -> Result<(), Error> {
+        for subtree in [false, true] {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                filesystem_cancellation_case(subtree, true),
+            )
+            .await
+            .expect("root cancellation or retry deadlocked")?;
+        }
+        Ok(())
+    }
 
     /// Builds a `FastSlowStore` whose fast tier is a real `FilesystemStore`
     /// and whose slow tier is a `MemoryStore` — the same shape the worker
