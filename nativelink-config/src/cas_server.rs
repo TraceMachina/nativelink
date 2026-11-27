@@ -1745,8 +1745,8 @@ pub struct LocalWorkerConfig {
     #[serde(default)]
     pub experimental_readonly_input_mounts: Vec<String>,
 
-    /// Reuse immutable input directories through symlinks on macOS. The
-    /// worker builds each selected directory once per REAPI `Directory`
+    /// Reuse immutable input directories and files through symlinks on macOS.
+    /// The worker builds each selected directory once per REAPI `Directory`
     /// digest in a cache of its own, then places one symlink to that entry in
     /// each action instead of recreating the directory's files.
     ///
@@ -1768,6 +1768,16 @@ pub struct LocalWorkerConfig {
     /// A pattern with `**` makes the worker read `Directory` messages across
     /// the input tree until the first match; keep the prefix before it
     /// specific.
+    ///
+    /// A pattern selects files as well as directories. A selected file is
+    /// one symlink to a copy that keeps its inode across actions, shared by
+    /// every input with the same name, content and executable bit. Select
+    /// only files that stand alone: a script, or a binary that finds nothing
+    /// relative to its own location. A binary that loads libraries through
+    /// `@executable_path` or `@loader_path` resolves them next to the copy in
+    /// the cache, where they are not; select its directory instead. Files
+    /// that carry a modification time or mode of their own in the input tree
+    /// are never selected.
     ///
     /// Select self-contained directories that many actions share unchanged,
     /// such as a hermetic interpreter. A selected directory the action works

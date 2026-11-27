@@ -34,6 +34,8 @@ pub struct InputMounts {
     #[cfg(target_os = "linux")]
     root: PathBuf,
     prepared: Mutex<Vec<(PathBuf, PreparedDirectory)>>,
+    /// Pins for the single files selected by pattern.
+    prepared_files: Mutex<Vec<PreparedDirectory>>,
 }
 
 /// How an action's input directories are chosen for reuse.
@@ -41,8 +43,8 @@ pub struct InputMounts {
 enum Selection {
     /// These absolute paths, all compatible with the action's command.
     Exact(HashSet<PathBuf>),
-    /// Any directory matching a pattern, unless the command works inside it
-    /// or declares an output that overlaps it. Paths other than `root` are
+    /// Any directory or file matching a pattern, unless the command works
+    /// inside it or declares an output that overlaps it. Paths other than `root` are
     /// relative to the input root.
     Patterns {
         patterns: Arc<PathPatterns>,
@@ -223,8 +225,8 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
     pattern[p..].iter().all(|&c| c == b'*')
 }
 
-/// Finds out whether any input directory matches a pattern, reading only the
-/// `Directory` protos on paths that still can. Actions without a match keep
+/// Finds out whether any input directory or file matches a pattern, reading
+/// only the `Directory` protos on paths that still can. Actions without a match keep
 /// their ordinary input setup. Stops at the first match.
 pub async fn has_matching_inputs(
     cas_store: &FastSlowStore,
@@ -238,6 +240,13 @@ pub async fn has_matching_inputs(
             lease.acquire(&digest);
         }
         let directory = get_and_decode_digest::<Directory>(cas_store, digest.into()).await?;
+        if directory
+            .files
+            .iter()
+            .any(|file| states.descend(&file.name).is_match())
+        {
+            return Ok(true);
+        }
         for child in directory.directories {
             let states = states.descend(&child.name);
             if states.is_match() {
@@ -381,6 +390,7 @@ impl InputMounts {
             #[cfg(target_os = "linux")]
             root: root.to_owned(),
             prepared: Mutex::new(Vec::new()),
+            prepared_files: Mutex::new(Vec::new()),
         }))
     }
 
@@ -418,6 +428,7 @@ impl InputMounts {
             #[cfg(target_os = "linux")]
             root: root.to_owned(),
             prepared: Mutex::new(Vec::new()),
+            prepared_files: Mutex::new(Vec::new()),
         }))
     }
 
@@ -453,6 +464,41 @@ impl InputMounts {
         let directory = self.cache.prepare_for_mount(digest, lease).await?;
         self.prepared.lock().push((path.to_owned(), directory));
         Ok(true)
+    }
+
+    /// Prepares and pins a tree holding the one input file at `path`, when a
+    /// pattern selects that file, and returns where the file is in the cache
+    /// for the caller to link to. Returns `None` when the path is not
+    /// selected. Only patterns select files.
+    pub async fn prepare_file(
+        &self,
+        path: &Path,
+        digest: DigestInfo,
+        is_executable: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<Option<PathBuf>, Error> {
+        if matches!(self.selection, Selection::Exact(_)) || !self.selects(path) {
+            return Ok(None);
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Ok(None);
+        };
+        let directory = self
+            .cache
+            .prepare_file_for_mount(name, digest, is_executable, lease)
+            .await?;
+        // The link outlives the worker's current directory only if absolute.
+        let target = nativelink_util::fs::canonicalize(directory.path())
+            .await
+            .err_tip(|| {
+                format!(
+                    "Resolving read-only input file {}",
+                    directory.path().display()
+                )
+            })?
+            .join(name);
+        self.prepared_files.lock().push(directory);
+        Ok(Some(target))
     }
 
     /// Resolve a program in a prepared mount before the child namespace exists.

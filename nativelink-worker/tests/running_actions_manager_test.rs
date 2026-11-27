@@ -525,7 +525,10 @@ mod tests {
                 active_input_leases: true,
                 directory_cache: None,
             })?
-            .with_readonly_input_symlinks(&["**/*.runfiles/sdk".into()], cache.clone())?,
+            .with_readonly_input_symlinks(
+                &["**/*.runfiles/sdk".into(), "tools/*.sh".into()],
+                cache.clone(),
+            )?,
         );
         let tool = Bytes::from_static(
             b"#!/bin/sh\nif [ $# -gt 0 ]; then printf sdk-content > \"$1\"; else printf sdk-content; fi",
@@ -568,7 +571,26 @@ mod tests {
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
+        // A standalone script, selected as a file, next to one that is not.
+        let tools_digest = serialize_and_upload_message(
+            &Directory {
+                files: ["run.sh", "unselected"]
+                    .into_iter()
+                    .map(|name| FileNode {
+                        name: name.into(),
+                        digest: Some(tool_digest.into()),
+                        is_executable: true,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
         let cache_root = fs::canonicalize(&cache_root).await?;
+        let mut script_identity = None;
         // Each file's identity as macOS sees it: (inode, ctime seconds, ctime nanos).
         let mut identities = None;
         for i in 0..6 {
@@ -592,10 +614,16 @@ mod tests {
             .await?;
             let input_digest = serialize_and_upload_message(
                 &Directory {
-                    directories: vec![DirectoryNode {
-                        name: "bin".into(),
-                        digest: Some(bin_digest.into()),
-                    }],
+                    directories: vec![
+                        DirectoryNode {
+                            name: "bin".into(),
+                            digest: Some(bin_digest.into()),
+                        },
+                        DirectoryNode {
+                            name: "tools".into(),
+                            digest: Some(tools_digest.into()),
+                        },
+                    ],
                     ..Default::default()
                 },
                 cas.as_pin(),
@@ -631,11 +659,8 @@ mod tests {
                         // Execute the linked tool directly, also from a nested cwd.
                         4 => vec![format!("./{a}/tool"), "result".into()],
                         5 => vec![format!("../{a}/tool"), "result".into()],
-                        _ => vec![
-                            "/bin/sh".into(),
-                            "-c".into(),
-                            format!("./{a}/tool > result"),
-                        ],
+                        // The script selected as a file runs through its symlink.
+                        _ => vec!["./tools/run.sh".into(), "result".into()],
                     },
                     working_directory: match i {
                         3 => a.clone(),
@@ -703,12 +728,35 @@ mod tests {
                     "action {i}: files must keep their inode and change time"
                 );
             }
+            let script = work_directory.join("tools/run.sh");
+            assert!(
+                fs::symlink_metadata(&script)
+                    .await?
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(fs::read_link(&script).await?.starts_with(&cache_root));
+            let metadata = fs::metadata(&script).await?;
+            assert_eq!(metadata.nlink(), 1);
+            let identity = (metadata.ino(), metadata.ctime(), metadata.ctime_nsec());
+            assert_eq!(
+                *script_identity.get_or_insert(identity),
+                identity,
+                "action {i}: the script must keep its inode and change time"
+            );
+            let unselected = work_directory.join("tools/unselected");
+            assert!(
+                fs::symlink_metadata(&unselected)
+                    .await?
+                    .file_type()
+                    .is_file()
+            );
             assert_eq!(
                 cache.stats().await.entries,
-                1,
-                "every match shares one entry"
+                2,
+                "one entry for the SDK and one for the script"
             );
-            assert_eq!(cache.stats().await.in_use_entries, 1);
+            assert_eq!(cache.stats().await.in_use_entries, 2);
             let result = action
                 .clone()
                 .execute()

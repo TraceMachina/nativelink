@@ -607,6 +607,47 @@ impl DirectoryCache {
         digest: DigestInfo,
         lease: Option<&dyn DigestLease>,
     ) -> Result<PreparedDirectory, Error> {
+        self.prepare_entry(digest, None, lease).await
+    }
+
+    /// Acquires a reusable tree that holds one file, named `name`, without
+    /// copying it to an action workspace. The tree is the `Directory` with
+    /// that file alone and is keyed by that `Directory`'s digest, so it is
+    /// shared by every input file with the same name, content and executable
+    /// bit, wherever it sits in an input tree. The returned handle must
+    /// outlive every use of the file's path.
+    pub async fn prepare_file_for_mount(
+        &self,
+        name: &str,
+        file_digest: DigestInfo,
+        is_executable: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: name.to_owned(),
+                digest: Some(file_digest.into()),
+                is_executable,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut hasher = default_digest_hasher_func().hasher();
+        hasher.update(&directory.encode_to_vec());
+        let digest = hasher.finalize_digest();
+        // The `Directory` need not be in the CAS: construction reads it here.
+        let protos = HashMap::from([(digest, directory)]);
+        self.prepare_entry(digest, Some(&protos), lease).await
+    }
+
+    /// Returns a pinned entry for `digest`, building it if needed. `protos`
+    /// holds `Directory` messages construction should use before the CAS.
+    async fn prepare_entry(
+        &self,
+        digest: DigestInfo,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
         if let Some(prepared) = self.acquire_entry(&digest).await {
@@ -632,7 +673,8 @@ impl DirectoryCache {
             nativelink_util::metrics::INPUT_MOUNT_METRICS
                 .cache_misses
                 .add(1, &[]);
-            self.construct_entry(digest, None, true, lease).await
+            self.construct_entry(digest, protos, protos.is_none(), lease)
+                .await
         };
         self.forget_construction_lock(&digest).await;
         result

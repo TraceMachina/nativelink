@@ -1932,6 +1932,12 @@ async fn pattern_selection_reads_only_candidate_directories() -> Result<(), Erro
     })
     .await?;
     let root = upload(&ProtoDirectory {
+        files: vec![FileNode {
+            name: "run.sh".into(),
+            digest: Some(DigestInfo::new([7; 32], 3).into()),
+            is_executable: true,
+            ..Default::default()
+        }],
         directories: vec![node("out", out), node("unrelated", proto_digest(&absent))],
         ..Default::default()
     })
@@ -1950,6 +1956,10 @@ async fn pattern_selection_reads_only_candidate_directories() -> Result<(), Erro
     assert!(matching("out/*/sdk").await?);
     assert!(matching("out/**/sdk").await?);
     assert!(matching("out/**/k8-*").await?);
+    // Files match as directories do, and are found without reading them.
+    assert!(matching("run.sh").await?);
+    assert!(matching("*.sh").await?);
+    assert!(!matching("out/*.sh").await?);
     assert!(!matching("out/*/absent").await?);
     assert!(!matching("out/sdk").await?);
     assert!(!matching("elsewhere/**/sdk").await?);
@@ -2065,6 +2075,51 @@ async fn sealed_entries_have_private_inodes_and_readonly_directories() -> Result
         .is_none()
     );
     drop(selective);
+
+    // A single file is a sealed tree of its own, shared by every input with
+    // that name, content and executable bit, wherever it sits.
+    let script = DigestInfo::new([42; 32], 9);
+    slow.update_oneshot(script, Bytes::from_static(b"#!/bin/sh\n"))
+        .await?;
+    let file_mounts = InputMounts::for_patterns(
+        cache.clone(),
+        Arc::new(PathPatterns::parse(&["**/run.sh".into()])?),
+        Path::new("/action"),
+        &Command {
+            output_paths: vec!["out/run.sh".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let linked = file_mounts
+        .prepare_file(Path::new("/action/tools/run.sh"), script, true, None)
+        .await?
+        .expect("a matching file is selected");
+    assert_eq!(linked.file_name().unwrap(), "run.sh");
+    assert_eq!(tokio::fs::read(&linked).await?, b"#!/bin/sh\n");
+    let metadata = tokio::fs::metadata(&linked).await?;
+    assert_eq!(metadata.nlink(), 1);
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o555);
+    let elsewhere = file_mounts
+        .prepare_file(Path::new("/action/other/bin/run.sh"), script, true, None)
+        .await?
+        .unwrap();
+    assert_eq!(elsewhere, linked, "the same file is one entry");
+    let plain = file_mounts
+        .prepare_file(Path::new("/action/data/run.sh"), script, false, None)
+        .await?
+        .unwrap();
+    assert_ne!(plain, linked, "the executable bit is part of the identity");
+    for unselected in ["/action/out/run.sh", "/action/tools/other.sh"] {
+        assert!(
+            file_mounts
+                .prepare_file(Path::new(unselected), script, true, None)
+                .await?
+                .is_none(),
+            "{unselected}"
+        );
+    }
+    drop(file_mounts);
 
     // With every pin released, a second tree evicts the first, and the
     // read-only directories do not stop it from being deleted.

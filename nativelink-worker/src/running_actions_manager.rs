@@ -1939,6 +1939,29 @@ fn collect_download_links<'a>(
             if let Some(input_lease) = &input_lease {
                 input_lease.lease_digest(&digest);
             }
+            // A file selected for reuse is one symlink to a copy that keeps
+            // its inode across actions. A file that needs metadata stamped
+            // on it, or has no content to share, is never selected.
+            #[cfg(target_family = "unix")]
+            if let Some(mounts) = &input_mounts
+                && mtime.is_none()
+                && custom_unix_mode.is_none()
+                && !is_zero_digest(digest)
+            {
+                let lease = input_lease
+                    .as_deref()
+                    .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease });
+                if let Some(target) = mounts
+                    .prepare_file(Path::new(&dest), digest, is_executable, lease)
+                    .await?
+                {
+                    inline_nodes.push(InlineNode::Symlink {
+                        target: target.to_string_lossy().into_owned(),
+                        dst: dest,
+                    });
+                    continue;
+                }
+            }
             // Hot path: nothing to stamp, so the file needs nothing from the
             // walk beyond its digest. Hand it up unresolved and let the caller
             // resolve and link the whole tree in one batch.
