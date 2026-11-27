@@ -123,8 +123,8 @@ queued and the scheduler logs `Unknown platform property`, so a typo stalls visi
 
 ## GPU-aware scheduling [#gpu-aware-scheduling]
 
-NativeLink routes GPU actions to GPU workers. There is no GPU driver or CUDA
-integration in the scheduler; GPUs are first-class in the sense that the scheduler
+NativeLink routes GPU actions to GPU workers. The scheduler has no GPU driver or CUDA
+integration; GPUs are first-class in the sense that the scheduler
 matches, counts and sizes them through the same property mechanism as everything
 else. Three pieces exist.
 
