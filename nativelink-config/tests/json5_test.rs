@@ -19,61 +19,26 @@ use std::path::{Path, PathBuf};
 use nativelink_config::cas_server::CasConfig;
 use tracing_test::traced_test;
 
-/// Examples that are deliberately incomplete and only need to *parse*.
+/// Directories, relative to the repository root, whose configs are checked.
+const CONFIG_DIRS: &[&str] = &[
+    "nativelink-config/examples",
+    "deployment-examples",
+    "integration_tests",
+    "kubernetes",
+];
+
+/// Configs that are deliberately incomplete and only need to *parse*.
 ///
 /// `validate_references` is as strict as startup: a reference into an empty
 /// registry, or a dangling `ref_store` inside an unused store, is an error.
-/// These two files exist to exercise the parser, not to boot, so they are
-/// expected to fail reference validation. If one of them ever starts to pass,
-/// it has become a complete deployment config and should be removed from this
+/// This file exists to exercise the parser, not to boot, so it is expected to
+/// fail reference validation. If a file listed here ever starts to pass, it
+/// has become a complete deployment config and should be removed from this
 /// list so it is held to the same standard as the rest.
 const PARSE_ONLY_FRAGMENTS: &[&str] = &[
     // Generated store catalog; carries placeholder `ref_store` names.
     "stores-config.json5",
 ];
-
-#[test]
-fn test_example_parsing() {
-    let mut examples_path = Path::new(".")
-        .canonicalize()
-        .expect("Can canonicalize current dir");
-
-    if examples_path.join("nativelink-config").exists() {
-        // inside bazel
-        examples_path = examples_path.join("nativelink-config");
-    }
-    examples_path = examples_path.join("examples");
-
-    let mut found_at_least_one_entry = false;
-
-    for entry in fs::read_dir(&examples_path)
-        .unwrap_or_else(|e| panic!("Failed to read from {examples_path:?}: {e}"))
-    {
-        let config_file = entry.unwrap().path().display().to_string();
-        if !config_file.contains(".json5") {
-            continue;
-        }
-        let config = CasConfig::try_from_json5_file(&config_file)
-            .unwrap_or_else(|e| panic!("Error while reading {config_file}: {e}"));
-        let file_name = Path::new(&config_file)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if PARSE_ONLY_FRAGMENTS.contains(&file_name) {
-            assert!(
-                config.validate_references().is_err(),
-                "{config_file} passes reference validation; remove it from PARSE_ONLY_FRAGMENTS"
-            );
-        } else {
-            config
-                .validate_references()
-                .unwrap_or_else(|e| panic!("Unresolved reference in {config_file}: {e}"));
-        }
-        found_at_least_one_entry = true;
-    }
-
-    assert!(found_at_least_one_entry);
-}
 
 /// The one config allowed to use the deprecated map format. It exists to show
 /// that shape to people migrating, so it must keep using it.
@@ -112,19 +77,17 @@ fn json5_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Every config in [`CONFIG_DIRS`] must parse and pass reference validation
+/// (except [`PARSE_ONLY_FRAGMENTS`]), and must not use the deprecated map
+/// format (except [`LEGACY_CONFIG`], which must).
 #[test]
 #[traced_test]
-fn test_only_legacy_config_uses_deprecated_format() {
+fn test_all_configs() {
     let root = repo_root();
-    let configs: Vec<PathBuf> = [
-        "nativelink-config/examples",
-        "deployment-examples",
-        "integration_tests",
-        "kubernetes",
-    ]
-    .iter()
-    .flat_map(|dir| json5_files(&root.join(dir)))
-    .collect();
+    let configs: Vec<PathBuf> = CONFIG_DIRS
+        .iter()
+        .flat_map(|dir| json5_files(&root.join(dir)))
+        .collect();
     assert!(
         configs.iter().any(|path| path.ends_with(LEGACY_CONFIG)),
         "{LEGACY_CONFIG} not found under {}",
@@ -147,15 +110,33 @@ fn test_only_legacy_config_uses_deprecated_format() {
     };
 
     let mut seen = 0;
-    for config in &configs {
-        let config_file = config.display().to_string();
-        CasConfig::try_from_json5_file(&config_file)
-            .unwrap_or_else(|e| panic!("Error while reading {config_file}: {e}"));
-        let name = config.strip_prefix(&root).unwrap_or(config).display();
+    for config_path in &configs {
+        let name = config_path
+            .strip_prefix(&root)
+            .unwrap_or(config_path)
+            .display();
+        let config = CasConfig::try_from_json5_file(&config_path.display().to_string())
+            .unwrap_or_else(|e| panic!("Error while reading {name}: {e}"));
+
+        let file_name = config_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if PARSE_ONLY_FRAGMENTS.contains(&file_name) {
+            assert!(
+                config.validate_references().is_err(),
+                "{name} passes reference validation; remove it from PARSE_ONLY_FRAGMENTS"
+            );
+        } else {
+            config
+                .validate_references()
+                .unwrap_or_else(|e| panic!("Unresolved reference in {name}: {e}"));
+        }
+
         let total = notices_so_far();
         let added = total - seen;
         seen = total;
-        if config.ends_with(LEGACY_CONFIG) {
+        if file_name == LEGACY_CONFIG {
             assert!(
                 added > 0,
                 "{name} no longer uses the deprecated map format it exists to show"
