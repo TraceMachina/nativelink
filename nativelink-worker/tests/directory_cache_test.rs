@@ -1828,3 +1828,319 @@ async fn mount_selection_requires_an_input_directory() -> Result<(), Error> {
     assert!(!has_mountable_inputs(&cas, digest, &["alias".into()], None).await?);
     Ok(())
 }
+
+#[nativelink_test]
+async fn readonly_input_patterns_match_paths() -> Result<(), Error> {
+    use nativelink_worker::input_mounts::PathPatterns;
+
+    for invalid in [
+        "", "/sdk", "../sdk", "sdk/../x", "sdk//x", "./sdk", "sdk/", "sdk\\x", "sdk\0", "**",
+        "sdk/**", "a/**b/c", "a/b**/c",
+    ] {
+        assert!(
+            PathPatterns::parse(&[invalid.to_owned()]).is_err(),
+            "{invalid:?}"
+        );
+    }
+    assert!(PathPatterns::parse(&[])?.is_empty());
+
+    let patterns = PathPatterns::parse(&[
+        "external/sdk".into(),
+        "bazel-out/**/*.runfiles/*python_3_11*".into(),
+        "tools/*/bin".into(),
+    ])?;
+    for path in [
+        "external/sdk",
+        "bazel-out/k8/bin/t.runfiles/rules_python++python_3_11_aarch64",
+        "bazel-out/k8/bin/pkg/sub/t.runfiles/python_3_11",
+        // `**` also matches no directories at all.
+        "bazel-out/t.runfiles/python_3_11",
+        "tools/a/bin",
+    ] {
+        assert!(patterns.matches(Path::new(path)), "{path}");
+    }
+    for path in [
+        "external",
+        "external/sdk/include",
+        "external/sdk2",
+        "other/external/sdk",
+        "bazel-out/k8/bin/t.runfiles",
+        "bazel-out/k8/bin/t.runfiles/python_3_12",
+        "bazel-out/k8/bin/t.runfiles/_main/python_3_11",
+        "tools/bin",
+        "tools/a/b/bin",
+    ] {
+        assert!(!patterns.matches(Path::new(path)), "{path}");
+    }
+
+    // `*` may match nothing, may appear more than once, and never crosses `/`.
+    let stars = PathPatterns::parse(&["a*b*c".into(), "*".into()])?;
+    for (path, expected) in [
+        ("abc", true),
+        ("a-b-c", true),
+        ("abcbc", true),
+        ("ab", true),
+        ("a-b", true),
+        ("a/b/c", false),
+    ] {
+        assert_eq!(stars.matches(Path::new(path)), expected, "{path}");
+    }
+
+    // A walk can stop descending as soon as no pattern can match below.
+    let states = patterns.start();
+    assert!(!states.descend("external").is_dead());
+    assert!(states.descend("other").is_dead());
+    assert!(states.descend("external").descend("sdk").is_match());
+    assert!(states.descend("external").descend("sdk").is_dead());
+    let runfiles = states.descend("bazel-out").descend("a").descend("b");
+    assert!(!runfiles.is_dead() && !runfiles.is_match());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn pattern_selection_reads_only_candidate_directories() -> Result<(), Error> {
+    use nativelink_worker::input_mounts::{PathPatterns, has_matching_inputs};
+
+    let store = MemoryStore::new(&MemorySpec::default());
+    let upload = async |directory: &ProtoDirectory| {
+        store
+            .update_oneshot(proto_digest(directory), directory.encode_to_vec().into())
+            .await
+            .map(|()| proto_digest(directory))
+    };
+    // Neither the SDK's contents nor the unrelated tree are in the store:
+    // selection has to decide without reading either.
+    let absent = ProtoDirectory {
+        directories: vec![DirectoryNode {
+            name: "never-read".into(),
+            digest: Some(proto_digest(&ProtoDirectory::default()).into()),
+        }],
+        ..Default::default()
+    };
+    let node = |name: &str, digest: DigestInfo| DirectoryNode {
+        name: name.into(),
+        digest: Some(digest.into()),
+    };
+    let config = upload(&ProtoDirectory {
+        directories: vec![node("sdk", proto_digest(&absent))],
+        ..Default::default()
+    })
+    .await?;
+    let out = upload(&ProtoDirectory {
+        directories: vec![node("k8-opt", config)],
+        ..Default::default()
+    })
+    .await?;
+    let root = upload(&ProtoDirectory {
+        files: vec![FileNode {
+            name: "run.sh".into(),
+            digest: Some(DigestInfo::new([7; 32], 3).into()),
+            is_executable: true,
+            ..Default::default()
+        }],
+        directories: vec![node("out", out), node("unrelated", proto_digest(&absent))],
+        ..Default::default()
+    })
+    .await?;
+    let cas = make_cas_store(store.clone()).await;
+    let matching = async |pattern: &str| {
+        has_matching_inputs(
+            &cas,
+            root,
+            &PathPatterns::parse(&[pattern.to_owned()])?,
+            None,
+        )
+        .await
+    };
+    assert!(matching("out/k8-opt/sdk").await?);
+    assert!(matching("out/*/sdk").await?);
+    assert!(matching("out/**/sdk").await?);
+    assert!(matching("out/**/k8-*").await?);
+    // Files match as directories do, and are found without reading them.
+    assert!(matching("run.sh").await?);
+    assert!(matching("*.sh").await?);
+    assert!(!matching("out/*.sh").await?);
+    assert!(!matching("out/*/absent").await?);
+    assert!(!matching("out/sdk").await?);
+    assert!(!matching("elsewhere/**/sdk").await?);
+    // A leading `**` has to look everywhere, including where it cannot read.
+    assert!(matching("**/absent").await.is_err());
+    Ok(())
+}
+
+/// A sealed cache builds trees that are used in place: no file shares an
+/// inode with the CAS, no directory accepts new entries, and the trees are
+/// still evicted and deleted like any other.
+#[cfg(unix)]
+#[nativelink_test]
+async fn sealed_entries_have_private_inodes_and_readonly_directories() -> Result<(), Error> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    use nativelink_proto::build::bazel::remote::execution::v2::Command;
+    use nativelink_worker::input_mounts::{InputMounts, PathPatterns};
+
+    let slow = MemoryStore::new(&MemorySpec::default());
+    let (first_root, _, content) = seed_simple_nested(&slow, 10).await?;
+    let (second_root, _, _) = seed_simple_nested(&slow, 20).await?;
+    let cache_root = PathBuf::from(make_temp_path("sealed_cache"));
+    let config = DirectoryCacheConfig {
+        max_entries: 1,
+        cache_root: cache_root.clone(),
+        ..Default::default()
+    };
+    assert!(
+        DirectoryCache::new_sealed(
+            DirectoryCacheConfig {
+                experimental_subtree_caching: true,
+                ..config.clone()
+            },
+            make_cas_store(slow.clone()).await,
+        )
+        .await
+        .is_err(),
+        "sealed entries cannot be assembled from other entries"
+    );
+    let cache =
+        Arc::new(DirectoryCache::new_sealed(config, make_cas_store(slow.clone()).await).await?);
+
+    let first = cache.prepare_for_mount(first_root, None).await?;
+    let first_path = first.path().to_owned();
+    let file = first_path.join("mid/leaf/a.txt");
+    assert_eq!(tokio::fs::read(&file).await?, content);
+    let metadata = tokio::fs::metadata(&file).await?;
+    assert_eq!(
+        metadata.nlink(),
+        1,
+        "the file must not be a link to the CAS"
+    );
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o444);
+    for directory in ["", "mid", "mid/leaf"] {
+        let mode = tokio::fs::metadata(first_path.join(directory))
+            .await?
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o555, "{directory:?}");
+    }
+    // A second user gets the same tree, not a rebuilt one.
+    let again = cache.prepare_for_mount(first_root, None).await?;
+    assert_eq!(again.path(), first_path);
+    assert_eq!(tokio::fs::metadata(&file).await?.ino(), metadata.ino());
+
+    assert!(
+        cache
+            .get_or_create(first_root, &cache_root.join("copy"))
+            .await
+            .is_err(),
+        "sealed entries are never copied into an action"
+    );
+
+    // Matching is per directory: only one that the command neither works
+    // inside nor writes into is prepared.
+    let patterns = Arc::new(PathPatterns::parse(&["**/sdk".into()])?);
+    let mounts = |command: Command| {
+        InputMounts::for_patterns(
+            cache.clone(),
+            patterns.clone(),
+            Path::new("/action"),
+            &command,
+        )
+    };
+    let selective = mounts(Command {
+        working_directory: "a/sdk/mid".into(),
+        output_paths: vec!["../../../b/sdk/generated".into(), "result".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    for (path, selected) in [
+        ("/action/c/sdk", true),
+        ("/action/sdk", true),
+        ("/action/a/sdk", false),
+        ("/action/b/sdk", false),
+        ("/action/c/other", false),
+        ("/action", false),
+        ("/elsewhere/sdk", false),
+    ] {
+        assert_eq!(
+            selective.prepare(Path::new(path), first_root, None).await?,
+            selected,
+            "{path}"
+        );
+    }
+    // A command whose outputs cannot be placed in the input root gets none.
+    assert!(
+        mounts(Command {
+            output_paths: vec!["../escape".into()],
+            ..Default::default()
+        })
+        .is_none()
+    );
+    drop(selective);
+
+    // A single file is a sealed tree of its own, shared by every input with
+    // that name, content and executable bit, wherever it sits.
+    let script = DigestInfo::new([42; 32], 9);
+    slow.update_oneshot(script, Bytes::from_static(b"#!/bin/sh\n"))
+        .await?;
+    let file_mounts = InputMounts::for_patterns(
+        cache.clone(),
+        Arc::new(PathPatterns::parse(&["**/run.sh".into()])?),
+        Path::new("/action"),
+        &Command {
+            output_paths: vec!["out/run.sh".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let linked = file_mounts
+        .prepare_file(Path::new("/action/tools/run.sh"), script, true, None)
+        .await?
+        .expect("a matching file is selected");
+    assert_eq!(linked.file_name().unwrap(), "run.sh");
+    assert_eq!(tokio::fs::read(&linked).await?, b"#!/bin/sh\n");
+    let metadata = tokio::fs::metadata(&linked).await?;
+    assert_eq!(metadata.nlink(), 1);
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o555);
+    let elsewhere = file_mounts
+        .prepare_file(Path::new("/action/other/bin/run.sh"), script, true, None)
+        .await?
+        .unwrap();
+    assert_eq!(elsewhere, linked, "the same file is one entry");
+    let plain = file_mounts
+        .prepare_file(Path::new("/action/data/run.sh"), script, false, None)
+        .await?
+        .unwrap();
+    assert_ne!(plain, linked, "the executable bit is part of the identity");
+    for unselected in ["/action/out/run.sh", "/action/tools/other.sh"] {
+        assert!(
+            file_mounts
+                .prepare_file(Path::new(unselected), script, true, None)
+                .await?
+                .is_none(),
+            "{unselected}"
+        );
+    }
+    drop(file_mounts);
+
+    // With every pin released, a second tree evicts the first, and the
+    // read-only directories do not stop it from being deleted.
+    drop((first, again));
+    let second = cache.prepare_for_mount(second_root, None).await?;
+    assert!(second.path().join("mid/leaf/a.txt").is_file());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut entries = tokio::fs::read_dir(&cache_root).await.unwrap();
+            let mut count = 0;
+            while entries.next_entry().await.unwrap().is_some() {
+                count += 1;
+            }
+            if count == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the evicted sealed tree must be deleted");
+    assert!(!first_path.exists());
+    Ok(())
+}

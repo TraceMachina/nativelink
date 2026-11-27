@@ -1745,6 +1745,76 @@ pub struct LocalWorkerConfig {
     #[serde(default)]
     pub experimental_readonly_input_mounts: Vec<String>,
 
+    /// Reuse immutable input directories and files through symlinks on macOS.
+    /// The worker builds each selected directory once per REAPI `Directory`
+    /// digest in a cache of its own, then places one symlink to that entry in
+    /// each action instead of recreating the directory's files.
+    ///
+    /// macOS caches its exec-time malware assessment (Gatekeeper and
+    /// `XProtect`) per file, keyed on the inode and its change time, never on
+    /// content. A clone or copy of a toolchain binary or library is a new
+    /// inode and is assessed again in every action; a new hardlink moves the
+    /// change time and is re-evaluated. Files reached through a symlink keep
+    /// both, so each is assessed once for as long as its entry lives.
+    ///
+    /// Each value is a pattern over paths relative to the action input root,
+    /// with components separated by `/`. `*` inside a component matches any
+    /// run of characters, and a component that is exactly `**` matches any
+    /// number of directories, including none. For example
+    /// `["external/*python_3_11*", "bazel-out/**/*.runfiles/*python_3_11*"]`
+    /// selects a Bazel Python toolchain both as a tool and in each test's
+    /// runfiles. Patterns must be nonempty and canonical, and cannot end in
+    /// `**`. A directory below a selected one is never selected separately.
+    /// A pattern with `**` makes the worker read `Directory` messages across
+    /// the input tree until the first match; keep the prefix before it
+    /// specific.
+    ///
+    /// A pattern selects files as well as directories. A selected file is
+    /// one symlink to a copy that keeps its inode across actions, shared by
+    /// every input with the same name, content and executable bit. Select
+    /// only files that stand alone: a script, or a binary that finds nothing
+    /// relative to its own location. A binary that loads libraries through
+    /// `@executable_path` or `@loader_path` resolves them next to the copy in
+    /// the cache, where they are not; select its directory instead. Files
+    /// that carry a modification time or mode of their own in the input tree
+    /// are never selected.
+    ///
+    /// Select self-contained directories that many actions share unchanged,
+    /// such as a hermetic interpreter. A selected directory the action works
+    /// inside, or that overlaps one of its declared outputs, is materialized
+    /// the ordinary way for that action. Actions that use a persistent worker
+    /// or match no pattern keep their ordinary input setup, as does an action
+    /// whose selected directory cannot be prepared. In an action with a
+    /// selected directory, the other inputs are hardlinked from the CAS and
+    /// the `directory_cache` is not used.
+    ///
+    /// Unlike a bind mount, a symlink is visible to the action. Resolving a
+    /// path inside a selected directory (`realpath`) yields the cache path,
+    /// and `..` from inside it leads into the cache, not the action
+    /// directory, so a tool that locates siblings of the directory that way
+    /// does not find them. The cache path is the same for every action and
+    /// depends only on the worker's configuration and the directory's digest.
+    ///
+    /// Entries are sealed: every file has an inode of its own, shared with
+    /// neither the CAS nor any action, and every directory is read-only. An
+    /// action that tries to add a file to a selected directory fails to. This
+    /// is not a security boundary: an action runs as the worker's user and
+    /// can change the modes back. Use it with trusted workloads.
+    ///
+    /// The cache is stored next to `directory_cache`'s `cache_root` (or where
+    /// that would default to), with `_readonly_inputs` appended, and takes
+    /// `max_entries`, `max_size_bytes` and `max_concurrent_fetches` from
+    /// `directory_cache` when it is configured, their defaults otherwise.
+    /// Where the cache and the CAS share an APFS volume, entries are clones
+    /// of the CAS files and use no extra space for file data. Entries stay
+    /// pinned until action cleanup and may temporarily exceed the eviction
+    /// budget. An evicted entry is rebuilt with new inodes and assessed
+    /// again, as is every entry after a worker restart.
+    ///
+    /// Default: [] (disabled)
+    #[serde(default)]
+    pub experimental_readonly_input_symlinks: Vec<String>,
+
     /// Whether to use namespaces to isolate the execution. This is only available
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set

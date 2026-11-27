@@ -243,6 +243,8 @@ impl Drop for ScratchGuard {
 pub struct DirectoryCache {
     /// Configuration
     config: DirectoryCacheConfig,
+    /// Whether entries are sealed; see [`Self::new_sealed`].
+    sealed: bool,
     /// Cache mapping digest -> metadata
     cache: Arc<RwLock<HashMap<DigestInfo, CachedDirectoryMetadata>>>,
     /// Lock for cache construction to prevent stampedes
@@ -319,11 +321,41 @@ impl DirectoryCache {
         config: DirectoryCacheConfig,
         cas_store: Arc<FastSlowStore>,
     ) -> Result<Self, Error> {
+        Self::new_inner(config, cas_store, false).await
+    }
+
+    /// Creates a `DirectoryCache` whose entries are used in place, through
+    /// [`Self::prepare_for_mount`], and never copied into an action: every
+    /// file gets a private inode, shared with neither the CAS nor any action,
+    /// and every directory is read-only once populated. Nothing an action or
+    /// another materialization does can then change a file's metadata, and
+    /// an action cannot add to a tree by accident. Files are cloned from the
+    /// CAS where the filesystem allows it, whatever
+    /// `experimental_clone_executables` says, and copied otherwise.
+    /// Incompatible with `experimental_subtree_caching`.
+    pub async fn new_sealed(
+        config: DirectoryCacheConfig,
+        cas_store: Arc<FastSlowStore>,
+    ) -> Result<Self, Error> {
+        Self::new_inner(config, cas_store, true).await
+    }
+
+    async fn new_inner(
+        config: DirectoryCacheConfig,
+        cas_store: Arc<FastSlowStore>,
+        sealed: bool,
+    ) -> Result<Self, Error> {
         // A zero-permit semaphore would deadlock every construction.
         if config.max_concurrent_fetches == 0 {
             return Err(make_err!(
                 Code::InvalidArgument,
                 "directory_cache max_concurrent_fetches must be greater than 0"
+            ));
+        }
+        if sealed && config.experimental_subtree_caching {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "A sealed directory cache cannot use experimental_subtree_caching"
             ));
         }
         let max_concurrent_fetches = config.max_concurrent_fetches;
@@ -351,7 +383,7 @@ impl DirectoryCache {
         }
 
         #[cfg(target_os = "macos")]
-        let clone_executables = config.experimental_clone_executables
+        let clone_executables = (config.experimental_clone_executables || sealed)
             && if let Some(filesystem_store) = &filesystem_store {
                 Self::probe_clone_executables(filesystem_store, &config.cache_root).await
             } else {
@@ -371,6 +403,7 @@ impl DirectoryCache {
 
         let cache = Self {
             config,
+            sealed,
             cache: Arc::new(RwLock::new(HashMap::new())),
             construction_locks: Arc::new(Mutex::new(HashMap::new())),
             cas_store,
@@ -574,6 +607,47 @@ impl DirectoryCache {
         digest: DigestInfo,
         lease: Option<&dyn DigestLease>,
     ) -> Result<PreparedDirectory, Error> {
+        self.prepare_entry(digest, None, lease).await
+    }
+
+    /// Acquires a reusable tree that holds one file, named `name`, without
+    /// copying it to an action workspace. The tree is the `Directory` with
+    /// that file alone and is keyed by that `Directory`'s digest, so it is
+    /// shared by every input file with the same name, content and executable
+    /// bit, wherever it sits in an input tree. The returned handle must
+    /// outlive every use of the file's path.
+    pub async fn prepare_file_for_mount(
+        &self,
+        name: &str,
+        file_digest: DigestInfo,
+        is_executable: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        let directory = ProtoDirectory {
+            files: vec![FileNode {
+                name: name.to_owned(),
+                digest: Some(file_digest.into()),
+                is_executable,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut hasher = default_digest_hasher_func().hasher();
+        hasher.update(&directory.encode_to_vec());
+        let digest = hasher.finalize_digest();
+        // The `Directory` need not be in the CAS: construction reads it here.
+        let protos = HashMap::from([(digest, directory)]);
+        self.prepare_entry(digest, Some(&protos), lease).await
+    }
+
+    /// Returns a pinned entry for `digest`, building it if needed. `protos`
+    /// holds `Directory` messages construction should use before the CAS.
+    async fn prepare_entry(
+        &self,
+        digest: DigestInfo,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
         if let Some(prepared) = self.acquire_entry(&digest).await {
@@ -599,7 +673,8 @@ impl DirectoryCache {
             nativelink_util::metrics::INPUT_MOUNT_METRICS
                 .cache_misses
                 .add(1, &[]);
-            self.construct_entry(digest, None, true, lease).await
+            self.construct_entry(digest, protos, protos.is_none(), lease)
+                .await
         };
         self.forget_construction_lock(&digest).await;
         result
@@ -626,6 +701,12 @@ impl DirectoryCache {
         prefetch_on_miss: bool,
         lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
+        if self.sealed {
+            return Err(make_err!(
+                Code::Internal,
+                "Sealed directory cache entries are used in place, not copied"
+            ));
+        }
         self.maybe_log_summary();
         acquire_digest(lease, &digest);
 
@@ -905,11 +986,18 @@ impl DirectoryCache {
     /// destinations before a retry, partially built temp trees after a
     /// failed construction, and stale crash leftovers before publishing.
     async fn remove_tree_best_effort(path: &Path) {
-        if let Err(e) = fs::remove_dir_all(path).await
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            warn!(?path, error = ?e, "Failed to remove partial directory tree");
+        let Err(e) = fs::remove_dir_all(path).await else {
+            return;
+        };
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return;
         }
+        // A sealed tree's directories are read-only; unlock them and retry.
+        if set_dir_writable_recursive(path).await.is_ok() && fs::remove_dir_all(path).await.is_ok()
+        {
+            return;
+        }
+        warn!(?path, error = ?e, "Failed to remove partial directory tree");
     }
 
     /// Allocates a process-unique scratch path under `cache_root` (temp
@@ -1163,6 +1251,16 @@ impl DirectoryCache {
                 .try_fold(0u64, |acc, size| async move { Ok(acc + size) })
                 .await?;
 
+            // Sealed bottom-up: every child is in place before its parent
+            // stops accepting entries.
+            #[cfg(unix)]
+            if self.sealed {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(dest_path, std::fs::Permissions::from_mode(0o555))
+                    .await
+                    .err_tip(|| format!("Failed to seal directory: {}", dest_path.display()))?;
+            }
+
             Ok(total_size)
         })
     }
@@ -1252,7 +1350,7 @@ impl DirectoryCache {
                 && let Some(filesystem_store) = &self.filesystem_store
             {
                 match self
-                    .clone_cas_blob_executable(filesystem_store, &digest, &file_path)
+                    .clone_cas_blob(filesystem_store, &digest, &file_path, 0o555)
                     .await
                 {
                     Ok(()) => {
@@ -1290,6 +1388,29 @@ impl DirectoryCache {
                 }
             }
             return self.copy_file_to(&digest, &file_path, true).await;
+        }
+
+        // A sealed entry shares no inode with the CAS: a link made or removed
+        // elsewhere would move this file's change time. Clone or copy.
+        if self.sealed {
+            #[cfg(target_os = "macos")]
+            if self.clone_executables
+                && let Some(filesystem_store) = &self.filesystem_store
+                && self
+                    .clone_cas_blob(filesystem_store, &digest, &file_path, 0o444)
+                    .await
+                    .is_ok()
+            {
+                return Ok(());
+            }
+            if fs::symlink_metadata(&file_path).await.is_ok() {
+                return Err(make_err!(
+                    Code::Internal,
+                    "A rejected clone is left at {}",
+                    file_path.display()
+                ));
+            }
+            return self.copy_file_to(&digest, &file_path, false).await;
         }
 
         // Non-executable file: try to hardlink the CAS blob directly.
@@ -1350,7 +1471,7 @@ impl DirectoryCache {
 
     /// Runs `materialize` on the on-disk path of the `FilesystemStore` CAS
     /// blob for `digest`, for `hardlink_cas_blob` and
-    /// `clone_cas_blob_executable` alike, so the eviction-race discipline
+    /// `clone_cas_blob` alike, so the eviction-race discipline
     /// lives in one place: the blob is first populated into the fast tier
     /// (which may fetch from the slow store, so it holds a fetch permit),
     /// then its path is resolved and used under the entry lock, so an
@@ -1385,8 +1506,7 @@ impl DirectoryCache {
             .await
     }
 
-    /// Gives the executable `digest` its private `0o555` inode at `file_path`
-    /// by cloning the `FilesystemStore` CAS blob with APFS `clonefile(2)`
+    /// Gives `digest` a private inode with `mode` at `file_path` by cloning the `FilesystemStore` CAS blob with APFS `clonefile(2)`
     /// instead of fetching it into memory and writing it back out.
     ///
     /// A clone is a new inode that shares the blob's data blocks
@@ -1406,15 +1526,16 @@ impl DirectoryCache {
     /// clone that could not be removed is the exception, which `create_file`
     /// checks for.
     #[cfg(target_os = "macos")]
-    async fn clone_cas_blob_executable(
+    async fn clone_cas_blob(
         &self,
         filesystem_store: &FilesystemStore,
         digest: &DigestInfo,
         file_path: &Path,
+        mode: u32,
     ) -> Result<(), Error> {
         let dst = file_path.to_path_buf();
         self.with_cas_blob_path_locked(filesystem_store, digest, "clone", move |src| async move {
-            clone_file_pristine(Path::new(&src), &dst, 0o555)
+            clone_file_pristine(Path::new(&src), &dst, mode)
                 .await
                 .err_tip(|| {
                     format!(

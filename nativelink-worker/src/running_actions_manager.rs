@@ -1939,6 +1939,29 @@ fn collect_download_links<'a>(
             if let Some(input_lease) = &input_lease {
                 input_lease.lease_digest(&digest);
             }
+            // A file selected for reuse is one symlink to a copy that keeps
+            // its inode across actions. A file that needs metadata stamped
+            // on it, or has no content to share, is never selected.
+            #[cfg(target_family = "unix")]
+            if let Some(mounts) = &input_mounts
+                && mtime.is_none()
+                && custom_unix_mode.is_none()
+                && !is_zero_digest(digest)
+            {
+                let lease = input_lease
+                    .as_deref()
+                    .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease });
+                if let Some(target) = mounts
+                    .prepare_file(Path::new(&dest), digest, is_executable, lease)
+                    .await?
+                {
+                    inline_nodes.push(InlineNode::Symlink {
+                        target: target.to_string_lossy().into_owned(),
+                        dst: dest,
+                    });
+                    continue;
+                }
+            }
             // Hot path: nothing to stamp, so the file needs nothing from the
             // walk beyond its digest. Hand it up unresolved and let the caller
             // resolve and link the whole tree in one batch.
@@ -2972,6 +2995,15 @@ struct RunningActionImplState {
     input_mounts: Option<Arc<InputMounts>>,
 }
 
+/// The patterns that select input directories for reuse through symlinks,
+/// and the sealed directory cache that holds the directories they point at.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ReadonlyInputSymlinks {
+    patterns: Arc<crate::input_mounts::PathPatterns>,
+    cache: Arc<crate::directory_cache::DirectoryCache>,
+}
+
 #[derive(Debug)]
 pub struct RunningActionImpl {
     operation_id: OperationId,
@@ -3207,6 +3239,7 @@ impl RunningActionImpl {
     /// reuse; without them nothing is read, and the Command and inputs are
     /// fetched concurrently. A failure here only means ordinary input setup:
     /// the fetch that follows reads the Command and inputs with its retries.
+    #[cfg(not(target_os = "macos"))]
     async fn select_input_mounts(&self) -> Option<ProtoCommand> {
         let manager = &self.running_actions_manager;
         #[cfg(target_os = "linux")]
@@ -3268,6 +3301,67 @@ impl RunningActionImpl {
         command
     }
 
+    /// The macOS counterpart of `select_input_mounts`: chooses by pattern the
+    /// input directories this action reaches through a symlink into the
+    /// sealed directory cache. The patterns are matched as the input walk
+    /// meets each directory; this only decides whether the action takes that
+    /// walk at all, which it does when its Command can be read, it does not
+    /// use a persistent worker, and some input directory matches.
+    #[cfg(target_os = "macos")]
+    async fn select_input_mounts(&self) -> Option<ProtoCommand> {
+        let manager = &self.running_actions_manager;
+        let symlinks = manager.readonly_input_symlinks.as_ref()?;
+        let command = if action_supports_persistent_workers(&self.action_info).is_none() {
+            match self.fetch_command().await {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Reading the Command to choose input symlinks failed; using ordinary input setup"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut input_mounts = command.as_ref().and_then(|command| {
+            InputMounts::for_patterns(
+                symlinks.cache.clone(),
+                symlinks.patterns.clone(),
+                Path::new(&self.work_directory),
+                command,
+            )
+        });
+        if input_mounts.is_some() {
+            match crate::input_mounts::has_matching_inputs(
+                &manager.cas_store,
+                self.action_info.input_root_digest,
+                &symlinks.patterns,
+                self.input_lease
+                    .as_deref()
+                    .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease }),
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => input_mounts = None,
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Checking for matching inputs failed; using ordinary input setup"
+                    );
+                    input_mounts = None;
+                }
+            }
+        }
+        if input_mounts.is_none() {
+            INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
+        }
+        self.state.lock().input_mounts.clone_from(&input_mounts);
+        command
+    }
+
     /// Materializes the input tree into the work directory: through the
     /// read-only input mounts chosen for this action, which leave a mount
     /// point for each selected subtree, or else through the directory cache
@@ -3290,6 +3384,8 @@ impl RunningActionImpl {
             )
             .await;
         }
+        #[cfg(target_os = "macos")]
+        let linked_mounts = input_mounts.clone();
         let result = download_to_directory_with_mounts(
             &manager.cas_store,
             filesystem_store,
@@ -3300,6 +3396,13 @@ impl RunningActionImpl {
             downloads,
         )
         .await;
+        // The walk left an empty directory for each selected subtree, the
+        // mount point on Linux. macOS swaps it for a symlink to the entry.
+        #[cfg(target_os = "macos")]
+        let result = match (result, &linked_mounts) {
+            (Ok(()), Some(mounts)) => mounts.link_into_workspace().await,
+            (result, _) => result,
+        };
         if let Err(error) = result {
             INPUT_MOUNT_METRICS.prepare_failures.add(1, &[]);
             INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
@@ -5690,6 +5793,8 @@ pub struct RunningActionsManagerImpl {
     input_pool_hint: Option<InputPoolHint>,
     #[cfg(target_os = "linux")]
     readonly_input_mounts: Vec<String>,
+    #[cfg(target_os = "macos")]
+    readonly_input_symlinks: Option<ReadonlyInputSymlinks>,
     persistent_worker_pool: PersistentWorkerPool,
     /// Retires idle persistent workers; ends with the manager.
     _persistent_worker_sweeper: JoinHandleDropGuard<()>,
@@ -5719,6 +5824,23 @@ impl RunningActionsManagerImpl {
                 "Input fetches are failing or stalling while max_concurrent_input_downloads is unset: every action this worker stages fetches its inputs on its own, and several cold actions at once can overload the CAS and the object store behind it. Consider setting max_concurrent_input_downloads to 64 so they share one pool of fetches (logged at most every 10 minutes)"
             );
         }
+    }
+
+    /// Selects by pattern the input directories that actions reach through a
+    /// symlink into `cache`, which must be sealed; see
+    /// `experimental_readonly_input_symlinks`. No patterns turns it off.
+    #[cfg(target_os = "macos")]
+    pub fn with_readonly_input_symlinks(
+        mut self,
+        patterns: &[String],
+        cache: Arc<crate::directory_cache::DirectoryCache>,
+    ) -> Result<Self, Error> {
+        let patterns = crate::input_mounts::PathPatterns::parse(patterns)?;
+        self.readonly_input_symlinks = (!patterns.is_empty()).then(|| ReadonlyInputSymlinks {
+            patterns: Arc::new(patterns),
+            cache,
+        });
+        Ok(self)
     }
 
     pub fn new_with_callbacks(
@@ -5790,6 +5912,8 @@ impl RunningActionsManagerImpl {
             active_input_leases: args.active_input_leases,
             #[cfg(target_os = "linux")]
             readonly_input_mounts: args.readonly_input_mounts,
+            #[cfg(target_os = "macos")]
+            readonly_input_symlinks: None,
             persistent_worker_pool,
             _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),
