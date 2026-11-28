@@ -13,12 +13,57 @@ Slow build times can be a major drag on developer productivity. Waiting for your
 
 -----
 
-### What are Nativelink and Apache BuildStream?
+### What are Nativelink, Apache BuildStream and Nix?
 
   * **BuildStream** is a flexible and extensible tool for building and integrating software stacks. It creates a sandbox environment for your builds, ensuring they're reproducible and isolated.
   * **Nativelink** is a high-performance remote execution and caching service that's compatible with the Remote Execution API (REAPI). It acts as a server to store and retrieve build artifacts, and to execute build tasks on remote workers.
 
-By using them together, you can distribute your build jobs and cache their results, leading to significant speedups, especially in large projects.
+  * **Nix** is a package manager. It is optional here: the Nativelink repository uses it to run this tutorial as an automated test, and it can fetch Nativelink and BuildStream for you, but every step below also works with tools installed the ordinary way.
+
+By using Nativelink and BuildStream together, you can distribute your build jobs and cache their results, leading to significant speedups, especially in large projects.
+
+-----
+
+### Prerequisites
+
+This tutorial assumes you can write and compile a C program and are comfortable in a terminal. It does not assume you have used BuildStream, Nativelink or Nix before. Before the first step you need the following.
+
+#### A Linux machine on x86-64
+
+BuildStream runs each build inside a sandbox built on `bubblewrap` and FUSE, which are Linux features, and the Alpine base image this tutorial downloads is built for x86-64. On macOS or Windows, work inside a Linux virtual machine or a Linux container.
+
+#### BuildStream 2.4 or newer, with the BuildBox tools
+
+The `project.conf` below declares `min-version: 2.4`. If your distribution ships a `buildstream` package at 2.4 or newer, use it. Otherwise install from PyPI, which needs Python 3.11 or newer and the host tools `bubblewrap`, `fuse3`, `git`, `lzip` and `patch` from your package manager:
+
+```bash
+pip3 install --user 'BuildStream == 2.*'
+```
+
+BuildStream also needs three BuildBox programs on your `PATH`: `buildbox-casd`, `buildbox-fuse` and `buildbox-run-bubblewrap`, the last one linked as `buildbox-run`. The [BuildStream install guide](https://docs.buildstream.build/master/main_install.html) links a prebuilt x86-64 tarball of all three and lists the packages for each distribution. Confirm the install with `bst --version`.
+
+#### A Nativelink binary and a worker configuration
+
+Nativelink is one executable. Download the latest release tarball for `x86_64-unknown-linux-musl` from the [releases page](https://github.com/TraceMachina/nativelink/releases/latest), extract it and put `nativelink` on your `PATH`. Confirm it with `nativelink --version`.
+
+This tutorial uses remote execution, not only caching, so Nativelink needs a configuration that starts a worker alongside the cache. The Nativelink repository ships one for exactly this project. Look up the newest release and download its copy into your project root:
+
+```bash
+NATIVELINK_VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/TraceMachina/nativelink/releases/latest | grep -oE 'v[0-9]+(\.[0-9]+){2}$')
+: "${NATIVELINK_VERSION:?could not look up the latest release}" &&
+curl -fSLO https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/integration_tests/buildstream/buildstream_cas.json5
+```
+
+That configuration keeps its data under `/tmp/nativelink` and listens on port 50051 for BuildStream and port 50061 for its own worker, so both ports need to be free.
+
+#### Nix, if you want the one-command version
+
+Nix is only needed for the launch script at the end of this tutorial. The manual commands in the same section do the same thing without it. If you do want it, install it from [nixos.org/download](https://nixos.org/download/) and enable flakes. With Nix you can also skip the two downloads above: `nix shell nixpkgs#buildstream` gives you `bst` with the BuildBox tools, and `nix run github:TraceMachina/nativelink/${NATIVELINK_VERSION} -- buildstream_cas.json5` runs Nativelink without installing it.
+
+#### Network access and a little disk
+
+The first build downloads a 25 MB Alpine Linux image from the alias defined in `project.conf`, and BuildStream itself fetches nothing else. BuildStream caches under `/tmp/buildstream` and Nativelink under `/tmp/nativelink`, as configured below. Count on about fifteen minutes end to end.
 
 -----
 
@@ -133,7 +178,7 @@ depends:
 - base/alpine.bst
 ```
 
-####`elements/hello.bst`
+#### `elements/hello.bst`
 
 Finally, create the element for our "hello, world" application in `elements/hello.bst`. This element specifies how to build our application.
 
@@ -191,17 +236,32 @@ This configuration tells BuildStream to connect to a Nativelink instance running
 
 ### Running the Build
 
-We'll use a script to launch the Nativelink service and then run the BuildStream build. The example below uses Nix to manage the dependencies, but you can adapt it to your environment.
+Two processes take part: Nativelink, which serves the cache and runs the worker, and BuildStream, which asks it to build. You can start them by hand, or let a Nix script do both.
+
+#### By hand
+
+Open two terminals in `first-project`. In the first, start Nativelink with the worker configuration you downloaded in the prerequisites. It stays in the foreground and logs each request:
+
+```bash
+nativelink -- buildstream_cas.json5
+```
+
+In the second, run the build:
+
+```bash
+bst -c buildstream.conf build hello.bst
+```
+
+A successful run prints `SUCCESS Build` near the end. Run the same `bst` command again: this time the result comes from the Nativelink cache and the compile step is skipped. Stop Nativelink with Ctrl-C when you are done.
 
 #### Launch Script
 
-Here is an example script, similar to `buildstream-with-nativelink-test.nix`, that shows how to run the build.
+If you installed Nix, the Nativelink repository runs these two steps as one integration test. From a checkout of the repository, `nix run .#buildstream-with-nativelink-test` builds the copy of this project in `integration_tests/buildstream`, which contains the same files you just created. The script is `buildstream-with-nativelink-test.nix`:
 
 ```nix
 {
   nativelink,
   buildstream,
-  buildbox,
   writeShellScriptBin,
 }:
 writeShellScriptBin "buildstream-with-nativelink-test" ''
@@ -213,10 +273,9 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
   }
   trap "cleanup" INT QUIT TERM EXIT
 
-  ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 | tee -i integration_tests/buildstream/nativelink.log &
+  NL_LOG=json ${nativelink}/bin/nativelink -- integration_tests/buildstream/buildstream_cas.json5 | tee -i integration_tests/buildstream/nativelink.log &
 
-  # TODO(palfrey): PATH is workaround for https://github.com/NixOS/nixpkgs/issues/248000#issuecomment-2934704963
-  bst_output=$(cd integration_tests/buildstream && PATH=${buildbox}/bin:$PATH ${buildstream}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)
+  bst_output=$(cd integration_tests/buildstream && ${buildstream}/bin/bst -c buildstream.conf build hello.bst 2>&1 | tee -i buildstream.log)
 
   case $bst_output in
     *"SUCCESS Build"* )
@@ -232,7 +291,7 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
   nativelink_output=$(cat integration_tests/buildstream/nativelink.log)
 
   case $nativelink_output in
-    *"ERROR"* )
+    *\"ERROR\"* )
       echo "Error in nativelink build"
       exit 1
     ;;
@@ -243,7 +302,7 @@ writeShellScriptBin "buildstream-with-nativelink-test" ''
 ''
 ```
 
-To run the build, you would execute this script. It first starts the `nativelink` service in the background, then runs `bst build`.
+The script starts `nativelink` in the background, runs `bst build`, and checks both logs for success.
 
 The first time you run the build, it will compile the code and store the result in the Nativelink cache. Subsequent builds will be significantly faster as the results will be fetched directly from the cache, skipping the compilation step entirely.
 
