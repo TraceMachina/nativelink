@@ -61,6 +61,13 @@ in {
       "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
       # O'Reilly Bazel book cover on the marketing site.
       "web/apps/web/public/assets/oreilly-bazel-book-cover.png"
+      # Agentic CI blog post figures on the marketing site.
+      "web/apps/web/public/assets/agentic-ci-cache-collapse.png"
+      "web/apps/web/public/assets/agentic-ci-header.png"
+      "web/apps/web/public/assets/agentic-ci-hermeticity.png"
+      "web/apps/web/public/assets/agentic-ci-presubmit-postsubmit.png"
+      "web/apps/web/public/assets/agentic-ci-queue-depth.png"
+      "web/apps/web/public/assets/agentic-ci-two-clocks.png"
     ];
     name = "forbid-binary-files";
     types = ["binary"];

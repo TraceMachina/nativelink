@@ -4,6 +4,7 @@ Anthropic
 AMI
 Astro
 Bazel
+Buildkite
 Bazelisk
 [Bb]oolean
 [Bb]iocomputing
@@ -209,6 +210,8 @@ rules_scala
 dev_dependency
 Fumadocs
 Turborepo
+Spotify
+Tuist
 Vercel
 Biome
 Tailwind
@@ -508,3 +511,6 @@ SigV4
 Slurm
 [Tt]apeout
 Tcl
+[Pp]ostsubmit
+[Pp]resubmit
+[Uu]ncached
