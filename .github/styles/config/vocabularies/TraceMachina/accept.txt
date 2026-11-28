@@ -503,3 +503,8 @@ Alibaba
 OSS
 AccessKey
 SigV4
+[Nn]etlists?
+[Ss]ignoff
+Slurm
+[Tt]apeout
+Tcl
