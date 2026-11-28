@@ -2,7 +2,8 @@
   "pages": [
     "ai-coding-agents",
     "autonomous-operation",
-    "silicon-and-large-builds"
+    "silicon-and-large-builds",
+    "robotics-autonomy-and-simulation"
   ],
   "title": "Why NativeLink"
 }

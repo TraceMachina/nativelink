@@ -1,0 +1,223 @@
+---
+title: Robotics, autonomy and simulation
+description: "For robotics and autonomous-vehicle teams: GPU-hungry simulation, synthetic data and evaluation runs that repeat the same work. NativeLink caches what has already run, routes the rest to the right GPU workers, and runs in your own infrastructure."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** robotics and autonomous-vehicle teams whose simulation,
+synthetic data and evaluation runs are slow, GPU-bound and repeated more often than
+anyone would like. **What you'll have at the end:** the pains these workloads hit,
+how NativeLink answers each one, and a worked example with Isaac Sim. **Time:**
+about ten minutes.
+
+This page is about robots and vehicles. If you came for a build farm that runs and
+scales itself, that is [Autonomous operation](/use-cases/autonomous-operation).
+
+NativeLink is a content-addressed build cache and a remote execution service in one
+Rust binary, speaking the open Remote Execution API. Once a simulation or
+evaluation step is a declared build action, NativeLink can skip it when nothing
+changed and run it on a suitable GPU worker when something did.
+
+## The pains of a robotics and autonomy stack [#the-pains-of-a-robotics-and-autonomy-stack]
+
+**The simulation and evaluation loop is slow.** A change to a planner or a perception model
+should be checked against scenarios before it merges, and those runs take far
+longer than the compile that preceded them. The slowest scenarios decide when the
+answer arrives.
+
+**Isaac Sim and Replicator runs are GPU-hungry.** Headless simulation and synthetic
+data generation need NVIDIA GPUs, and those are the most contended machines you
+have.
+
+**The same scenes and data get regenerated.** A synthetic dataset is rebuilt
+because a pipeline reran, not because the scene, the assets or the script changed.
+Every regeneration costs GPU hours and produces bytes you already had.
+
+**Evaluation reruns on unchanged inputs.** Perception and model evaluation runs
+again for every commit, even when the model weights, the data and the evaluation
+code are the same as last time.
+
+**The GPU fleet is mixed, and drivers vary.** Different GPU models, different
+counts per machine, different NVIDIA driver versions. A result produced on one
+stack may not match another, and a job that lands on the wrong box fails late or,
+worse, succeeds with a different answer.
+
+**Sim results are hard to reproduce.** When a metric moves, you need to know which
+assets, image, driver and code produced each number. Physics engines and learned
+components add run-to-run variance on top.
+
+**Data can't leave.** Drive logs, sensor data, maps and proprietary models stay
+inside your boundary. Sending them to someone else's service is not an option.
+
+## How NativeLink answers each one [#how-nativelink-answers-each-one]
+
+| Pain | What NativeLink does |
+| --- | --- |
+| Slow simulation and evaluation loop | Remote execution runs scenario actions in parallel across a worker pool, and the cache skips the ones whose inputs did not change. |
+| GPU-hungry runs | Platform properties send GPU actions only to GPU workers, and `gpu_count` as a consumable `minimum` lets one machine take as many single-GPU actions as it has GPUs. |
+| Regenerating the same scenes and data | A generation step whose scene, assets, script and image are declared inputs is a cache hit when none of them changed: the outputs download and no GPU is reserved. |
+| Evaluation reruns | The same applies to evaluation: with weights, data and code declared, an unchanged evaluation is a hit. Runs that must be fresh put their seed or run ID in the inputs. |
+| Mixed fleet and driver variance | `gpu_model` as `exact` keeps an action on the device it asked for, and a driver key such as `worker_runtime` as `exact` keeps results from different drivers apart. The scheduler can also size GPU actions with hints. <MinVersion v="1.8.7" /> |
+| Reproducibility | Every action is keyed by the hash of its declared inputs, including the container image digest and driver key when you declare them, so a result traces back to exactly what produced it. NativeLink does not make a nondeterministic simulator deterministic. |
+| Data can't leave | You run it yourself, in your own cloud account or datacentre, on storage you configure. It does not phone home. |
+
+## Example: Omniverse and Isaac Sim with rules_omniverse [#example-omniverse-and-isaac-sim-with-rules-omniverse]
+
+[`rules_omniverse`](https://github.com/TraceMachina/rules_omniverse) is a Bazel
+ruleset for NVIDIA Omniverse that treats GPU work as ordinary build actions, with
+NativeLink as its reference GPU scheduler.
+
+- **`omni_gpu_action`** runs a declared tool on an NVIDIA GPU platform.
+- **`isaac_sim_action`** runs a headless Isaac Sim script, such as Replicator data
+  generation, in a container pinned by `@sha256:` digest, as one cacheable GPU
+  action. `isaac_sim_platform` declares the matching platform.
+
+A target states its GPU needs, and the ruleset turns them into `gpu_count` and
+`gpu_model` execution properties:
+
+```starlark
+load("@rules_omniverse//omniverse:defs.bzl", "isaac_sim_action", "isaac_sim_platform")
+
+isaac_sim_platform(
+    name = "isaac_sim_linux_x86_64",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    driver = "595.99.02",  # The worker's NVIDIA driver; sets worker_runtime.
+    gpu_model = "L40S",
+)
+
+isaac_sim_action(
+    name = "dataset",
+    image = "nvcr.io/nvidia/isaac-sim:6.2.0.1@sha256:...",  # A digest is required.
+    script = "generate.py",
+    arguments = ["--config", "{input:config.yaml}", "--output_dir", "{output}"],
+    scene = "stage.usda",
+    assets = ["robot.usda", "//textures"],
+    data = ["config.yaml"],
+    gpu_model = "L40S",
+)
+```
+
+What makes this cache honestly:
+
+- **The image digest is part of the action's identity**, and so is
+  `worker_runtime = "nvidia-driver-<driver>"`, so results from different drivers
+  never share a cache entry.
+- **Every local file the scene uses is declared.** Before the script starts, the
+  launcher computes the scene's dependencies with OpenUSD and fails the action
+  naming any undeclared file, so a missing texture cannot produce a stale hit.
+- **Cache identity is exactly what you declare.** The ruleset's README is explicit
+  that simulation output is often not bit-identical run to run. A hit means nothing
+  declared changed; if a run must be fresh, its seed belongs in the inputs.
+
+On the NativeLink side, the repository's `examples/nativelink/gpu` configuration
+declares `gpu_count` as `minimum`, `gpu_model` as `exact` and `worker_runtime` as
+`exact`. The ruleset's README reports the Isaac Sim rules tested on an L40S with
+Isaac Sim 6.2.0.1 and NativeLink 1.8.3.
+
+<Callout type="info" title="Known limits, from the ruleset">
+  Online content and the worker's cache mounts are not in the cache key, and local
+  `isaac_sim_action` runs can read undeclared files from mounted source folders.
+  The repository's Known boundaries section lists the rest.
+</Callout>
+
+## GPU-aware scheduling [#gpu-aware-scheduling]
+
+NativeLink routes GPU actions through platform properties, the same mechanism it
+uses for OS, CPU and memory.
+
+- **Route by model and count.** Declare `gpu_count` as `minimum` and `gpu_model`
+  as `exact` on the scheduler, and have GPU workers advertise their values. The
+  shipped example configurations use this pair.
+- **Keep driver stacks apart.** An `exact` key such as `worker_runtime` that names
+  the driver means an action only lands on, and only shares cache with, workers on
+  that stack.
+- **Size GPU actions with hints.** <MinVersion v="1.8.7" /> The `historical_resource`
+  scheduler's size classes can name `gpu_count` and `gpu_memory_kb`, so a class can
+  stand for a whole device or a slice of one. Device memory can be learned from a
+  `peak_gpu_memory_kb` figure that a wrapper around the action reports. See
+  [scheduler internals](/explanations/scheduler-internals).
+
+<Callout type="info" title="What NativeLink does not do">
+  Workers do not discover GPUs by themselves and there is no CUDA integration in
+  NativeLink. You declare GPU properties in worker configuration, and the scheduler
+  trusts what workers advertise.
+</Callout>
+
+[Platform properties](/remote-execution/platform-properties) has a worked GPU pool
+example. Mixed architectures work the same way: advertise `ISA` and `OSFamily` on
+each worker and match `ISA` as `exact`, as described in
+[Run multiple workers](/how-to/run-multiple-workers).
+
+## Your data stays in your infrastructure [#your-data-stays-in-your-infrastructure]
+
+You deploy NativeLink yourself, in your own cloud account or datacentre, on AWS,
+GCP, Azure or your own hardware. Your source, build artifacts and cache stay on the
+storage you configure. NativeLink does not phone home: it exports telemetry only to
+an OpenTelemetry collector you point it at with `NL_OTEL_ENDPOINT`, and sends none
+when that variable is unset.
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="NL_OTEL_ENDPOINT" />
+
+## Common questions [#common-questions]
+
+<Accordions>
+
+<Accordion title="Our simulator isn't deterministic. Is caching still safe?" id="our-simulator-isnt-deterministic-is-caching-still-safe">
+
+Yes, as long as you are clear about what a hit means. A cache key is the hash of
+the declared inputs, so a hit means nothing you declared changed, not that a
+rerun would produce identical bytes. For runs that must sample fresh results, put
+the seed or run identifier in the inputs and each run gets its own key.
+
+</Accordion>
+
+<Accordion title="Do we have to use Bazel?" id="do-we-have-to-use-bazel">
+
+Remote execution needs a build tool that describes each action's complete inputs
+and speaks the Remote Execution API, such as Bazel or Buck2. The `rules_omniverse`
+example is Bazel. Steps that are not expressed as build actions are not cached or
+scheduled by NativeLink.
+
+</Accordion>
+
+<Accordion title="Does a GPU worker need anything special?" id="does-a-gpu-worker-need-anything-special">
+
+The worker itself is the ordinary NativeLink worker. The machine needs the NVIDIA
+driver and whatever runtime your actions use, for example a container runtime for
+`isaac_sim_action`, and its configuration advertises `gpu_count`, `gpu_model` and
+your driver key.
+
+</Accordion>
+
+<Accordion title="Can we cross-compile for embedded targets?" id="can-we-cross-compile-for-embedded-targets">
+
+Cross-compiling is a Bazel toolchain concern, and NativeLink runs whatever actions
+those toolchains produce on workers that match their platform properties.
+Release binaries are published for x86-64 Linux, ARM64 Linux and ARM64 macOS.
+NativeLink has no toolchain support specific to embedded RTOS targets; that is
+work in your Bazel toolchain.
+
+</Accordion>
+
+</Accordions>
+
+## Next steps [#next-steps]
+
+Start with a shared cache, add GPU workers when your simulation steps are declared
+build actions, and use the `rules_omniverse` example as a template.
+
+<NextStep href="/getting-started/shared-cache" title="Deploy a shared cache">
+  The first step: one binary, one config file, and a URL for your build tool.
+</NextStep>
+
+<NextStep href="/remote-execution/platform-properties" kind="aside" title="Platform properties">
+  The reference for routing, including the worked GPU pool example.
+</NextStep>
+
+<NextStep href="/use-cases/silicon-and-large-builds" kind="aside" title="Silicon and large builds">
+  The same mechanisms applied to chip flows, licence-bound tools and huge artifacts.
+</NextStep>
