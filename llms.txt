@@ -62,7 +62,7 @@ The complete map is at https://docs.nativelink.com/llms.txt; the sections below 
 - [Why NativeLink](https://docs.nativelink.com/use-cases): What NativeLink is, what a remote cache and remote execution actually do, and a 30-second check for whether your build is one that benefits.
 - [AI coding agents](https://docs.nativelink.com/use-cases/ai-coding-agents): An agent's edit-build-test loop runs far more often than a human's, so build time sets both its wall clock and a large part of its token bill, and a shared cache turns most of those iterations into downloads.
 - [Autonomous operation](https://docs.nativelink.com/use-cases/autonomous-operation): What it takes for a build farm to grow and shrink with demand without anyone watching it: which properties NativeLink gives you, which pieces you assemble yourself, and where the seams are.
-- [Silicon and large builds](https://docs.nativelink.com/use-cases/silicon-and-large-builds): EDA flows, large C++ and LLVM trees, and ML graphs are the workloads remote execution was invented for: thousands of actions, hardware that differs from action to action, and a long tail that decides the wall clock.
+- [Silicon and large builds](https://docs.nativelink.com/use-cases/silicon-and-large-builds): For chip and EDA teams: regressions, licence-bound vendor tools, huge artifacts and a busy mixed grid. NativeLink caches what has already run, executes the rest on the right machines, and runs in your own infrastructure.
 
 ### Getting started
 

@@ -836,23 +836,37 @@ Scale it slowly, and prefer bigger replicas over more of them.
 
 # https://docs.nativelink.com/use-cases/silicon-and-large-builds
 
-**Silicon and large builds**: EDA flows, large C++ and LLVM trees, and ML graphs are the workloads remote execution was invented for: thousands of actions, hardware that differs from action to action, and a long tail that decides the wall clock.
+**Silicon and large builds**: For chip and EDA teams: regressions, licence-bound vendor tools, huge artifacts and a busy mixed grid. NativeLink caches what has already run, executes the rest on the right machines, and runs in your own infrastructure.
 
-**Who this is for:** anyone whose build is measured in thousands of actions and
-tens of minutes, on hardware that isn't uniform. **What you'll have at the end:**
-an understanding of why these builds are the hard case, and how NativeLink routes
-actions to the machines that suit them. **Time:** about fifteen minutes.
+**Who this is for:** chip, EDA and large-monorepo teams whose build or regression is measured in
+thousands of actions and tens of minutes, on hardware that isn't uniform.
+**What you'll have at the end:** a clear picture of the pains these builds hit,
+how NativeLink answers each one, and where to go next. **Time:** about ten minutes.
 
-## What makes a build "large" in the way that matters
+## The pains of a chip team's build
 
-Size in gigabytes is not the interesting axis. Three properties are, and a build
-that has all three is the shape remote execution was designed around.
+**Verification is the bottleneck, not compile.** The nightly regression is
+thousands of simulation seeds and tests, and the slowest of them decide what the
+team sees in the morning. Most of that work reruns against blocks nobody touched,
+and near the end of the run most of the grid sits idle while a long tail finishes.
 
-## Why caching alone runs out
+## How NativeLink answers each one
 
-On a small build, the cache is most of the story. On a build like this it is
-still enormously valuable (it is still the thing you deploy first, and Getting
-started is still where to start), but it stops being sufficient, for a specific reason.
+## Your data stays in your infrastructure
+
+You deploy NativeLink yourself, in your own cloud account or datacentre, on AWS,
+GCP, Azure or your own hardware. Your source, build artifacts and cache stay on the
+storage you configure. NativeLink does not phone home: it exports telemetry only to
+an OpenTelemetry collector you point it at with `NL_OTEL_ENDPOINT`, and sends none
+when that variable is unset.
+
+## How it works
+
+Your build tool hashes an action's inputs and asks the action cache whether it has
+the result. On a hit the outputs download from the CAS. On a miss the action goes to
+the scheduler, which hands it to a worker that matches its requirements, and the
+result is stored so nobody runs it again. The CAS, action cache, scheduler and worker
+are the same binary started with different configuration.
 
 ## Routing actions to the hardware that fits
 
@@ -860,38 +874,49 @@ The mechanism is **platform properties**: key-value pairs an action declares as
 requirements, matched against properties a worker declares about itself. The
 scheduler will not assign an action to a worker that does not satisfy them.
 
-## Special hardware, and what NativeLink actually knows about it
+## GPU-aware scheduling
 
-NativeLink has no GPU support, and that phrasing is deliberate rather
-than a shortcoming. No GPU-aware code exists anywhere in the codebase: no
-CUDA integration, no device discovery, no special-cased scheduling. GPUs are
-routed the same way a specific kernel version or a licensed tool is: as plain
-platform properties that you name and the scheduler matches.
+NativeLink routes GPU actions to GPU workers. The scheduler has no GPU driver or CUDA
+integration; GPUs are first-class in the sense that the scheduler
+matches, counts and sizes them through the same property mechanism as everything
+else. Three pieces exist.
 
 ## Running a heterogeneous fleet
 
-The pool is not one shape of machine. It's several, each a worker process with
-its own configuration, all registering with the same scheduler.
+One scheduler serves every pool. Each worker announces what it is and the scheduler
+routes on that. Start with one pool and split it only when you can name the reason.
+[Run multiple workers](/how-to/run-multiple-workers) is the mechanics and
+[tuning](/operate/tuning) covers sizing.
 
-## Toolchains are the hard part, not the scheduling
+## Toolchains and provenance
 
-For this class of build the routing is the straightforward half. The half that takes the
-time is making the actions hermetic enough to run somewhere else at all.
+The routing is the straightforward half. The half that takes the time is making
+actions hermetic enough to run somewhere else: a compiler at an absolute path, a tool
+the platform team installed years ago, a license daemon. Declaring those assumptions
+is the work, and it is also what gives you determinism and provenance, because an
+action whose inputs are all declared and hashed has the same digest every time.
 
-## What a build like this looks like when it works
+## Proof points
 
-One published account is worth reading rather than paraphrasing:
-[Reid Kleckner's write-up](https://reidkleckner.dev/posts/llvm-recc-nativelink/)
-describes building LLVM with `recc` executing remotely against NativeLink and
-taking a build from roughly seventeen minutes to roughly four.
+- NativeLink is in production for customers including large corporations such as
+  Samsung, handling over ten billion requests a month (nativelink.com).
+- One published account, Reid Kleckner's, builds LLVM with `recc` executing remotely
+  against NativeLink and takes a build from roughly seventeen minutes to roughly
+  four.
 
 ## Common questions
 
 Partly. `recc` puts a CMake-based build on the remote cache by intercepting
-compiler invocations, and it's the documented path for large C++ trees. The
-setup in these docs is cache-only (`RECC_CACHE_ONLY=1`, so misses compile
-locally); recc can also forward compiles to remote workers once you have them,
-one compiler invocation at a time.
+compiler invocations, and it's the documented path for large C++ trees. The setup in
+these docs is cache-only (`RECC_CACHE_ONLY=1`, so misses compile locally). Remote
+execution of the whole graph needs a build tool that describes every action's
+complete input set, which is what Bazel, Buck2, Siso and BuildStream do and Make does
+not.
+
+## Next steps
+
+Start with a shared cache, add remote workers when you have a toolchain that runs on
+them, and tell us about your build if you want help sizing a pool.
 
 # https://docs.nativelink.com/getting-started
 
