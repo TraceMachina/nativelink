@@ -2289,21 +2289,52 @@ impl CasConfig {
     /// startup rejects them too.
     ///
     /// Duplicate scheduler names are not an error here: startup accepts them
-    /// and the last definition wins. Use [`Self::duplicate_scheduler_names`]
-    /// to warn about them.
+    /// and the last definition wins. [`Self::problems`] reports them as
+    /// warnings.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Code::InvalidArgument)` if any referenced store/scheduler
-    /// name is undeclared, or if a store name is declared more than once.
+    /// Returns `Err(Code::InvalidArgument)` listing every error-severity
+    /// problem from [`Self::problems`], if there are any.
     pub fn validate_references(&self) -> Result<(), Error> {
-        let mut problems: Vec<String> = Vec::new();
+        let errors: Vec<ConfigProblem> = self
+            .problems()
+            .into_iter()
+            .filter(|problem| problem.severity == Severity::Error)
+            .collect();
+        match errors.len() {
+            0 => Ok(()),
+            count => Err(make_err!(
+                Code::InvalidArgument,
+                "{count} configuration problem{}:\n  - {}",
+                if count == 1 { "" } else { "s" },
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n  - ")
+            )),
+        }
+    }
+
+    /// Every problem [`Self::validate_references`] checks for, in the order
+    /// the config is walked, followed by the warnings: things startup
+    /// accepts but that are probably a mistake.
+    ///
+    /// An error-severity problem means startup refuses the config. A
+    /// warning means it starts, so `--check` reports it and still passes.
+    #[must_use]
+    pub fn problems(&self) -> Vec<ConfigProblem> {
+        let mut problems: Vec<ConfigProblem> = Vec::new();
 
         // Declared registries. Collision on insert is a duplicate name.
         let mut store_names: HashSet<&str> = HashSet::new();
         for store in &self.stores {
             if !store_names.insert(store.name.as_str()) {
-                problems.push(format!("duplicate store name '{}'", store.name));
+                problems.push(ConfigProblem::error(
+                    "",
+                    format!("duplicate store name '{}'", store.name),
+                ));
             }
         }
         let scheduler_names: HashSet<&str> = self
@@ -2330,8 +2361,9 @@ impl CasConfig {
                 local.name.clone()
             };
             if let Some(first_idx) = worker_names.get(&worker_name) {
-                checker.problems.push(format!(
-                    "workers[{worker_idx}] has the same name as workers[{first_idx}]: '{worker_name}'"
+                checker.problems.push(ConfigProblem::error(
+                    format!("workers[{worker_idx}]"),
+                    format!("has the same name as workers[{first_idx}]: '{worker_name}'"),
                 ));
             } else {
                 worker_names.insert(worker_name, worker_idx);
@@ -2371,15 +2403,17 @@ impl CasConfig {
             let ListenerConfig::Http(http) = &server.listener;
             let address = &http.socket_address;
             match address.parse::<SocketAddr>() {
-                Err(_) => checker.problems.push(format!(
-                    "servers[{server_idx}].listener.http.socket_address is not a valid \
-                     address: '{address}'"
+                Err(_) => checker.problems.push(ConfigProblem::error(
+                    format!("servers[{server_idx}].listener.http.socket_address"),
+                    format!("is not a valid address: '{address}'"),
                 )),
                 Ok(parsed) if parsed.port() != 0 => {
                     if let Some(first_idx) = addresses.get(&parsed) {
-                        checker.problems.push(format!(
-                            "servers[{server_idx}] listens on the same address as \
-                             servers[{first_idx}]: '{address}'"
+                        checker.problems.push(ConfigProblem::error(
+                            format!("servers[{server_idx}]"),
+                            format!(
+                                "listens on the same address as servers[{first_idx}]: '{address}'"
+                            ),
                         ));
                     } else {
                         addresses.insert(parsed, server_idx);
@@ -2393,9 +2427,10 @@ impl CasConfig {
             let prefix = format!("servers[{server_idx}].services");
             let Some(services) = &server.services else {
                 // Startup refuses a server with nothing to serve.
-                checker
-                    .problems
-                    .push(format!("servers[{server_idx}] has no 'services'"));
+                checker.problems.push(ConfigProblem::error(
+                    format!("servers[{server_idx}]"),
+                    "has no 'services'",
+                ));
                 continue;
             };
             for entry in services.cas.iter().flatten() {
@@ -2478,10 +2513,13 @@ impl CasConfig {
                 if declared.peek().is_some()
                     && !declared.any(|scheduler| accepts_workers(&scheduler.spec))
                 {
-                    checker.problems.push(format!(
-                        "{path} references scheduler '{}', which forwards to a remote \
-                         scheduler and cannot accept workers",
-                        worker_api.scheduler
+                    checker.problems.push(ConfigProblem::error(
+                        path,
+                        format!(
+                            "references scheduler '{}', which forwards to a remote \
+                             scheduler and cannot accept workers",
+                            worker_api.scheduler
+                        ),
                     ));
                 }
             }
@@ -2504,27 +2542,11 @@ impl CasConfig {
             checker.store_internal_refs(&store.name, &store.spec);
         }
 
-        match checker.problems.len() {
-            0 => Ok(()),
-            count => Err(make_err!(
-                Code::InvalidArgument,
-                "{count} configuration problem{}:\n  - {}",
-                if count == 1 { "" } else { "s" },
-                checker.problems.join("\n  - ")
-            )),
-        }
-    }
-
-    /// Returns each scheduler name that is declared more than once, in the
-    /// order its second declaration appears.
-    ///
-    /// Startup builds every declared scheduler and keeps them in maps keyed by
-    /// name, so a later definition replaces an earlier one for each role it
-    /// fills (action scheduler, worker scheduler). The earlier definition is
-    /// then partly or wholly unused. This is a warning, not an error, because
-    /// such a config starts.
-    #[must_use]
-    pub fn duplicate_scheduler_names(&self) -> Vec<&str> {
+        // Startup builds every declared scheduler and keeps them in maps
+        // keyed by name, so a later definition replaces an earlier one for
+        // each role it fills (action scheduler, worker scheduler). The
+        // earlier one is then partly or wholly unused. A warning, not an
+        // error, because such a config starts. Reported once per name.
         let mut seen: HashSet<&str> = HashSet::new();
         let mut duplicates: Vec<&str> = Vec::new();
         for scheduler in self.schedulers.iter().flatten() {
@@ -2533,7 +2555,70 @@ impl CasConfig {
                 duplicates.push(name);
             }
         }
-        duplicates
+        for name in duplicates {
+            checker.problems.push(ConfigProblem::warning(
+                "",
+                format!(
+                    "scheduler name '{name}' is declared more than once; later \
+                     definitions replace earlier ones"
+                ),
+            ));
+        }
+
+        checker.problems
+    }
+}
+
+/// How serious a [`ConfigProblem`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Startup refuses the config.
+    Error,
+    /// Startup accepts the config, but it is probably not what was meant.
+    Warning,
+}
+
+/// One problem [`CasConfig::problems`] found in a config.
+///
+/// Its `Display` form is the line `nativelink --check` and startup print:
+/// the path, a space and the message, or the message alone when the
+/// problem belongs to no single field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigProblem {
+    pub severity: Severity,
+    /// Where in the config the problem is, such as
+    /// `servers[0].services.cas[main].cas_store`. Empty when the problem
+    /// belongs to no single field, such as a name declared twice.
+    pub path: String,
+    /// What is wrong, such as `references undefined store 'CAS'`.
+    pub message: String,
+}
+
+impl ConfigProblem {
+    fn error(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    fn warning(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl core::fmt::Display for ConfigProblem {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.path.is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{} {}", self.path, self.message)
+        }
     }
 }
 
@@ -2603,19 +2688,21 @@ fn collect_ref_store_names<'a>(spec: &'a StoreSpec, out: &mut Vec<&'a StoreRefNa
     }
 }
 
-/// Accumulates unresolved-reference problems while walking a [`CasConfig`].
+/// Accumulates [`ConfigProblem`]s while walking a [`CasConfig`].
 struct ReferenceChecker<'a> {
     store_names: HashSet<&'a str>,
     scheduler_names: HashSet<&'a str>,
-    problems: Vec<String>,
+    problems: Vec<ConfigProblem>,
 }
 
 impl<'a> ReferenceChecker<'a> {
     /// Records that `name` (found at `path`) must resolve to a declared store.
     fn store(&mut self, path: &str, name: &str) {
         if !self.store_names.contains(name) {
-            self.problems
-                .push(format!("{path} references undefined store '{name}'"));
+            self.problems.push(ConfigProblem::error(
+                path,
+                format!("references undefined store '{name}'"),
+            ));
         }
     }
 
@@ -2623,8 +2710,10 @@ impl<'a> ReferenceChecker<'a> {
     /// scheduler.
     fn scheduler(&mut self, path: &str, name: &str) {
         if !self.scheduler_names.contains(name) {
-            self.problems
-                .push(format!("{path} references undefined scheduler '{name}'"));
+            self.problems.push(ConfigProblem::error(
+                path,
+                format!("references undefined scheduler '{name}'"),
+            ));
         }
     }
 
@@ -3489,11 +3578,50 @@ mod tests {
         );
         cfg.validate_references()
             .expect("duplicate scheduler names must not fail validation");
-        assert_eq!(cfg.duplicate_scheduler_names(), vec!["SCHED"]);
+        assert_eq!(
+            cfg.problems(),
+            vec![ConfigProblem::warning(
+                "",
+                "scheduler name 'SCHED' is declared more than once; later definitions \
+                 replace earlier ones",
+            )],
+        );
     }
 
     #[test]
-    fn duplicate_scheduler_names_empty_without_duplicates() {
+    fn problems_split_path_from_message() {
+        let cfg = parse_cas_config(
+            r#"{
+                stores: [{ name: "CAS", memory: {} }, { name: "CAS", memory: {} }],
+                servers: [{
+                    listener: { http: { socket_address: "127.0.0.1:50051" } },
+                    services: { ac: [{ instance_name: "main", ac_store: "AC" }] },
+                }],
+            }"#,
+        );
+        let problems = cfg.problems();
+        assert_eq!(
+            problems,
+            vec![
+                ConfigProblem::error("", "duplicate store name 'CAS'"),
+                ConfigProblem::error(
+                    "servers[0].services.ac[main].ac_store",
+                    "references undefined store 'AC'",
+                ),
+            ],
+        );
+        let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lines,
+            [
+                "duplicate store name 'CAS'",
+                "servers[0].services.ac[main].ac_store references undefined store 'AC'",
+            ],
+        );
+    }
+
+    #[test]
+    fn problems_empty_without_duplicate_schedulers() {
         let cfg = parse_cas_config(
             r#"{
                 stores: [{ name: "CAS", memory: {} }],
@@ -3504,7 +3632,7 @@ mod tests {
                 servers: [],
             }"#,
         );
-        assert!(cfg.duplicate_scheduler_names().is_empty());
+        assert!(cfg.problems().is_empty());
     }
 
     #[test]
