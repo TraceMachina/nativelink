@@ -224,10 +224,12 @@ compresses on the wire between the client and NativeLink. The two are
 independent and can both be on.
 
 In development builds, existence checks for present digest keys report the
-digest's uncompressed size. This lets a `fast_slow` store refill a raw cache
-tier from the compressed backend using the correct transfer size. String keys
-still report the stored, compressed size; they do not declare an uncompressed
-length, so that combination still needs separate handling.
+stored uncompressed payload size from the frame footer. A `fast_slow` fill
+uses that length as the transfer size. For a CAS blob it matches the digest
+size. For an Action Cache entry the digest is the Action size and the footer
+is the `ActionResult` length, which is what a read of this store delivers.
+String keys still report the stored, compressed size; they do not declare an
+uncompressed length, so that combination still needs separate handling.
 
 ### `dedup`: store the changed parts only [#dedup--store-the-changed-parts-only]
 

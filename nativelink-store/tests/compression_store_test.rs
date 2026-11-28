@@ -1038,3 +1038,110 @@ async fn has_preserves_missing_digests_and_stored_string_key_sizes() -> Result<(
     assert_eq!(results, [None, Some(4096), Some(0), named_stored_size]);
     Ok(())
 }
+
+#[nativelink_test]
+async fn has_reports_the_stored_uncompressed_size_when_the_digest_size_differs() -> Result<(), Error>
+{
+    // Action-cache keys hash the Action; the stored value is the ActionResult.
+    const ACTION_SIZE: usize = 167;
+    const ACTION_RESULT_SIZE: usize = 334;
+
+    let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        inner_store,
+    )?;
+    let store = Pin::new(store.as_ref());
+
+    let data = vec![b'r'; ACTION_RESULT_SIZE];
+    let digest = DigestInfo::try_new(VALID_HASH, ACTION_SIZE)?;
+    store.update_oneshot(digest, data.into()).await?;
+
+    assert_eq!(
+        store.has(digest).await?,
+        Some(ACTION_RESULT_SIZE as u64),
+        "has() must report the stored payload length, not the Action size in the digest"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn compressed_slow_tier_refills_when_digest_size_is_the_action_size() -> Result<(), Error> {
+    const ACTION_SIZE: usize = 167;
+    const ACTION_RESULT_SIZE: usize = 334;
+
+    let directory = tempfile::tempdir()?;
+    let filesystem_spec = FilesystemSpec {
+        content_path: directory
+            .path()
+            .join("content")
+            .to_string_lossy()
+            .into_owned(),
+        temp_path: directory.path().join("temp").to_string_lossy().into_owned(),
+        block_size: 1,
+        ..Default::default()
+    };
+    let compression_spec = CompressionSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+            nativelink_config::stores::Lz4Config::default(),
+        ),
+    };
+    let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let slow = Store::new(CompressionStore::new(&compression_spec, backend)?);
+    let fast = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(filesystem_spec),
+            slow: StoreSpec::Compression(Box::new(compression_spec)),
+            fast_direction: StoreDirection::Both,
+            slow_direction: StoreDirection::Both,
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast.clone(),
+        slow.clone(),
+    ));
+    let data = vec![b'r'; ACTION_RESULT_SIZE];
+    let digest = DigestInfo::try_new(VALID_HASH, ACTION_SIZE)?;
+    slow.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(fast.has(digest).await?, None);
+
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, data);
+    assert_eq!(fast.has(digest).await?, Some(ACTION_RESULT_SIZE as u64));
+    assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, data);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_errors_when_the_frame_footer_cannot_be_read() -> Result<(), Error> {
+    let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        backend.clone(),
+    )?;
+    let digest = DigestInfo::try_new(VALID_HASH, 167)?;
+    for payload in [vec![0xff; 5], vec![0xff; 20]] {
+        backend.update_oneshot(digest, payload.into()).await?;
+        let err = Pin::new(store.as_ref()).has(digest).await.expect_err(
+            "a present object with no readable footer must not report digest.size_bytes()",
+        );
+        assert_eq!(err.code, Code::Internal);
+        assert!(
+            err.to_string().contains("footer"),
+            "Unexpected error: {err}"
+        );
+    }
+    Ok(())
+}
