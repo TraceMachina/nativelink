@@ -1,7 +1,8 @@
 import { Badge, Breadcrumbs, Eyebrow, Prose, Section } from "@nativelink/ui";
-import { marked } from "marked";
 import { notFound } from "next/navigation";
+import { CodeCopy } from "../../../../components/code-copy";
 import { formatPostDate, getAllPosts, getPost } from "../../../../lib/posts";
+import { renderPostHtml } from "../../../../lib/render-post";
 
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({ slug: post.slug }));
@@ -34,7 +35,7 @@ export default async function BlogPostPage({
   const post = getPost((await params).slug);
   if (!post) notFound();
 
-  const html = marked.parse(post.body, { async: false });
+  const html = renderPostHtml(post.body);
 
   return (
     <>
@@ -74,6 +75,7 @@ export default async function BlogPostPage({
             // biome-ignore lint/security/noDangerouslySetInnerHtml: Post bodies are trusted repo content, rendered from markdown at build time.
             dangerouslySetInnerHTML={{ __html: html }}
           />
+          <CodeCopy />
           <div className="mt-16 border-t border-border pt-8">
             <Eyebrow tone="muted" className="text-[10px]">
               NativeLink Blog

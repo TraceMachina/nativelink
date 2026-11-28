@@ -511,3 +511,66 @@
     width: calc(100% + 4.5rem);
   }
 }
+
+/* Fenced code in blog posts. lib/render-post.ts wraps each block in
+   .code-block with a bar holding the language and a copy button; the
+   <Prose> utilities on <pre> are overridden here so the frame sits on the
+   wrapper and the bar and code share one border. */
+.blog-prose .code-block {
+  margin-block: 1.5rem;
+  overflow: hidden;
+  border: 1px solid rgb(var(--nl-color-border));
+  border-radius: 0.75rem;
+  background: rgb(var(--nl-color-foreground) / 0.03);
+}
+.blog-prose .code-block-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.5rem 0.25rem 1rem;
+  border-bottom: 1px solid rgb(var(--nl-color-border) / 0.6);
+  font-family: var(--nl-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--nl-color-muted-foreground));
+}
+.blog-prose .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.blog-prose .code-copy {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  border-radius: 0.375rem;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 150ms,
+    background-color 150ms;
+}
+.blog-prose .code-copy:hover {
+  color: rgb(var(--nl-color-foreground));
+  background: rgb(var(--nl-color-foreground) / 0.06);
+}
+.blog-prose .code-copy:focus-visible {
+  outline: 2px solid rgb(var(--nl-color-brand) / 0.6);
+  outline-offset: 2px;
+}
+.blog-prose .code-copy[data-copied="true"] {
+  color: rgb(var(--nl-color-brand));
+}
+.blog-prose .code-copy[data-copied="false"] {
+  color: rgb(220 38 38);
+}
