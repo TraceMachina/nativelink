@@ -141,7 +141,7 @@ is also the endpoint you will legitimately want during an incident (see
 [Runbooks](/operate/runbooks#a-worker-is-oom-killed)), so the answer is to make
 it reachable from your operator network and nowhere else, not to disable it.
 
-<SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
+<SourceLink file="src/lib.rs" symbol="set_drain_worker" />
 
 The `health` service is on the same footing: path `/status` by default, five
 second timeout, no authentication. It leaks less, but it is another reason the

@@ -6,7 +6,7 @@
  * matches the prose around it, and has no way to tell. Bump this in the same
  * change that regenerates the config reference for a new release.
  */
-export const SOURCE_REF = "v1.6.5";
+export const SOURCE_REF = "v1.8.7";
 
 export const REPO_URL = "https://github.com/TraceMachina/nativelink";
 
